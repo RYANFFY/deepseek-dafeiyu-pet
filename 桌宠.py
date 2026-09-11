@@ -6,12 +6,14 @@
 余额挂件特性（对齐 MeteorNOX/DeepSeek-Balance-Whale-Widget, MIT）：
 余额泡泡（余额 / 今日已用）、数字滚动动画、拖拽四边吸附、左吸附整体翻转、
 按压 Q 弹、按键音效、每轮 Codex 对话消耗换算（峰谷定价表取自该项目）
+音乐联动：放 QQ音乐 / 网易云 时读 Windows 媒体会话，把当前歌词挂在气泡里
 """
 import ctypes
 import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -32,14 +34,14 @@ def load_config():
 
 import requests
 from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice,
-                            QEventLoop, QSize, QFileInfo)
+                            QEventLoop, QSize, QFileInfo, QEvent, QAbstractNativeEventFilter)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
-                           QPolygonF, QImage)
+                           QPolygonF, QImage, QCursor, QMouseEvent)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
                                QSlider, QWidgetAction, QFileDialog, QListWidget,
-                               QListWidgetItem, QLabel, QFileIconProvider)
+                               QListWidgetItem, QLabel, QFileIconProvider, QSizePolicy)
 
 try:
     from PySide6.QtMultimedia import QSoundEffect
@@ -47,6 +49,62 @@ try:
     AUDIO_AVAILABLE = True
 except Exception:
     AUDIO_AVAILABLE = False
+
+
+class _NativeMsg(ctypes.Structure):
+    _fields_ = [("hWnd", ctypes.c_void_p), ("message", ctypes.c_uint),
+                ("wParam", ctypes.c_void_p), ("lParam", ctypes.c_void_p),
+                ("time", ctypes.c_ulong), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long)]
+
+
+class MenuClickBridge(QAbstractNativeEventFilter):
+    """把"落在子菜单上、却被 Windows 送给上层菜单"的点击自己处理掉。
+
+    实测：二级菜单弹出后，鼠标点在它上面时，Windows 把 WM_LBUTTONDOWN/UP 送给了
+    **持有鼠标捕获的上层菜单**；Qt 一看坐标在自己外面，就把整个菜单关掉 —— 所以
+    二级菜单永远收不到点击（点了就消失）。这里在原生消息层拦截并自己执行那一项。
+    """
+
+    DOWN, UP = 0x0201, 0x0202
+
+    def __init__(self, pet):
+        super().__init__()
+        self.pet = pet
+
+    def nativeEventFilter(self, eventType, message):
+        try:
+            msg = ctypes.cast(int(message), ctypes.POINTER(_NativeMsg)).contents
+        except Exception:
+            return False, 0
+        if MENU_DEBUG and msg.message in (0x0200, 0x0201, 0x0202, 0x0204, 0x0205):
+            name = {0x0200: "WM_MOUSEMOVE", 0x0201: "WM_LBUTTONDOWN", 0x0202: "WM_LBUTTONUP",
+                    0x0204: "WM_RBUTTONDOWN", 0x0205: "WM_RBUTTONUP"}.get(msg.message)
+            info = f"[原生] {name} hwnd={msg.hWnd} pt=({msg.pt_x},{msg.pt_y})"
+            try:
+                root = getattr(self.pet, "_menu_keepalive", None)
+                for m in self.pet._all_menus(root) if root else []:
+                    if int(m.winId()) == msg.hWnd:
+                        info += f" → 是菜单(层级{getattr(m, '_dfy_depth', '?')})"
+                        break
+                else:
+                    if int(self.pet.winId()) == msg.hWnd:
+                        info += " → 是桌宠"
+            except Exception:
+                pass
+            if msg.message == 0x0200:
+                if "是菜单" in info:                 # 只记落在菜单上的移动
+                    menu_debug_throttled(info, 250)
+            else:
+                menu_debug(info)
+        if msg.message not in (self.DOWN, self.UP) or not self.pet.ui_open:
+            return False, 0
+        menu = self.pet.submenu_under_cursor()
+        if menu is None:
+            return False, 0
+        menu_debug(f"[原生] 拦截到落在子菜单上的点击（层级{getattr(menu, '_dfy_depth', '?')}）")
+        if msg.message == self.UP:
+            self.pet.activate_menu_item(menu)
+        return True, 0
 
 
 
@@ -131,6 +189,66 @@ SOUND_SETS = {
 SOUND_POOL = 3          # 每种音效同时可播的实例数（连点不互相打断）
 # 点击音：把原「按压 + 松手」两条 wav 拼成一条，点一次就放完整一段
 CLICK_CLIP_FILES = {"小黄鸭": "click-duck.wav", "音效1": "click-fx1.wav"}
+
+
+# ===== 音乐联动（QQ音乐 / 网易云音乐）=====
+# 这两个软件都会把"现在在放什么"登记到 Windows 的媒体会话里（SMTC），
+# 所以不用猜窗口标题，直接读系统媒体会话就能拿到歌名 / 歌手 / 播放状态 / 进度。
+MUSIC_APPS = {
+    "qqmusic": "QQ音乐",
+    "cloudmusic": "网易云音乐",
+}
+MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
+MUSIC_HOLD_SEC = 5.0          # 放歌时：双击看余额 / 点"查看天气"，都显示 5 秒
+MUSIC_PEEK_SEC = MUSIC_HOLD_SEC
+MENU_HOVER_MS = 120           # 菜单悬停兜底的检查间隔
+MENU_HOVER_DELAY = 0.22       # 光标在带子菜单的项上停多久就替它弹出子菜单
+MENU_HOVER_GRACE = 0.5        # 光标离开子菜单后，再等这么久才收（给手抖 / 斜着划过去留余地）
+MENU_DEBUG_LOG = os.path.join(USER_DIR, "menu-debug.log")   # 菜单排查用日志
+MENU_DEBUG = False            # 菜单排查日志（需要时改成 True，会写 menu-debug.log）
+MENU_DEBUG_MOVE_MS = 120      # 鼠标移动最多每 120ms 记一条（免得日志爆掉）
+
+
+def menu_debug(text):
+    """菜单相关的排查日志（只写文件，不打扰使用）。"""
+    if not MENU_DEBUG:
+        return
+    try:
+        with open(MENU_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {text}\n")
+    except Exception:
+        pass
+
+
+_menu_debug_last = {"t": 0.0}
+
+
+def menu_debug_throttled(text, ms=None):
+    """节流版日志：鼠标移动之类的高频事件用它，别把日志刷爆。"""
+    span = (ms if ms is not None else MENU_DEBUG_MOVE_MS) / 1000.0
+    now = time.time()
+    if now - _menu_debug_last["t"] < span:
+        return
+    _menu_debug_last["t"] = now
+    menu_debug(text)
+LYRIC_CACHE_PATH = os.path.join(USER_DIR, "lyrics_cache.json")
+LYRIC_CACHE_MAX = 300         # 歌词缓存最多留多少首
+
+# 放歌时点它的回嘴（{song} 会替换成《歌名》——歌手）
+MUSIC_CLICK_LINES = [
+    "♪ 放歌ing：{song}，别打断我",
+    "正听 {song} 呢，副歌还没到你就戳我",
+    "♪ 我在听{song}，你品味还行",
+    "别急别急，{song} 还没放完呢",
+    "♪ 放歌ing……{song}，要不要跟着哼两句",
+    "听得正入神，{song} 这么好听",
+]
+# 换歌时冒一句
+MUSIC_START_LINES = [
+    "♪ 换歌了：{song}",
+    "♪ 这首{song}，我先替你听听",
+    "♪ 来活儿了：{song}",
+]
 
 
 def merge_wavs(dest, sources):
@@ -798,6 +916,358 @@ def list_process_names():
     return {name for name, _path in running_processes()}
 
 
+def process_exe_by_pid(pid):
+    """pid → 进程可执行文件名（小写）；拿不到返回空串。"""
+    try:
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32.dll")
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))     # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(buf))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return buf.value.rsplit("\\", 1)[-1].lower()
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    return ""
+
+
+def music_app_name(app_id):
+    """媒体会话的应用标识 / 进程名 → 「QQ音乐」这种名字；不是这两个软件就返回空串。"""
+    low = (app_id or "").lower()
+    if not low:
+        return ""
+    for key, name in MUSIC_APPS.items():
+        if key in low:
+            return name
+    return ""
+
+
+def smtc_available():
+    """本机能不能读 Windows 媒体会话（读不了就走"看窗口标题"的退路）。"""
+    try:
+        import winsdk.windows.media.control     # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def read_media_session():
+    """读系统媒体会话 → dict；没在放歌 / 读不到返回 None。
+
+    position 是"读取那一刻"的进度，配上 at（读取时间）就能自己往后推。
+    """
+    try:
+        import asyncio
+        from winsdk.windows.media.control import (
+            GlobalSystemMediaTransportControlsSessionManager as _Manager)
+    except Exception:
+        return None
+
+    async def _read():
+        manager = await _Manager.request_async()
+        session = None
+        first = manager.get_current_session()
+        if first is not None and music_app_name(first.source_app_user_model_id):
+            session = first
+        else:
+            for one in manager.get_sessions():
+                if music_app_name(one.source_app_user_model_id):
+                    session = one
+                    break
+        if session is None:
+            return None
+        status = getattr(session.get_playback_info().playback_status, "name", "")
+        props = await session.try_get_media_properties_async()
+        line = session.get_timeline_properties()
+        return {
+            "app": music_app_name(session.source_app_user_model_id),
+            "title": (props.title or "").strip(),
+            "artist": (props.artist or "").strip(),
+            "album": (props.album_title or "").strip(),
+            "playing": str(status).upper() == "PLAYING",
+            "position": float(line.position.total_seconds()),
+            "duration": float(line.end_time.total_seconds()),
+            "at": time.time(),
+        }
+
+    try:
+        return asyncio.run(_read())
+    except Exception:
+        return None
+
+
+def split_music_title(title, app_name=""):
+    """把「歌名 - 歌手 - QQ音乐」这类窗口标题拆成 (歌名, 歌手)。"""
+    text = (title or "").strip()
+    for junk in (app_name, "QQ音乐", "网易云音乐", "QQMusic", "网易云音乐PC版"):
+        if junk and text.endswith(junk):
+            text = text[: -len(junk)].strip(" -—–|·")
+    if not text:
+        return "", ""
+    parts = [x.strip() for x in re.split(r"\s+[-—–]\s+", text) if x.strip()]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
+def read_music_window():
+    """退路：读不到媒体会话时，直接看 QQ音乐 / 网易云 的窗口标题。"""
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32.dll")
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def _visit(hwnd, _param):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = (buf.value or "").strip()
+                if not title:
+                    return True
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                app = music_app_name(process_exe_by_pid(pid.value))
+                if app:
+                    found.append((app, title))
+            except Exception:
+                pass
+            return True
+
+        user32.EnumWindows(_visit, 0)
+        for app, title in found:
+            song, artist = split_music_title(title, app)
+            if song:
+                return {"app": app, "title": song, "artist": artist, "album": "",
+                        "playing": True, "position": None, "duration": 0.0,
+                        "at": time.time(), "from_title": True}
+    except Exception:
+        pass
+    return None
+
+
+def merge_media_info(info, fallback):
+    """媒体会话在、但没给歌名时，用窗口标题补上歌名 / 歌手（播放状态和进度以会话为准）。"""
+    if fallback is None:
+        return info
+    if info is None:
+        return fallback
+    merged = dict(fallback)
+    for key in ("playing", "position", "duration", "at"):
+        if info.get(key) is not None:
+            merged[key] = info[key]
+    return merged
+
+
+_LRC_TAG = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+
+
+def parse_lrc(text):
+    """LRC 歌词 → [(秒, 这一句)]，按时间排好；[ti:] 这类信息行丢掉。"""
+    out = []
+    for raw in (text or "").splitlines():
+        stamps = _LRC_TAG.findall(raw)
+        if not stamps:
+            continue
+        words = _LRC_TAG.sub("", raw).strip()
+        if not words:
+            continue
+        for minute, second, frac in stamps:
+            ms = int(frac) if frac else 0
+            if len(frac) == 1:
+                ms *= 100
+            elif len(frac) == 2:
+                ms *= 10
+            out.append((int(minute) * 60 + int(second) + ms / 1000.0, words))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def lyric_pair(lines, pos):
+    """pos 秒时该显示的（这一句, 下一句）；没有歌词返回两个空串。"""
+    if not lines:
+        return "", ""
+    idx = 0
+    for i, (when, _words) in enumerate(lines):
+        if when <= pos + 0.15:
+            idx = i
+        else:
+            break
+    nxt = lines[idx + 1][1] if idx + 1 < len(lines) else ""
+    return lines[idx][1], nxt
+
+
+def _best_song(items, title, artist, name_of, artist_of):
+    """在搜索结果里挑最像的那一首：歌名优先，歌手用来加分 / 排除。"""
+    want_t = (title or "").strip().lower()
+    want_a = (artist or "").strip().lower()
+    best, best_score = None, 0
+    for item in items[:8]:
+        name = (name_of(item) or "").strip().lower()
+        who = (artist_of(item) or "").strip().lower()
+        score = 0
+        if want_t and name == want_t:
+            score += 4
+        elif want_t and want_t in name:
+            score += 3
+        elif name and name in want_t:
+            score += 2
+        if want_a and who:
+            if want_a == who:
+                score += 3
+            elif want_a in who or who in want_a:
+                score += 2
+            else:
+                score -= 3
+        if score > best_score:
+            best, best_score = item, score
+    return best
+
+
+def _netease_lyric(title, artist):
+    """网易云的公开搜索 + 歌词接口（不需要 Key）。"""
+    r = requests.post("https://music.163.com/api/search/get/web",
+                      data={"s": f"{title} {artist}".strip(), "type": 1,
+                            "limit": 8, "offset": 0},
+                      headers={"User-Agent": "Mozilla/5.0",
+                               "Referer": "https://music.163.com/"},
+                      timeout=10)
+    songs = ((r.json() or {}).get("result") or {}).get("songs") or []
+    song = _best_song(songs, title, artist,
+                      lambda s: s.get("name"),
+                      lambda s: " ".join(a.get("name", "")
+                                         for a in (s.get("artists") or [])))
+    if not song:
+        return ""
+    r2 = requests.get("https://music.163.com/api/song/lyric",
+                      params={"id": song.get("id"), "lv": 1, "kv": 1, "tv": -1},
+                      headers={"User-Agent": "Mozilla/5.0",
+                               "Referer": "https://music.163.com/"},
+                      timeout=10)
+    return ((r2.json() or {}).get("lrc") or {}).get("lyric") or ""
+
+
+def _qq_lyric(title, artist):
+    """QQ音乐的公开搜索 + 歌词接口（不需要 Key）。"""
+    r = requests.get("https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+                     params={"w": f"{title} {artist}".strip(), "format": "json",
+                             "n": 8, "cr": 1, "p": 1},
+                     headers={"User-Agent": "Mozilla/5.0",
+                              "Referer": "https://y.qq.com/"},
+                     timeout=10)
+    text = r.text
+    data = json.loads(text[text.find("{"):text.rfind("}") + 1])
+    songs = ((data.get("data") or {}).get("song") or {}).get("list") or []
+    song = _best_song(songs, title, artist,
+                      lambda s: s.get("songname") or s.get("title"),
+                      lambda s: " ".join(x.get("name", "")
+                                         for x in (s.get("singer") or [])))
+    if not song:
+        return ""
+    r2 = requests.get("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
+                      params={"songmid": song.get("songmid"), "format": "json",
+                              "nobase64": 1, "g_tk": 5381},
+                      headers={"User-Agent": "Mozilla/5.0",
+                               "Referer": "https://y.qq.com/portal/player.html"},
+                      timeout=10)
+    text2 = r2.text
+    data2 = json.loads(text2[text2.find("{"):text2.rfind("}") + 1])
+    return data2.get("lyric") or ""
+
+
+def fetch_lyrics(title, artist):
+    """联网找歌词：先网易云，再 QQ音乐；都找不到返回空串。"""
+    if not (title or "").strip():
+        return ""
+    for finder in (_netease_lyric, _qq_lyric):
+        try:
+            lrc = finder(title, artist)
+            if lrc and len(parse_lrc(lrc)) >= 3:
+                return lrc
+        except Exception:
+            continue
+    return ""
+
+
+def load_lyric_cache():
+    """歌词缓存：按「歌名|歌手」存，换歌不用每次都联网。"""
+    data = load_json(LYRIC_CACHE_PATH, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_lyric_cache(cache):
+    try:
+        items = list(cache.items())[-LYRIC_CACHE_MAX:]
+        with open(LYRIC_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(dict(items), f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _wrap_tokens(text):
+    """折行单位：英文单词（连同后面的空格）算一个，中文逐字。"""
+    units, buf = [], ""
+    for ch in text or "":
+        if ch.isascii() and (ch.isalnum() or ch in "'’-"):
+            buf += ch
+            continue
+        if buf:
+            units.append(buf)
+            buf = ""
+        if ch == " " and units:
+            units[-1] += ch          # 空格跟着前一个词，避免行首出现空格
+        else:
+            units.append(ch)
+    if buf:
+        units.append(buf)
+    return units
+
+
+WS_EX_LAYERED, WS_EX_TRANSPARENT = 0x80000, 0x20
+
+
+def click_through_style(style, on, user_passthrough=False):
+    """算窗口的扩展样式：菜单开着时加 WS_EX_TRANSPARENT（鼠标事件穿过去给菜单）。
+
+    on 为假时按用户自己的「鼠标穿透」设置还原——用户开着穿透就别给关掉。
+    """
+    style |= WS_EX_LAYERED
+    if on or user_passthrough:
+        return style | WS_EX_TRANSPARENT
+    return style & ~WS_EX_TRANSPARENT
+
+
+def wrap_text(fm, text, max_w):
+    """按像素宽度折行：中文逐字折，英文整词折（别把单词劈两半）。"""
+    lines, cur = [], ""
+    for unit in _wrap_tokens(text):
+        if cur and fm.horizontalAdvance(cur + unit) > max_w:
+            lines.append(cur.rstrip())
+            cur = unit.lstrip()
+        else:
+            cur += unit
+        while fm.horizontalAdvance(cur) > max_w and len(cur) > 1:
+            cut = len(cur)                 # 单个词就超宽：只能硬拆
+            while cut > 1 and fm.horizontalAdvance(cur[:cut]) > max_w:
+                cut -= 1
+            lines.append(cur[:cut])
+            cur = cur[cut:]
+    lines.append(cur.rstrip())
+    return lines
+
+
 def locate_city_by_ip():
     """按 IP 联网定位城市，失败返回空串（挂代理时拿到的是节点所在地）。"""
     for url in ("https://api.ip.sb/geoip", "https://myip.wtf/json"):
@@ -1031,9 +1501,30 @@ class PetWindow(QWidget):
 
     def _apply_city(self, name):
         self.cfg["city"] = name
+        # 顺手记进"城市列表"，之后菜单里可以直接点着切换
+        cities = [c for c in (self.cfg.get("city_list") or []) if c != name]
+        cities.append(name)
+        self.cfg["city_list"] = cities[-12:]        # 最多留 12 个，别越堆越长
         self.save_config()              # 立刻落盘，下次启动就是这个默认城市
         self.say(f"城市已设置为{name}")
         self._get_weather()
+
+    def remove_city_dialog(self):
+        """从城市列表里删掉一个（最后一个删不掉，总得留一个用）。"""
+        cities = [c for c in (self.cfg.get("city_list") or []) if c]
+        if len(cities) <= 1:
+            self.say("城市列表里就剩这一个啦")
+            return
+        with self._ui_guard():
+            pick, ok = QInputDialog.getItem(self, "删除城市", "删掉哪个城市？", cities,
+                                            0, False, Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not pick:
+            return
+        self.cfg["city_list"] = [c for c in cities if c != pick]
+        if self.cfg.get("city") == pick:
+            self.cfg["city"] = self.cfg["city_list"][-1]
+        self.save_config()
+        self.say(f"把{pick}从列表里拿掉了")
 
     def set_city_dialog(self):
         """手动设置默认城市：直接写进 config.json，不联网、不用等搜索。"""
@@ -1071,6 +1562,14 @@ class PetWindow(QWidget):
             self.save_config()
 
     def __init__(self):
+        # 菜单排查日志：每次启动重新写，免得越积越大
+        if MENU_DEBUG:
+            try:
+                with open(MENU_DEBUG_LOG, "w", encoding="utf-8") as f:
+                    f.write(f"=== 大肥鱼桌宠 菜单日志 {datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
+            except Exception:
+                pass
+
         # 默认配置；老 config.json 缺的新键会自动补上（免得升级后 KeyError）
         cfg_defaults = {
             "mode": "wander",
@@ -1082,6 +1581,7 @@ class PetWindow(QWidget):
             "y": None,
             "ds_api_key": "",
             "city": "汕头",
+            "city_list": [],
             "balance_always": False,
             "snap_on": True,
             "flip_on_left": True,
@@ -1095,6 +1595,9 @@ class PetWindow(QWidget):
             "layer": "top",
             "opacity": 1.0,
             "process_alerts": True,
+            "music_link": True,
+            "music_lyrics": True,
+            "perf_mode": True,
             "custom_skins": {},
             "balance_source": "DeepSeek",
             "other_keys": [],
@@ -1114,6 +1617,7 @@ class PetWindow(QWidget):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         super().__init__(None, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMouseTracking(True)      # 菜单开着时要靠这个收鼠标移动消息（见 _forward_mouse_to_menu）
         self.setWindowTitle("大肥鱼桌宠")
         
         # 精灵加载（三视图 + 挂件，每一张都可以被用户自定义图片替换）
@@ -1173,6 +1677,44 @@ class PetWindow(QWidget):
         self._last_proc_say = 0.0
         self._foreground_proc = None     # 上一次的前台应用
         self._proc_said_at = {}          # 每个应用上次吐槽的时间
+
+        # 音乐联动状态（QQ音乐 / 网易云）
+        self.music_on = bool(self.cfg.get("music_link", True))
+        self.music_lyrics = bool(self.cfg.get("music_lyrics", True))
+        self.perf_mode = bool(self.cfg.get("perf_mode", True))   # True=性能模式（动画优先）
+        # 每帧时长：性能模式 50 帧，休闲模式 25 帧（动作按同一个时钟换算，速度不变）
+        self.tick_ms = TICK if self.perf_mode else TICK * 2
+        self.now_playing = None          # {"app","title","artist","playing","position",...}
+        self._music_queue = []           # 后台线程 → 主线程
+        self._music_busy = False
+        self._music_manual = False       # 菜单里点了"立刻看一眼"，结果要回话
+        self._music_said_at = 0.0        # 换歌冒泡的节流
+        self._music_played = 0.0         # 播放器不给进度时，按实际播放时长累加
+        self._music_tick_at = 0.0        # 上一次累加的时刻
+        self._bal_peek_until = 0.0       # 放歌时快速双击 → 临时看余额
+        self._last_click_ms = -99999     # 快速双击判定
+        self._lyric_key = ""             # 当前歌「歌名|歌手」
+        self._lyric_lines = []           # [(秒, 词)]
+        self._lyric_queue = []           # 后台线程找回来的歌词
+        self._lyric_fetching = ""        # 正在找歌词的那首
+        self._lyric_cache = load_lyric_cache()
+
+        # 菜单悬停兜底（见 _menu_hover_watch）
+        self._hover_key = None
+        self._hover_since = 0.0
+        self._hover_subs = {}            # 我替它弹出来的子菜单 → {"at": 上次光标在里面的时间, "pos": 弹出位置}
+        self._sub_parent = {}            # 子菜单 → (上一层菜单, 触发它的那一项)，补弹时要用
+        self._sub_of = {}                # 带子菜单的项 → 它的子菜单（Qt 那边已摘掉，改由浮窗显示）
+        self._leave_at = 0.0             # 光标离开"项/子菜单"的时间（0.35 秒宽限用）
+        self._keep = None                # 当前保持打开的是哪一项的子菜单（菜单, 项）
+        self._flyout = None              # 二级/三级菜单的浮窗（普通窗口，点击一定生效）
+        self._flyout_action = None       # 当前浮窗对应的是哪一项
+        self._flyout_leave_at = 0.0      # 光标离开浮窗的时间（用来延时收起）
+        self._menu_pool = []             # 最近建过的菜单，用来判断"还有菜单开着吗"
+        self._dialog_open = False        # 对话框（设置 Key / 加城市…）开着
+        self._through_applied = None     # 上一次实际设过的鼠标穿透状态
+        self._forwarding_move = False    # 正在给菜单转发鼠标移动（防递归）
+
         self._last_pos = (0, 0)          # 卡住自检用
         self._stuck_ticks = 0
         self.snap_on = bool(self.cfg.get("snap_on", True))
@@ -1240,7 +1782,7 @@ class PetWindow(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(TICK)
+        self.timer.start(self.tick_ms)
 
         # 余额：60 秒自动刷新 + 启动后先取一次
         self.bal_timer = QTimer(self)
@@ -1280,6 +1822,141 @@ class PetWindow(QWidget):
         self.proc_timer = QTimer(self)
         self.proc_timer.timeout.connect(self.check_processes)
         self.proc_timer.start(2000)
+
+        # 音乐联动：定时看一眼 QQ音乐 / 网易云 在放什么（读取在后台线程，不卡界面）
+        self.music_timer = QTimer(self)
+        self.music_timer.timeout.connect(self.poll_music)
+        self.music_timer.start(MUSIC_POLL_MS)
+        QTimer.singleShot(2600, self.poll_music)
+
+        # 菜单悬停兜底：Windows 有时不把鼠标移动消息送给弹出菜单（二级菜单因此不弹）
+        self.hover_timer = QTimer(self)
+        self.hover_timer.timeout.connect(self._menu_tick)
+        self.hover_timer.start(MENU_HOVER_MS)
+
+    # ---------- 音乐联动 ----------
+    def poll_music(self):
+        """后台线程读一次系统媒体会话。"""
+        if not self.music_on or self._music_busy:
+            return
+        self._music_busy = True
+        use_smtc = smtc_available()
+
+        def worker():
+            info = read_media_session() if use_smtc else None
+            if info is None or not info.get("title"):
+                # 退路：读不到媒体会话、或者会话没给歌名时，看播放器窗口标题
+                info = merge_media_info(info, read_music_window())
+            self._music_queue.append(info)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _song_label(self, info=None):
+        info = info if info is not None else (self.now_playing or {})
+        title = (info.get("title") or "").strip()
+        artist = (info.get("artist") or "").strip()
+        if title and artist:
+            return f"《{title}》——{artist}"
+        return f"《{title}》" if title else "这首歌"
+
+    def _music_playing(self):
+        info = self.now_playing
+        return bool(self.music_on and info and info.get("playing") and info.get("title"))
+
+    def _music_position(self):
+        """当前放到第几秒。
+
+        媒体会话给的是"读取那一刻"的快照，往后按时间自己走；有些播放器只给 0，
+        那种情况就按"这首歌实际放了多久"累加（暂停不会累加）。
+        """
+        info = self.now_playing or {}
+        pos = info.get("position")
+        if pos is not None and float(pos) > 0.5:
+            return max(0.0, float(pos) + (time.time() - float(info.get("at") or time.time())))
+        return max(0.0, self._music_played)
+
+    def _apply_now_playing(self, info):
+        now = time.time()
+        # 播放器不给进度时，靠这里累计的"播放了多少秒"来对歌词
+        if self.now_playing and self.now_playing.get("playing") and self._music_tick_at:
+            self._music_played += max(0.0, min(now - self._music_tick_at, 5.0))
+        self._music_tick_at = now
+        if info is None:
+            if self.now_playing is not None:
+                self.now_playing = None
+                self._lyric_key = ""
+                self._lyric_lines = []
+                self._music_played = 0.0
+                self.update()
+            return
+        self.now_playing = info
+        key = f"{info.get('title', '')}|{info.get('artist', '')}"
+        if key != self._lyric_key:
+            self._lyric_key = key
+            self._music_played = 0.0
+            cached = self._lyric_cache.get(key)
+            self._lyric_lines = parse_lrc(cached) if cached else []
+            if not cached and self.music_lyrics and not self._lyric_fetching:
+                self._start_lyric_fetch(key, info)
+            if info.get("playing") and info.get("title"):
+                self._announce_song()
+        self.update()
+
+    def _announce_song(self):
+        """换歌时冒一句（别连着刷）。"""
+        now = time.time()
+        if now - self._music_said_at < 6.0:
+            return
+        self._music_said_at = now
+        self.say(random.choice(MUSIC_START_LINES).format(song=self._song_label()))
+
+    def _start_lyric_fetch(self, key, info):
+        self._lyric_fetching = key
+
+        def worker():
+            lrc = fetch_lyrics(info.get("title", ""), info.get("artist", ""))
+            self._lyric_queue.append((key, lrc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_lyric_result(self, key, lrc):
+        self._lyric_fetching = ""
+        if lrc:
+            self._lyric_cache[key] = lrc
+            save_lyric_cache(self._lyric_cache)
+        if key == self._lyric_key:
+            self._lyric_lines = parse_lrc(lrc) if lrc else []
+            self.update()
+
+    def _music_menu_label(self):
+        info = self.now_playing or {}
+        if not self.music_on:
+            return "音乐联动：已关闭"
+        if info and info.get("title"):
+            state = "正在放" if info.get("playing") else "暂停在"
+            return f"{state}：{info.get('app', '')} · {self._song_label()}"
+        return "现在没在放歌"
+
+    def check_music_now(self):
+        """菜单「立刻看一眼在放什么」：马上刷新一次，并把结果直接冒出来。"""
+        if not self.music_on:
+            self.say("音乐联动关着呢：先勾上「放歌时看着」", seconds=3.6, again=True)
+            return
+        self._music_manual = True
+        self.poll_music()
+
+    def _report_music_now(self, info):
+        """把"立刻看一眼"的结果说出来：看得见 / 看不见，别让用户猜。"""
+        if info and info.get("title"):
+            tail = "" if info.get("playing") else "（现在是暂停的）"
+            self.say(f"♪ {info.get('app', '')} 正在放：{self._song_label(info)}{tail}",
+                     seconds=4.0, again=True)
+            return
+        if not smtc_available():
+            self.say("这台机器读不到系统媒体会话，只能看播放器窗口标题："
+                     "把 QQ音乐 / 网易云 的窗口留在桌面上再试试", seconds=5.0, again=True)
+            return
+        self.say("没看到 QQ音乐 / 网易云 在放歌，先放一首试试", seconds=4.0, again=True)
 
     # ---------- 余额 ----------
     def _api_key(self):
@@ -1347,6 +2024,8 @@ class PetWindow(QWidget):
         self.bal_error = ""
         self._start_roll(total)
 
+        if self._music_playing():
+            return          # 放歌时不打断歌词；想看余额快速双击就行
         if not res.get("silent"):
             self.show_balance_bubble(6.0)
         elif old is None or abs(total - old) > 1e-9:
@@ -1377,14 +2056,14 @@ class PetWindow(QWidget):
         return self.roll_from + (self.roll_to - self.roll_from) * eased
 
     def show_balance_bubble(self, seconds=6.0):
-        self.bal_until = self.t * TICK / 1000.0 + seconds
+        self.bal_until = self._secs() + seconds
         # 收起普通气泡，避免两层叠在一起
         self.bubble_text = ""
         self.bubble_until = 0.0
         self.update()
 
     def _say_later(self, seconds, text, inner=False):
-        self._pending_bubbles.append((self.t * TICK / 1000.0 + seconds, text, inner))
+        self._pending_bubbles.append((self._secs() + seconds, text, inner))
 
     # ---------- 音效 / 形象 ----------
     @staticmethod
@@ -1670,10 +2349,10 @@ class PetWindow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        now = self.t * TICK / 1000.0
+        now = self._secs()
 
-        show_balance = self.balance is not None and (self.balance_always or now < self.bal_until)
-        if self.bubble_text and now < self.bubble_until:
+        mode = self._bubble_mode(now)
+        if mode == "text":
             if self.bubble_inner:
                 bfont = QFont(self.bubble_font)
                 bfont.setItalic(True)
@@ -1708,7 +2387,7 @@ class PetWindow(QWidget):
             for i, l in enumerate(lines):
                 p.drawText(QRectF(bx, by + 8 + i * fm.height(), bw, fm.height()),
                            Qt.AlignmentFlag.AlignCenter, l)
-        elif show_balance:
+        elif mode == "balance":
             # 余额气泡：余额 / 今日已用（数字带滚动动画）
             f_small = QFont(self.bubble_font)
             f_small.setPointSize(9)
@@ -1763,6 +2442,9 @@ class PetWindow(QWidget):
                 # 高峰暖色、空闲绿色，一眼看出现在贵不贵
                 p.setPen(QColor(198, 90, 20) if peak_now else QColor(46, 125, 50))
                 p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l4)
+
+        elif mode == "lyric":
+            self._paint_lyric_bubble(p)
 
         cx = self.width() / 2
         walking = self.target is not None and not self.dragging
@@ -1820,6 +2502,66 @@ class PetWindow(QWidget):
         """气泡贴着鱼头顶：尾巴尖落在精灵上沿附近。"""
         return max(2.0, BUBBLE_H + MARGIN - 10 - bh)
 
+    def _secs(self):
+        """内部时钟（秒）。按当前每帧时长换算，两种流畅度下动作速度一致。"""
+        return self.t * self.tick_ms / 1000.0
+
+    def _bubble_mode(self, now):
+        """气泡区这会儿该显示什么：text（说话）/ balance（余额）/ lyric（歌词）。
+
+        放歌时歌词优先于「余额常显」——想瞄一眼余额就快速双击（显示 5 秒）。
+        """
+        if self.bubble_text and now < self.bubble_until:
+            return "text"
+        if self.now_playing and now < self._bal_peek_until and self.balance is not None:
+            return "balance"
+        if self._music_playing() and (not self.music_lyrics or self._lyric_lines):
+            return "lyric"
+        if self.balance is not None and (self.balance_always or now < self.bal_until):
+            return "balance"
+        return None
+
+    def _paint_lyric_bubble(self, p):
+        """歌词气泡：小字「应用 · 歌名」，大字当前这句，再淡一行下一句。"""
+        info = self.now_playing or {}
+        f_small = QFont(self.bubble_font)
+        f_small.setPointSize(9)
+        f_main = QFont(self.bubble_font)
+        f_main.setPointSize(11)
+        fm_s, fm_m = QFontMetrics(f_small), QFontMetrics(f_main)
+        max_w = min(260, self.width() - 16) - 22
+        head = "♪ " + (f"{info.get('app', '')} · {info.get('title', '')}".strip(" ·")
+                       or "在放歌")
+        cur, nxt = lyric_pair(self._lyric_lines, self._music_position())
+        if not cur:
+            # 还没找到歌词 / 用户关了歌词 → 就挂个「♪ 歌名」
+            cur, nxt = self._song_label() or "在放歌", ""
+        head_lines = wrap_text(fm_s, head, max_w)[:1]
+        cur_lines = wrap_text(fm_m, cur, max_w)[:2]
+        nxt_lines = (wrap_text(fm_s, nxt, max_w)[:1]
+                     if nxt and len(cur_lines) == 1 else [])
+        rows = ([(head_lines[0], f_small, QColor(140, 148, 168))]
+                + [(line, f_main, QColor(38, 44, 66)) for line in cur_lines]
+                + [(line, f_small, QColor(158, 158, 172)) for line in nxt_lines])
+        widths = [QFontMetrics(font).horizontalAdvance(text) for text, font, _c in rows]
+        height = sum(QFontMetrics(font).height() for _t, font, _c in rows) + 20
+        bw = max(widths) + 28
+        bx = (self.width() - bw) / 2
+        by = self._bubble_top(height)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 242))
+        p.drawRoundedRect(QRectF(bx, by, bw, height), 14, 14)
+        tail = QPointF(self.width() / 2, by + height)
+        p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
+                                 QPointF(tail.x() + 7, tail.y() + 9)]))
+        ty = by + 10
+        for text, font, color in rows:
+            fm = QFontMetrics(font)
+            p.setFont(font)
+            p.setPen(color)
+            p.drawText(QRectF(bx, ty, bw, fm.height()), Qt.AlignmentFlag.AlignCenter, text)
+            ty += fm.height()
+
     def _sprite_key(self):
         if self.skin == SKIN_WIDGET:
             return ("挂件", self.cur_h,
@@ -1855,13 +2597,27 @@ class PetWindow(QWidget):
 
         # 处理后台线程排队的气泡消息，Qt 界面必须在主线程更新
         if self._say_queue:
+            # 放歌时气泡被歌词占着，这些后台结果（天气等）就多停一会儿
+            hold = MUSIC_HOLD_SEC if self._music_playing() else 0.0
             for text in self._say_queue:
-                self.say(text)
+                self.say(text, seconds=hold or 2.8)
             self._say_queue.clear()
 
         # 余额结果（后台线程 → 主线程）
         if self._bal_queue:
             self._apply_balance(self._bal_queue.pop(0))
+
+        # 在放什么歌 / 找回来的歌词（后台线程 → 主线程）
+        if self._music_queue:
+            info = self._music_queue.pop(0)
+            self._apply_now_playing(info)
+            self._music_busy = False
+            if self._music_manual:          # 菜单里手动点的那次：回一句话
+                self._music_manual = False
+                self._report_music_now(info)
+        if self._lyric_queue:
+            key, lrc = self._lyric_queue.pop(0)
+            self._apply_lyric_result(key, lrc)
 
         # 余额数字滚动 + 按压回弹 + 音效补播
         if self.roll_t < 1.0:
@@ -1874,7 +2630,7 @@ class PetWindow(QWidget):
 
         # 延迟气泡（每轮消耗等）
         if self._pending_bubbles:
-            now_s = self.t * TICK / 1000.0
+            now_s = self._secs()
             due = [x for x in self._pending_bubbles if x[0] <= now_s]
             if due:
                 self._pending_bubbles = [x for x in self._pending_bubbles if x[0] > now_s]
@@ -1909,14 +2665,16 @@ class PetWindow(QWidget):
                 self.action = None
 
         if self.ui_open:        # 菜单 / 对话框开着：站住不动，免得跳上去把设置面板遮住
-            if self.t % 10 == 0:      # 也别 50 帧/秒地刷，免得干扰弹出菜单的悬停判定
-                self.update()
+            if self.perf_mode:
+                self.update()           # 性能模式：动画照跑，菜单开着也不掉帧
+            elif self.t % 5 == 0:
+                self.update()           # 休闲模式：几帧刷一次，省点资源
             return
 
         if self.dragging:
             self.update()
             return
-        now_ms = self.t * TICK
+        now_ms = self.t * self.tick_ms
 
         if self.mode == "follow":
             cursor = self.cursor().pos()
@@ -1958,7 +2716,7 @@ class PetWindow(QWidget):
             if self._stuck_ticks > 100:
                 self._stuck_ticks = 0
                 self.target = None
-                self.rest_until = self.t * TICK + random.randint(2000, 6000)
+                self.rest_until = self.t * self.tick_ms + random.randint(2000, 6000)
                 self._set_dir("down")
                 self.update()
                 return
@@ -1968,10 +2726,10 @@ class PetWindow(QWidget):
             dist = (dx * dx + dy * dy) ** 0.5
             if dist < 12:
                 self.target = None
-                self.rest_until = self.t * TICK + random.randint(8000, 18000)
+                self.rest_until = self.t * self.tick_ms + random.randint(8000, 18000)
                 self._set_dir("down")
             else:
-                step = self.cur_speed * TICK / 1000.0
+                step = self.cur_speed * self.tick_ms / 1000.0
                 nx, ny = cx + dx / dist * step, cy + dy / dist * step
                 # 整个窗口都要留在屏幕内，否则气泡会被顶出屏幕
                 geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
@@ -2125,6 +2883,8 @@ class PetWindow(QWidget):
             elif pick < 0.8:
                 self.action, self.action_t = "stretch", 1.0
             elif pick < 0.9:
+                if self._music_playing():
+                    return      # 放歌时不插嘴，把位置让给歌词
                 if self.t - self.last_speak_tick >= 1500:
                     self.last_speak_tick = self.t
                     if pick < 0.82:
@@ -2136,16 +2896,43 @@ class PetWindow(QWidget):
         """后台线程调用：只入队，由主线程 tick 统一弹出显示（线程安全）"""
         self._say_queue.append(text)
 
-    def say(self, text, inner=False):
-        if text == self.last_line and not text.startswith("天气"):
+    def say(self, text, inner=False, seconds=2.8, again=False):
+        if text == self.last_line and not again and not text.startswith("天气"):
             return
         self.last_line = text
         self.bubble_inner = inner
         self.bubble_text = f"（{text}）" if inner else text
-        self.bubble_until = self.t * TICK / 1000.0 + 2.8
+        self.bubble_until = self._secs() + seconds
         self.update()
 
     # ---------- 鼠标事件 ----------
+    def _forward_mouse_to_menu(self, e):
+        """菜单开着时，把桌宠收到的鼠标移动转发给菜单。
+
+        这台 Windows 经常不把鼠标移动消息送给弹出菜单（只送给桌宠窗口），
+        Qt 的菜单因此以为"鼠标跑出去了"，二三级菜单会莫名其妙自己关掉。
+        把移动事件转过去以后，Qt 的悬停高亮 / 展开 / 收起就都恢复正常。
+        """
+        if not self.ui_open:
+            return False
+        root = getattr(self, "_menu_keepalive", None)
+        if root is None or not root.isVisible():
+            return False
+        pos = e.globalPosition().toPoint()
+        menu = root
+        for _ in range(4):                       # 找到光标所在的那一层菜单
+            act = menu.actionAt(menu.mapFromGlobal(pos))
+            if act is None or act.menu() is None or not act.menu().isVisible():
+                break
+            menu = act.menu()
+        local = menu.mapFromGlobal(pos)
+        if not menu.rect().contains(local):
+            return False
+        QApplication.sendEvent(menu, QMouseEvent(
+            QEvent.Type.MouseMove, QPointF(local), e.globalPosition(),
+            Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, e.modifiers()))
+        return True
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self.press_t = 1.0          # 按压 Q 弹
@@ -2155,6 +2942,8 @@ class PetWindow(QWidget):
             self.drag_start_pos = e.globalPosition().toPoint()
 
     def mouseMoveEvent(self, e):
+        if self._forward_mouse_to_menu(e):
+            return
         if e.buttons() & Qt.MouseButton.LeftButton and self.drag_start_pos is not None:
             delta = e.globalPosition().toPoint() - self.drag_start_pos
             if not self.dragging and delta.manhattanLength() > 6:
@@ -2175,22 +2964,51 @@ class PetWindow(QWidget):
                 self.drag_start_pos = None
                 self._set_dir("down", 1)
                 self.target = None
-                self.rest_until = self.t * TICK + random.randint(6000, 14000)
+                self.rest_until = self.t * self.tick_ms + random.randint(6000, 14000)
                 self._snap_to_edge()    # 松手后吸附到最近的边
                 if random.random() < 0.5:
                     self.say(random.choice(DRAG_LINES))
             else:
-                self._on_single_click()
+                now_ms = self.t * self.tick_ms
+                quick = (now_ms - self._last_click_ms) <= 380
+                self._last_click_ms = now_ms
+                if quick:
+                    self._last_click_ms = -99999      # 双击只算一次
+                    self._on_double_click()
+                else:
+                    self._on_single_click()
             self.last_press_pos = None
             self.drag_start_pos = None
 
     def _on_single_click(self):
         """单击：蹦跳 + 回嘴 + 顺手刷一下余额。"""
         self.refresh_balance(silent=True)      # 点一下顺手刷新余额
+        if self._music_playing():
+            # 放歌时报"在放什么"，不用随机台词把歌词顶掉
+            self.jump_t = 1.0
+            self.say(random.choice(MUSIC_CLICK_LINES).format(song=self._song_label()),
+                     seconds=3.6, again=True)
+            return
         if random.random() < 0.7:
             self.jump_t = 1.0
         if random.random() < 0.6:
             self.say(random.choice(REACT_LINES))
+
+    def _on_double_click(self):
+        """快速双击：放歌时瞄一眼余额（5 秒）；平时换姿势。"""
+        if self._music_playing():
+            if self.balance is not None:
+                self.show_balance_bubble(MUSIC_PEEK_SEC)
+                self._bal_peek_until = self._secs() + MUSIC_PEEK_SEC
+                return
+            _name, key = self._current_source()
+            if key:
+                self.refresh_balance(silent=False)      # 有 Key 还没取到，拉一把
+            else:
+                self.say("还没填余额 Key：右键 →「余额 → 设置 Key」", seconds=4.0, again=True)
+            return
+        self.action, self.action_t = random.choice(("sway", "stretch")), 1.0
+        self.jump_t = max(self.jump_t, 0.6)
 
     def _get_weather(self):
         """联网查天气（后台线程，别卡住桌宠）。"""
@@ -2366,7 +3184,18 @@ class PetWindow(QWidget):
         weather_menu.addAction("自动定位城市（按 IP，挂梯子会不准）", self.auto_locate_city)
         weather_menu.addAction("添加城市（联网搜索）", self.search_city_dialog)
         weather_menu.addSeparator()
-        weather_menu.addAction(f"当前城市：{self.cfg.get('city', '汕头')}").setEnabled(False)
+        # 城市列表：加过的城市都在这儿，点一下就切过去（√ 是当前用的）
+        cur_city = self.cfg.get("city", "汕头")
+        city_list = [c for c in (self.cfg.get("city_list") or []) if c]
+        if cur_city not in city_list:
+            city_list.append(cur_city)
+        for city in city_list:
+            a = weather_menu.addAction(city)
+            a.setCheckable(True)
+            a.setChecked(city == cur_city)
+            a.triggered.connect(lambda _, n=city: self._apply_city(n))
+        if len(city_list) > 1:
+            weather_menu.addAction("从列表里删掉城市…", self.remove_city_dialog)
         bal_menu = m.addMenu("余额")
         bal_menu.addAction("查看余额", lambda: self.refresh_balance(silent=False))
         bal_menu.addAction("设置 Key", self._set_key_dialog)
@@ -2431,6 +3260,34 @@ class PetWindow(QWidget):
         proc_menu.addAction("扫描电脑应用并添加…", self.scan_apps_dialog)
         if self.cfg.get("custom_process_lines") or self.cfg.get("default_line_overrides"):
             proc_menu.addAction("清理自定义 / 改写的文字…", self.remove_custom_app_dialog)
+
+        # 音乐联动：QQ音乐 / 网易云 放歌时看歌词
+        music_menu = m.addMenu("音乐联动")
+        mla = music_menu.addAction("放歌时看着（放 QQ音乐 / 网易云 时联动）")
+        mla.setCheckable(True)
+        mla.setChecked(self.music_on)
+        mla.triggered.connect(self.set_music_link)
+        mlb = music_menu.addAction("显示歌词内容（关掉只报歌名）")
+        mlb.setCheckable(True)
+        mlb.setChecked(self.music_lyrics)
+        mlb.triggered.connect(self.set_music_lyrics)
+        music_menu.addSeparator()
+        music_menu.addAction(self._music_menu_label()).setEnabled(False)
+        music_menu.addAction("立刻看一眼在放什么", self.check_music_now)
+        music_menu.addSeparator()
+        music_menu.addAction("放歌时：单击=报歌名，快速双击=看 5 秒余额").setEnabled(False)
+
+        # 流畅度：动画优先 / 省资源，自己选
+        perf_menu = m.addMenu("流畅度")
+        for mode, label in ((True, "性能模式 · 动画优先（不掉帧）"),
+                            (False, "休闲模式 · 省资源（可掉一点帧）")):
+            a = perf_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(self.perf_mode == mode)
+            a.triggered.connect(lambda _, k=mode: self.set_perf_mode(k))
+        perf_menu.addSeparator()
+        perf_menu.addAction("开设置菜单时：性能=动画照跑，休闲=降到约 5 帧").setEnabled(False)
+
         snd_menu = m.addMenu("音效")
         so = snd_menu.addAction("按键音效")
         so.setCheckable(True)
@@ -2460,6 +3317,7 @@ class PetWindow(QWidget):
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
         pa.triggered.connect(lambda on: self.set_passthrough(on))
+        m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         aa = m.addAction("开机自启")
         aa.setCheckable(True)
         aa.setChecked(self.cfg["autostart"])
@@ -2545,18 +3403,17 @@ class PetWindow(QWidget):
             self.toggle_visible()
         elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             # 救急通道：万一穿透了又找不到菜单，双击托盘图标直接解除
-            if self.cfg.get("passthrough", False):
+            was_passthrough = self.cfg.get("passthrough", False)
+            if was_passthrough:
                 self.set_passthrough(False)
-                self.show()
-                self.raise_()
-                self.say("穿透解除了，我回来啦")
-            else:
-                self.toggle_visible()
+            self.force_recover()          # 顺手把可能残留的"让位"状态也清掉
+            self.say("穿透解除了，我回来啦" if was_passthrough else "我在这儿呢")
 
     def _make_menu(self):
         """建右键菜单：打开期间桌宠让位（临时取消置顶）并站住不动。"""
         m = self._build_menu()
         self._menu_keepalive = m          # 菜单是纯 Python 对象，留个引用防回收
+        self._menu_pool = ([m] + self._menu_pool)[:4]     # 留几份，用来看"还有菜单开着吗"
         # 不给菜单强加置顶标志——改成让桌宠自己在菜单期间退到普通层，
         # 这样菜单天然在最上面，而且是 Qt 标准的弹出菜单，二级菜单悬停最稳。
 
@@ -2565,12 +3422,455 @@ class PetWindow(QWidget):
             self._demote_topmost(True)
 
         def on_hide():
-            self.ui_open = False
-            self._demote_topmost(False)
+            # 别急着解除：可能还有别的菜单开着（比如托盘菜单），交给 _sync_overlay_state 对账
+            for sub in list(self._hover_subs):      # 悬停兜底弹出来的子菜单要一起收掉
+                try:
+                    sub.close()
+                except Exception:
+                    pass
+            self._hover_subs.clear()
+            self._sync_overlay_state()
+            self._hover_key = None
 
         m.aboutToShow.connect(on_show)
         m.aboutToHide.connect(on_hide)
         return m
+
+    def _deepest_menu_at_cursor(self):
+        """光标所在的最里面那层菜单（按窗口矩形找，不依赖"父项"链）。"""
+        root = getattr(self, "_menu_keepalive", None)
+        if root is None:
+            return None
+        pos = QCursor.pos()
+        best, best_depth = None, -1
+        for menu in self._all_menus(root):
+            try:
+                if not menu.isVisible():
+                    continue
+                top_left = menu.mapToGlobal(QPoint(0, 0))
+            except RuntimeError:
+                continue
+            if (top_left.x() <= pos.x() <= top_left.x() + menu.width()
+                    and top_left.y() <= pos.y() <= top_left.y() + menu.height()):
+                depth = getattr(menu, "_dfy_depth", 0)
+                if depth >= best_depth:
+                    best, best_depth = menu, depth
+        return best
+
+    def _all_menus(self, menu, out=None):
+        """把一棵菜单树里的所有菜单（含子菜单）列出来。"""
+        out = out if out is not None else []
+        out.append(menu)
+        try:
+            actions = menu.actions()
+        except RuntimeError:
+            return out
+        for act in actions:
+            child = act.menu()
+            if child is not None:
+                self._all_menus(child, out)
+        return out
+
+    def _send_move_to(self, menu):
+        """给某一层菜单补一份鼠标移动事件。"""
+        pos = QCursor.pos()
+        self._send_move_point(menu, pos)
+
+    def _send_move_point(self, menu, pos):
+        """把某个坐标的鼠标移动塞给指定菜单。"""
+        """往某一层菜单里塞一个指定位置（全局坐标）的鼠标移动。"""
+        pos = QPoint(pos)
+        local = menu.mapFromGlobal(pos)
+        if not menu.rect().contains(local):
+            return
+        self._forwarding_move = True
+        try:
+            QApplication.sendEvent(menu, QMouseEvent(
+                QEvent.Type.MouseMove, QPointF(local), QPointF(pos),
+                Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier))
+        except Exception:
+            pass
+        finally:
+            self._forwarding_move = False
+
+    def _show_submenu_window(self, sub, where):
+        """悬停不再弹子菜单（改用点击后的选择框，见 _pick_submenu）。"""
+        return
+
+    def _show_flyout(self, sub, where):
+        if self._flyout is None:
+            self._build_flyout()
+        if self._flyout_action is not sub:
+            self._fill_flyout(sub)
+            self._flyout_action = sub
+        try:
+            self._flyout.move(where)
+            self._flyout.show()
+            self._flyout.raise_()
+        except RuntimeError:
+            self._flyout = None
+            return
+        self._flyout_leave_at = 0.0
+
+    def _build_flyout(self):
+        w = QWidget(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                    | Qt.WindowType.WindowStaysOnTopHint)
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(1)
+        w.setStyleSheet(
+            "QWidget#flyout { background: #ffffff; border: 1px solid #c8c8d0; border-radius: 8px; }"
+            "QToolButton { border: none; text-align: left; padding: 5px 12px; background: transparent; }"
+            "QToolButton:hover { background: #eaeaf2; border-radius: 5px; }"
+            "QLabel { color: #8a8a99; padding: 3px 10px; }")
+        w.setObjectName("flyout")
+        self._flyout = w
+        self._flyout_layout = lay
+
+    def _fill_flyout(self, sub):
+        lay = self._flyout_layout
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        for act in sub.actions():
+            if act.isSeparator():
+                line = QFrame()
+                line.setFrameShape(QFrame.Shape.HLine)
+                line.setStyleSheet("color: #dcdce4;")
+                lay.addWidget(line)
+                continue
+            nested = self._sub_of.get(act)
+            if nested is not None:
+                group = act.text().rstrip().rstrip("▸").strip()
+                lay.addWidget(QLabel("— " + group + " —"))
+                for sub_act in nested.actions():
+                    if sub_act.isSeparator() or self._sub_of.get(sub_act) is not None:
+                        continue
+                    self._add_flyout_button(lay, sub_act, prefix=group)
+                continue
+            self._add_flyout_button(lay, act)
+        self._flyout.adjustSize()
+
+    def _add_flyout_button(self, lay, act, prefix=""):
+        btn = QToolButton()
+        txt = (prefix + "：" if prefix else "") + act.text()
+        if act.isCheckable() and act.isChecked():
+            txt = "✓ " + txt
+        btn.setText(txt)
+        btn.setEnabled(act.isEnabled())
+        btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
+        def go():
+            self._hide_flyout()
+            try:
+                act.trigger()
+            except Exception:
+                pass
+            root = getattr(self, "_menu_keepalive", None)
+            if root is not None:
+                try:
+                    root.close()
+                except Exception:
+                    pass
+
+        btn.clicked.connect(go)
+        lay.addWidget(btn)
+
+    def _hide_flyout(self):
+        if self._flyout is not None:
+            try:
+                self._flyout.hide()
+            except RuntimeError:
+                self._flyout = None
+        self._flyout_action = None
+
+    def submenu_under_cursor(self):
+        """光标所在的子菜单（不含最上层那个菜单）；没有就返回 None。"""
+        root = getattr(self, "_menu_keepalive", None)
+        if root is None:
+            return None
+        pos = QCursor.pos()
+        best, best_depth = None, 0
+        for menu in self._all_menus(root):
+            if menu is root:
+                continue
+            try:
+                if not menu.isVisible():
+                    continue
+                top_left = menu.mapToGlobal(QPoint(0, 0))
+            except RuntimeError:
+                continue
+            if (top_left.x() <= pos.x() <= top_left.x() + menu.width()
+                    and top_left.y() <= pos.y() <= top_left.y() + menu.height()):
+                depth = getattr(menu, "_dfy_depth", 1)
+                if depth >= best_depth:
+                    best, best_depth = menu, depth
+        return best
+
+    def activate_menu_item(self, menu):
+        """点击落在子菜单上时，由我们自己执行那一项（Windows 不会把点击送给子菜单）。"""
+        pos = QCursor.pos()
+        act = menu.actionAt(menu.mapFromGlobal(pos))
+        menu_debug(f"[点击] 层级{getattr(menu, '_dfy_depth', '?')} 光标={pos} "
+                   f"光标下={'（没有项）' if act is None else act.text()}")
+        if act is None or not act.isEnabled() or act.isSeparator():
+            return
+        menu_debug(f"[点击] 触发 {act.text()}")
+        try:
+            if act.menu() is not None:              # 还有下一层 → 展开它
+                rect = menu.actionGeometry(act)
+                act.menu().popup(menu.mapToGlobal(QPoint(rect.right() - 8, rect.top() - 6)))
+                return
+            act.trigger()
+        except Exception:
+            return
+        root = getattr(self, "_menu_keepalive", None)
+        if root is not None:
+            try:
+                root.close()                        # 选完了，把菜单收起来
+            except Exception:
+                pass
+
+    def _send_click_to(self, menu, ev):
+        """把上层菜单收到的点击转给子菜单（Windows 会把点击送给持有捕获的上层菜单）。"""
+        pos = QCursor.pos()
+        local = menu.mapFromGlobal(pos)
+        if not menu.rect().contains(local):
+            return
+        self._forwarding_move = True
+        try:
+            QApplication.sendEvent(menu, QMouseEvent(
+                ev.type(), QPointF(local), QPointF(pos),
+                ev.button(), ev.buttons(), ev.modifiers()))
+        except Exception:
+            pass
+        finally:
+            self._forwarding_move = False
+
+    def _keep_submenu_alive(self, obj):
+        """光标正从这一项往子菜单平移（短暂在菜单外面）时，给子菜单喂一个贴边的位置。
+
+        Qt 靠"鼠标是不是还在子菜单里"来决定收不收；这台机器上子菜单收不到鼠标消息，
+        Qt 就每 300ms 收一次 —— 用户根本来不及移过去点。这里替它把"鼠标还在"报上去。
+        """
+        pos = QCursor.pos()
+        for act in obj.actions():
+            sub = act.menu()
+            if sub is None:
+                continue
+            try:
+                if not sub.isVisible():
+                    continue
+                top_left = sub.mapToGlobal(QPoint(0, 0))
+                size = sub.size()
+            except RuntimeError:
+                continue
+            if self._point_near_rect(pos, top_left, size):
+                cx = min(max(pos.x(), top_left.x() + 6), top_left.x() + size.width() - 6)
+                cy = min(max(pos.y(), top_left.y() + 6), top_left.y() + size.height() - 6)
+                self._send_move_point(sub, QPoint(cx, cy))
+                return True
+        return False
+
+    @staticmethod
+    def _point_near_rect(pos, top_left, size, margin=80):
+        return (top_left.x() - margin <= pos.x() <= top_left.x() + size.width() + margin
+                and top_left.y() - margin <= pos.y() <= top_left.y() + size.height() + margin)
+
+    def _find_submenu_parent(self, sub, menu=None):
+        """找出"这个子菜单是被哪一层菜单的哪一项打开的"。"""
+        menu = menu or getattr(self, "_menu_keepalive", None)
+        if menu is None:
+            return None
+        try:
+            actions = menu.actions()
+        except RuntimeError:
+            return None
+        for act in actions:
+            child = act.menu()
+            if child is None:
+                continue
+            if child is sub:
+                return (menu, act)
+            found = self._find_submenu_parent(sub, child)
+            if found is not None:
+                return found
+        return None
+
+    def _reshow_submenu(self, sub):
+        """子菜单被 Qt 收掉后立刻补弹回来（光标还在附近才补）。"""
+        """子菜单被 Qt 收掉后立刻补弹回来（光标还在附近才补）。"""
+        parent, action = self._sub_parent.get(sub, (None, None))
+        if parent is None or action is None:
+            return
+        try:
+            if not parent.isVisible():
+                self._sub_parent.pop(sub, None)
+                return
+            top_left = sub.mapToGlobal(QPoint(0, 0))
+            size = sub.size()
+            if not self._point_near_rect(QCursor.pos(), top_left, size, margin=120):
+                self._sub_parent.pop(sub, None)
+                self._hover_subs.pop(sub, None)
+                return
+            parent.setActiveAction(None)
+            parent.setActiveAction(action)
+            self._hover_subs[sub] = {"at": time.time(), "parent": parent, "action": action}
+        except RuntimeError:
+            self._sub_parent.pop(sub, None)
+
+    def _detach_submenus(self, menu):
+        """把带子菜单的项和它的子菜单拆开：Qt 不再弹子菜单，改由我们的浮窗显示。
+
+        Qt 的弹出式子菜单在这台机器上收不到鼠标移动/点击 —— 会自己闪、点了没反应。
+        所以这里把子菜单摘下来（setMenu(None)），只在项的文字后面加个 "▸" 提示，
+        真正展开交给自绘的普通窗口（_show_flyout），点起来和普通窗口一样可靠。
+        """
+        for act in menu.actions():
+            sub = act.menu()
+            if sub is None:
+                continue
+            self._detach_submenus(sub)
+            self._sub_of[act] = sub
+            act.setMenu(None)
+            if not act.text().rstrip().endswith("▸"):
+                act.setText(act.text() + "  ▸")
+            # 点它 → 弹一个小选择框（和"添加城市"用的是同一种组件，这台机器上点击没问题）
+            act.triggered.connect(lambda _checked=False, a=act: self._pick_submenu(a))
+
+    def _pick_submenu(self, act):
+        """点带 ▸ 的项：弹一个选择框列出它下面的项目（含再往下一层）。"""
+        sub = self._sub_of.get(act)
+        if sub is None:
+            return
+        title = act.text().rstrip().rstrip("▸").strip()
+        options, table = [], {}
+        for child in sub.actions():
+            if child.isSeparator():
+                continue
+            nested = self._sub_of.get(child)
+            if nested is not None:
+                group = child.text().rstrip().rstrip("▸").strip()
+                for deep in nested.actions():
+                    if deep.isSeparator() or self._sub_of.get(deep) is not None:
+                        continue
+                    label = f"{group}：{deep.text()}"
+                    options.append(label)
+                    table[label] = deep
+                continue
+            label = child.text()
+            options.append(label)
+            table[label] = child
+        if not options:
+            return
+        with self._ui_guard():
+            pick, ok = QInputDialog.getItem(self, title, "选一个：", options, 0, False,
+                                            Qt.WindowType.WindowStaysOnTopHint)
+        if ok and pick and pick in table:
+            target = table[pick]
+            QTimer.singleShot(0, target.trigger)     # 等对话框收掉再执行
+
+    def _watch_menu_tree(self, menu, depth=0):
+        """给菜单和它所有子菜单装事件过滤器：记录点击 / 展开 / 收起。"""
+        if getattr(menu, "_dfy_watched", False):
+            return
+        menu._dfy_watched = True
+        menu._dfy_depth = depth
+        menu.installEventFilter(self)
+        for act in menu.actions():
+            if act.menu() is not None:
+                self._watch_menu_tree(act.menu(), depth + 1)
+            try:
+                act.triggered.connect(
+                    lambda _checked=False, a=act: menu_debug(f"[触发] {a.text()}"))
+            except Exception:
+                pass
+
+    def eventFilter(self, obj, ev):
+        """菜单事件的排查日志（只在 MENU_DEBUG 打开时写文件）。"""
+        if (isinstance(obj, QMenu) and ev.type() == QEvent.Type.Show
+                and getattr(obj, "_dfy_depth", 0) > 0 and obj not in self._sub_parent):
+            found = self._find_submenu_parent(obj)
+            if found is not None:
+                self._sub_parent[obj] = found
+        if (isinstance(obj, QMenu) and ev.type() == QEvent.Type.Hide
+                and obj in self._sub_parent):
+            # 子菜单被 Qt 收掉了：只要光标还在它附近，立刻原地弹回来
+            QTimer.singleShot(0, lambda m=obj: self._reshow_submenu(m))
+        if isinstance(obj, QMenu) and not self._forwarding_move:
+            t = ev.type()
+            if MENU_DEBUG and t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
+                                    QEvent.Type.MouseMove, QEvent.Type.Show, QEvent.Type.Hide):
+                try:
+                    pos = (round(ev.position().x()), round(ev.position().y()))
+                except Exception:
+                    pos = None
+                act = None
+                try:
+                    a = obj.actionAt(obj.mapFromGlobal(QCursor.pos()))
+                    act = a.text() if a else None
+                except Exception:
+                    pass
+                line = (f"[Qt菜单{getattr(obj, '_dfy_depth', '?')}] {t.name} pos={pos} "
+                        f"光标={QCursor.pos()} 光标下={act} 可见={obj.isVisible()}")
+                if t == QEvent.Type.MouseMove:
+                    menu_debug_throttled(line, 250)
+                else:
+                    menu_debug(line)
+            if t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+                deepest = self._deepest_menu_at_cursor()
+                if deepest is not None and deepest is not obj:
+                    # 光标明明在子菜单上，但点击被 Windows 送给了上层菜单（捕获在上层）。
+                    # 所以这里干脆自己处理：找到光标下那一项，放开时执行它 / 展开它的下一层。
+                    if t == QEvent.Type.MouseButtonRelease:
+                        self.activate_menu_item(deepest)
+                    return True
+            if t in (QEvent.Type.MouseMove, QEvent.Type.Leave):
+                deepest = self._deepest_menu_at_cursor()
+                if deepest is not None and deepest is not obj:
+                    # 光标其实在最里面那层菜单里：把移动转给它，并且**别让外层菜单看到** ——
+                    # 外层看到"光标跑到自己外面"就会把子菜单收掉。
+                    self._send_move_to(deepest)
+                    return True
+                open_sub = any(a.menu() is not None and a.menu().isVisible()
+                               for a in obj.actions())
+                if t == QEvent.Type.MouseMove and open_sub:
+                    # 光标可能正从这一项往子菜单平移：先给子菜单喂个"贴边"的位置，
+                    # 让它知道鼠标还在附近，Qt 就不会急着收。
+                    if self._keep_submenu_alive(obj):
+                        return True
+                if t == QEvent.Type.Leave and open_sub:
+                    # 还有子菜单开着：光标是从这一项往子菜单平移的路上（多半会短暂跑到菜单外面），
+                    # 这时候千万不能让上级菜单"因为光标离开"把子菜单收掉 —— 用户就是在这儿点不中的。
+                    # 真要收，交给 _menu_hover_watch 的 0.5 秒宽限去判断。
+                    return True
+                if open_sub:
+                    # 同理：光标不在这一层里（正往子菜单平移）时，连鼠标移动也压住，
+                    # 否则上级菜单照样会把它当成"鼠标走了"。
+                    try:
+                        if not obj.rect().contains(obj.mapFromGlobal(QCursor.pos())):
+                            return True
+                    except Exception:
+                        pass
+        if MENU_DEBUG and isinstance(obj, QMenu):
+            depth = getattr(obj, "_dfy_depth", 0)
+            t = ev.type()
+            if t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
+                     QEvent.Type.Show, QEvent.Type.Hide):
+                try:
+                    pos = (round(ev.position().x()), round(ev.position().y()))
+                except Exception:
+                    pos = None
+                act = None
+                if pos is not None:
+                    a = obj.actionAt(obj.mapFromGlobal(QCursor.pos()))
+                    act = a.text() if a else None
+                menu_debug(f"{'  ' * depth}[菜单{depth}] {t.name} pos={pos} 光标下={act} "
+                           f"可见={obj.isVisible()}")
+        return super().eventFilter(obj, ev)
 
     def _demote_topmost(self, on):
         """菜单打开期间把自己降到非置顶（菜单关了再按设定层级还原）。"""
@@ -2591,6 +3891,167 @@ class PetWindow(QWidget):
         except Exception:
             pass
 
+    def _menu_click_through(self, on):
+        """菜单/对话框开着时让桌宠不接收鼠标。
+
+        二级菜单有时会弹到桌宠身上（靠屏幕右边、子菜单往左弹的时候最明显），
+        点下去会被桌宠自己截住 —— 看起来就是"选项点不动"。菜单期间把窗口设成
+        鼠标穿透，点击自然落到菜单上；菜单关了再按用户自己的设置还原。
+        """
+        try:
+            hwnd = int(self.winId())
+            GWL_EXSTYLE = -20
+            style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+            style = click_through_style(style, on, bool(self.cfg.get("passthrough", False)))
+            ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
+        except Exception:
+            pass
+
+    def _menu_tick(self):
+        """每 120ms 对一次账（只做"让位状态"的对账）。
+
+        二三级菜单的"悬停兜底 / 点击摆渡"试了很多版，在这台机器上始终不够稳
+        （Windows 不把鼠标移动送给弹出式子菜单、点击还会送给上层菜单，而且表现还跟
+        屏幕位置有关）。按主人的决定：**菜单行为回滚成 1.0.7 的原生样子**，
+        这里只保留与菜单无关的那个修复 —— 穿透状态对账（防止卡在穿透里回不来）。
+        """
+        self._sync_overlay_state()
+
+    def force_recover(self):
+        """救急：把"给菜单让位"的状态强行收回来。
+
+        万一哪个菜单窗口没关干净（残留一个"可见"的菜单），桌宠就会一直保持在
+        "鼠标穿透 + 不置顶"里 —— 看起来就是"桌宠不见了、也点不到"。
+        这个函数把残留菜单关掉、状态复位，再把自己亮出来。
+        """
+        for menu in list(self._menu_pool) + list(self._hover_subs):
+            try:
+                if menu.isVisible():
+                    menu.close()
+            except Exception:
+                pass
+        self._menu_pool = []
+        self._hover_subs.clear()
+        self._hover_key = None
+        self._dialog_open = False
+        self.ui_open = False
+        self._through_applied = False
+        self._demote_topmost(False)
+        self._apply_passthrough(bool(self.cfg.get("passthrough", False)))   # 按用户自己的设置还原
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self._apply_layer()
+
+    def _sync_overlay_state(self):
+        """按"现在到底有没有菜单/对话框开着"纠正让位状态。
+
+        只靠 aboutToShow / aboutToHide 信号不可靠：实测漏过一次 —— 菜单已经关了，
+        aboutToHide 却没来，于是桌宠一直停在"鼠标穿透 + 不置顶"的状态，点也点不回来。
+        这里每 120ms 按真实可见性对账，漏了信号也能自己恢复。
+        """
+        visible_menus = []
+        for menu in self._menu_pool:
+            try:
+                if menu.isVisible():
+                    visible_menus.append(menu)
+            except RuntimeError:          # 老菜单对象可能已经被回收
+                continue
+        visible = bool(self._dialog_open) or bool(visible_menus)
+        if visible != self.ui_open:
+            self.ui_open = visible
+            self._demote_topmost(visible)
+        # 注意：**不要**让桌宠在菜单期间变成鼠标穿透。
+        # 试过两版（整窗穿透 / 光标压在菜单上才穿透）都会出问题：右键桌宠时点击穿到桌面，
+        # 弹出了 Windows 桌面的右键菜单。菜单压在桌宠上面的部分，靠"把桌宠降到非置顶"就够了。
+        if self._through_applied:
+            self._through_applied = False
+            self._menu_click_through(False)
+
+    def _menu_hover_watch(self):
+        """菜单悬停的人为规则（用户定的，尽量贴近 Windows 原生）：
+
+        · 光标在这一条的**任意位置**上 → 就弹这一条的子菜单
+        · 移到下一条 → 上一个子菜单立刻换掉（不打架）
+        · 光标进了子菜单 → 保持（并顺手把位置喂给 Qt，免得它以为鼠标跑了）
+        · 既不在条上、也不在子菜单里 → 给 0.35 秒宽限（走过那条空档），超时才收
+        """
+        root = getattr(self, "_menu_keepalive", None)
+        if not self.ui_open or root is None or not root.isVisible():
+            self._hover_key = None
+            self._keep = None
+            self._leave_at = 0.0
+            return
+        pos = QCursor.pos()
+        now = time.time()
+        # 光标所在的菜单（含已经展开的子菜单）＋它下面的那一条
+        menu = self._deepest_menu_at_cursor() or root
+        act = None
+        try:
+            local = menu.mapFromGlobal(pos)
+            if menu.rect().contains(local):
+                act = menu.actionAt(local)
+        except RuntimeError:
+            act = None
+
+        # ① 光标压在某一条带子菜单的项上（这条的任意位置都算）→ 用它的子菜单
+        if act is not None and act.menu() is not None:
+            sub = act.menu()
+            if self._keep is not None and self._keep[1] is not act:
+                self._close_submenu(self._keep[1].menu())      # 移到别的条：旧的立刻关
+                menu_debug("[兜底] 换条 → 收掉上一个子菜单")
+            self._keep = (menu, act)
+            self._leave_at = 0.0
+            self._hover_key = (id(menu), act.text())
+            if not sub.isVisible():
+                menu.setActiveAction(act)
+                menu_debug(f"[兜底] 展开子菜单：{act.text()}")
+            return
+
+        # ② 光标已经在子菜单里 → 保持（喂一个位置给 Qt，免得它以为鼠标离开了）
+        if self._keep is not None:
+            parent, holder = self._keep
+            sub = None
+            try:
+                sub = holder.menu()
+            except RuntimeError:
+                sub = None
+            if sub is not None:
+                try:
+                    if sub.isVisible() and sub.rect().contains(sub.mapFromGlobal(pos)):
+                        self._leave_at = 0.0
+                        self._send_move_point(sub, pos)
+                        return
+                except RuntimeError:
+                    pass
+                try:
+                    if not sub.isVisible():
+                        # Qt 自己把它收了 → 让它按自己的流程重开（不要我们手动 popup，
+                        # 手动弹会把它变成一个"空白/滚动"的怪窗口，用户截图里就是这个）
+                        parent.setActiveAction(None)
+                        parent.setActiveAction(holder)
+                        return
+                except RuntimeError:
+                    pass
+            # ③ 既不在条上、也不在子菜单里 → 0.35 秒宽限（从条走到子菜单的空档），超时收
+            if self._leave_at == 0.0:
+                self._leave_at = now
+                return
+            if now - self._leave_at <= 0.35:
+                return
+            self._close_submenu(sub)
+            self._keep = None
+            self._leave_at = 0.0
+        self._hover_key = None
+
+    @staticmethod
+    def _close_submenu(sub):
+        try:
+            if sub is not None and sub.isVisible():
+                sub.close()
+        except Exception:
+            pass
+
     def _open_menu(self, pos):
         """弹右键菜单。
 
@@ -2603,8 +4064,8 @@ class PetWindow(QWidget):
         try:
             m.exec(pos)
         finally:
-            self.ui_open = False
-            self._demote_topmost(False)      # 保险：菜单没触发 aboutToHide 也要还原层级
+            # 保险：菜单没触发 aboutToHide 也要把状态收回来
+            self._sync_overlay_state()
 
     def _ui_guard(self):
         """对话框期间用的上下文管理器：桌宠站住不动，免得盖住对话框。"""
@@ -2613,11 +4074,12 @@ class PetWindow(QWidget):
         class _Guard:
             def __enter__(self):
                 pet.ui_open = True
+                pet._dialog_open = True
                 pet._demote_topmost(True)
 
             def __exit__(self, *exc):
-                pet.ui_open = False
-                pet._demote_topmost(False)
+                pet._dialog_open = False
+                pet._sync_overlay_state()
                 return False
 
         return _Guard()
@@ -2691,6 +4153,43 @@ class PetWindow(QWidget):
         if on:
             self.say("好嘞，你开什么我都盯着")
 
+    def set_perf_mode(self, on):
+        """性能模式：动画优先，开设置菜单也不掉帧；休闲模式：省 CPU，可掉一点帧。
+
+        休闲模式把帧间隔从 20ms 放到 40ms（50 帧 → 25 帧）；动作是按同一个内部时钟
+        换算的，所以走的速度、气泡停留时间都不变，只是画面更"省"。
+        """
+        self.perf_mode = bool(on)
+        self.cfg["perf_mode"] = bool(on)
+        self.tick_ms = TICK if self.perf_mode else TICK * 2
+        self.timer.setInterval(self.tick_ms)
+        self.say("好，动画优先，菜单开着也不卡" if on else "行，省点资源，掉几帧没关系",
+                 again=True)
+        self.update()
+
+    def set_music_link(self, on):
+        """音乐联动总开关：关掉就不再读媒体会话。"""
+        self.music_on = bool(on)
+        self.cfg["music_link"] = bool(on)
+        if on:
+            self.say("好，你去放歌，我帮你看歌词")
+            self.poll_music()
+        else:
+            self.now_playing = None
+            self._lyric_key = ""
+            self._lyric_lines = []
+            self.say("行，那我不听了")
+        self.update()
+
+    def set_music_lyrics(self, on):
+        """歌词内容开关：关掉只挂个歌名，不再请求歌词。"""
+        self.music_lyrics = bool(on)
+        self.cfg["music_lyrics"] = bool(on)
+        if on and self.now_playing and self._lyric_key and not self._lyric_lines \
+                and not self._lyric_fetching:
+            self._start_lyric_fetch(self._lyric_key, self.now_playing)
+        self.update()
+
     def set_snap(self, on):
         self.snap_on = bool(on)
         self.cfg["snap_on"] = bool(on)
@@ -2752,13 +4251,9 @@ class PetWindow(QWidget):
 
     def _apply_passthrough(self, on):
         hwnd = int(self.winId())
-        GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT = -20, 0x80000, 0x20
+        GWL_EXSTYLE = -20
         style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
-        style = style | WS_EX_LAYERED
-        if on:
-            style |= WS_EX_TRANSPARENT
-        else:
-            style &= ~WS_EX_TRANSPARENT
+        style = click_through_style(style, self.ui_open, bool(on))
         ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
 
     def set_passthrough(self, on):

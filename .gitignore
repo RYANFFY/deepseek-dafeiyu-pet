@@ -1,6 +1,9 @@
 # 运行时生成
 config.json
 usage.json
+lyrics_cache.json
+menu-debug.log
+*.probe-backup
 
 # 虚拟环境
 .venv/

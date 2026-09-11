@@ -11,6 +11,14 @@ hiddenimports = []
 tmp_ret = collect_all('requests')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# winsdk：读 Windows 媒体会话（QQ音乐 / 网易云 放歌时的歌词联动）。
+# 它带一批投影 DLL，必须一起收进去，否则打包版读不到"在放什么歌"。
+try:
+    _ws = collect_all('winsdk')
+    datas += _ws[0]; binaries += _ws[1]; hiddenimports += _ws[2]
+except Exception:
+    pass
+
 # PyInstaller 会漏收 PySide6 自带的部分 MSVC 运行库（尤其 msvcp140_codecvt_ids.dll），
 # 缺了它们 Qt6Core.dll 会报 "DLL load failed ... 找不到指定的程序"。
 for _pkg in (PySide6, shiboken6):

@@ -1,2 +1,3 @@
 PySide6>=6.5
 requests
+winsdk>=1.0.0b10; sys_platform == "win32"
