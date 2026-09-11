@@ -2,6 +2,18 @@
 
 中文版说明见 [README.md](README.md)。
 
+## ⬇️ Download (Windows)
+
+[![latest release](https://img.shields.io/github/v/release/RYANFFY/dafeiyu-pet?label=latest)](https://github.com/RYANFFY/dafeiyu-pet/releases/latest)
+
+### 👉 [**Download the latest exe**](https://github.com/RYANFFY/dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
+
+Single file, ~60MB, just double-click — no Python required.
+
+- Windows may warn about an unknown publisher (the exe is not code-signed): click "More info" → "Run anyway"
+- Packaged build keeps its settings in `%APPDATA%\大肥鱼桌宠\`
+- All versions and release notes: [Releases](https://github.com/RYANFFY/dafeiyu-pet/releases)
+
 A transparent always-on-top desktop pet based on the DeepSeek fan-art character
 「鲸鱼娘 · 大肥鱼」, built with Python + PySide6. It walks around your desktop,
 tells you the weather, and doubles as a **DeepSeek balance widget**
@@ -41,6 +53,18 @@ with the balance-widget features ported from
 **Appearance**
 
 - Switch anytime between 大肥鱼 (three-view sprite) and 小鲸鱼挂件 (the widget's cut-out art)
+- Bring your own art: pick a picture for the widget skin, or set each of the three views (front / side / back) separately
+
+**Window**
+
+- Layer: always-on-top / bottom-most (still above the wallpaper) / normal
+- Opacity slider (100% → 20%)
+- Single instance: launching the shortcut again won't spawn a second pet
+
+**Other**
+
+- Process reactions: it comments when you open Steam, your browser, a player, etc. (edit `PROCESS_LINES`)
+- Multiple balance sources: add another API key (DeepSeek and OpenRouter can be queried; services like OpenAI have no balance API and it will tell you so)
 
 ## Requirements
 

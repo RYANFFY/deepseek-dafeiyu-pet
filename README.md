@@ -2,6 +2,20 @@
 
 English | [中文](README.md) → [README.en.md](README.en.md)
 
+## ⬇️ 下载即用（Windows）
+
+[![最新版本](https://img.shields.io/github/v/release/RYANFFY/dafeiyu-pet?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/RYANFFY/dafeiyu-pet/releases/latest)
+[![下载量](https://img.shields.io/github/downloads/RYANFFY/dafeiyu-pet/total?label=%E4%B8%8B%E8%BD%BD%E9%87%8F)](https://github.com/RYANFFY/dafeiyu-pet/releases)
+
+### 👉 [**点这里下载最新版 exe**](https://github.com/RYANFFY/dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
+
+约 60MB 单文件，**双击就能用，不需要安装 Python**。（这个链接永远指向最新版，可以直接收藏）
+
+- 首次运行 Windows 可能提示"未知发布者"（exe 没做代码签名）→ 点「更多信息」→「仍要运行」即可
+- 想看历史版本 / 更新说明：[Releases 页面](https://github.com/RYANFFY/dafeiyu-pet/releases) ｜ [CHANGELOG](CHANGELOG.md)
+- 打包版的设置写在 `%APPDATA%\大肥鱼桌宠\`（不会往桌面丢文件）
+- 用完想卸载：删掉 exe + 上面那个配置目录就行
+
 DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 
 基于三视图素材（正面 / 侧面 / 背面），用 Python + PySide6 实现，无边框透明置顶窗口。
@@ -11,6 +25,14 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 - **三视图行走**：左右走用侧面（自动镜像）、向上走用背面、向下走用正面
 
 - **三种模式**：自由散步 / 跟随鼠标 / 原地待着（右键菜单切换）
+
+- **层级可选**：置顶 / 置底（沉到所有窗口下面，但仍在壁纸和 Wallpaper Engine 这类桌面软件之上）/ 普通层
+
+- **透明度可调**：菜单里一条滑块，从 100% 到 20%（太透就看不见了，所以留了下限）
+
+- **单实例**：已经开着一只时，再点快捷方式或再跑一次源码都不会冒出第二只（会把它叫出来）
+
+- **进程联动**：打开 Steam / WeGame / 浏览器 / 播放器这些应用时，它会冒泡吐槽两句（台词表在 `桌宠.py` 顶部的 `PROCESS_LINES`，可以自己加）
 
 - **互动**：
   - 左键按住：拖拽（会侧身朝向拖动方向，松手会说话）
@@ -58,7 +80,11 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
     不会出现「刚点下去开头那一下被吞（ya1 听不见）」。多条点击可以重叠（连点不互相打断）；
     音量是按样本缩放实现的。取不到音频设备时自动退回 `QSoundEffect`（3 个实例轮转 + 静音预热 + 未就绪补播）
     或系统 `winsound`，菜单里还有「试听音效」
-  - **形象切换**：菜单「形象」里在大肥鱼（三视图行走）和小鲸鱼挂件（挂件那张 cut-out）之间随时换
+- **形象切换**：菜单「形象」里在大肥鱼（三视图行走）和小鲸鱼挂件（挂件那张 cut-out）之间随时换
+
+- **自定义形象**：菜单「形象」里两套外观都能换成你自己的图片 —— 挂件是单张图；三视图外观可以分别指定正面 / 侧面 / 背面三个视图各自的图片，随时一键恢复默认
+
+- **多余额来源**：除了 DeepSeek，还能添加别的 API Key（DeepSeek / OpenRouter 能查到余额；像 OpenAI / ChatGPT 这种官方没开放余额接口的，会直接告诉你"该服务不提供余额接口"，而不是报错）
   - **气泡样式统一**：随机台词气泡和余额气泡共用同一套圆角、留白、尾巴参数
 
   另外：右键菜单和对话框自身带置顶标志，**打开期间桌宠会站住不动**、也不再参与置顶竞争，

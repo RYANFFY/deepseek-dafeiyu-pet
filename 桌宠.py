@@ -37,7 +37,7 @@ from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
-                               QSlider, QWidgetAction)
+                               QSlider, QWidgetAction, QFileDialog)
 
 try:
     from PySide6.QtMultimedia import QSoundEffect
@@ -286,6 +286,35 @@ class ClickPlayer(QIODevice):
 SKIN_PET = "大肥鱼"
 SKIN_WIDGET = "小鲸鱼挂件"
 WIDGET_SKIN_FILE = "small-whale.png"
+SPRITE_VIEWS = {"front": "正面", "side": "侧面", "back": "背面"}
+VIEW_LABELS = {"front": "正面（朝屏幕下）", "side": "侧面（左右走）",
+               "back": "背面（朝屏幕上）", "widget": "小鲸鱼挂件"}
+
+# 打开的某些应用时冒泡吐槽（进程名小写）
+PROCESS_LINES = {
+    "steam.exe": ["又要玩游戏了？作业写完了吗", "steam 一开，今晚的 AGI 又推迟了"],
+    "wegame.exe": ["又要开黑了？记得歇眼睛", "玩累了记得回来看看我的余额"],
+    "epicgameslauncher.exe": ["白嫖时间到？记得领了就走", "Epic 又送游戏啦，去拿"],
+    "league of legends.exe": ["上分还是掉分，我都看着呢", "又是峡谷的一天"],
+    "genshinimpact.exe": ["原神启动！别把鱼也抽了", "抽卡之前先看看余额哦"],
+    "chrome.exe": ["又开浏览器摸鱼，我可都记着呢", "开工还是冲浪？我猜是后者"],
+    "msedge.exe": ["开始网上冲浪啦", "网页开这么多，内存够吗"],
+    "douyin.exe": ["刷抖音记得看时间，我盯着呢", "又是刷不完的短视频"],
+    "qq.exe": ["有人找你哦，别装没看见", "QQ 响了，看看是谁"],
+    "wechat.exe": ["微信有新消息，去回一下嘛", "别一直盯着我，回消息去"],
+    "weixin.exe": ["微信有新消息，去回一下嘛", "别一直盯着我，回消息去"],
+    "qqmusic.exe": ["听歌时间到，要不要一起哼哼", "这歌不错，再来一首"],
+    "cloudmusic.exe": ["网易云启动，今天emo吗", "听歌一时爽，一直听一直爽"],
+    "code.exe": ["又开始写代码啦，记得多喝水", "写代码啦，我在这儿陪着你"],
+    "chatgpt.exe": ["又来找我聊天啦？嘿，是你", "我在这儿呢，随时待命"],
+    "taskmgr.exe": ["打开任务管理器？是不是想把我关掉", "别看我占内存，我很省的"],
+    "obs64.exe": ["要录屏呀，记得把我拍得可爱一点", "开播啦，我去角落待着"],
+    "photoshop.exe": ["开始画图啦，画完给我看看", "修图还是摸鱼，我都支持"],
+}
+
+# 余额来源：目前只有 DeepSeek 和 OpenRouter 有公开的余额接口
+NO_BALANCE_SERVICES = ("openai", "chatgpt", "gpt")
+OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
 # 每轮 Codex 对话消耗：读 Codex 会话日志里的 token 用量
 CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex-deepseek", "sessions")
@@ -395,6 +424,79 @@ def lookup_city(query):
     if not items:
         items = [(q, q)]
     return items
+
+
+def currency_symbol(currency):
+    return {"CNY": "¥", "USD": "$", "EUR": "€"}.get((currency or "").upper(), "")
+
+
+def query_deepseek_balance(key):
+    """查 DeepSeek 余额，返回 {ok, total, currency} 或 {ok: False, error}。"""
+    last = "网络错误"
+    for attempt in range(2):
+        try:
+            r = requests.get(BALANCE_URL, headers={"Authorization": f"Bearer {key}"}, timeout=15)
+            if r.status_code == 200:
+                info = pick_balance_info((r.json() or {}).get("balance_infos"))
+                if info and info.get("total_balance") is not None:
+                    return {"ok": True, "total": float(info["total_balance"]),
+                            "currency": info.get("currency") or "CNY"}
+                return {"ok": False, "error": "余额返回结构异常"}
+            last = f"HTTP {r.status_code}"
+            if r.status_code < 500:
+                break
+        except Exception as ex:
+            last = str(ex)[:60]
+        if attempt == 0:
+            time.sleep(0.6)
+    return {"ok": False, "error": last}
+
+
+def query_openrouter_balance(key):
+    """查 OpenRouter 额度（credits - usage）。"""
+    try:
+        r = requests.get(OPENROUTER_CREDITS_URL,
+                         headers={"Authorization": f"Bearer {key}"}, timeout=15)
+        if r.status_code != 200:
+            return {"ok": False, "error": f"HTTP {r.status_code}"}
+        data = (r.json() or {}).get("data") or {}
+        total = float(data.get("total_credits") or 0)
+        used = float(data.get("total_usage") or 0)
+        return {"ok": True, "total": round(total - used, 4), "currency": "USD"}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)[:60]}
+
+
+def list_process_names():
+    """枚举当前所有进程名（小写、不含路径）。用 Windows API，不依赖 psutil。"""
+    names = set()
+    try:
+        from ctypes import wintypes
+        psapi = ctypes.WinDLL("psapi.dll")
+        kernel32 = ctypes.WinDLL("kernel32.dll")
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        arr = (wintypes.DWORD * 4096)()
+        needed = wintypes.DWORD()
+        if not psapi.EnumProcesses(ctypes.byref(arr), ctypes.sizeof(arr), ctypes.byref(needed)):
+            return names
+        count = needed.value // ctypes.sizeof(wintypes.DWORD)
+        for i in range(count):
+            pid = arr[i]
+            if not pid:
+                continue
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                continue
+            try:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = wintypes.DWORD(len(buf))
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                    names.add(buf.value.rsplit("\\", 1)[-1].lower())
+            finally:
+                kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    return names
 
 
 def locate_city_by_ip():
@@ -691,6 +793,12 @@ class PetWindow(QWidget):
             "volume": 0.9,
             "show_peak": True,
             "peak_style": "默认",
+            "layer": "top",
+            "opacity": 1.0,
+            "process_alerts": True,
+            "custom_skins": {},
+            "balance_source": "DeepSeek",
+            "other_keys": [],
             "codex_sessions_dir": CODEX_SESSIONS_DIR
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
@@ -705,31 +813,15 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("大肥鱼桌宠")
         
-        # 精灵加载
+        # 精灵加载（三视图 + 挂件，每一张都可以被用户自定义图片替换）
         self.sprites = {}
-        for label, mult in SIZE_LEVELS.items():
-            h = int(340 * mult)
-            for name in ["正面", "侧面", "背面"]:
-                sized = os.path.join(SPRITE_DIR, f"{name}_{h}.png")
-                if os.path.exists(sized):
-                    pix = QPixmap(sized)
-                else:
-                    pix = QPixmap(os.path.join(SPRITE_DIR, f"{name}.png")).scaledToHeight(
-                        h, Qt.TransformationMode.SmoothTransformation)
-                self.sprites[(name, h)] = pix
+        self.custom_skin_ok = {}
+        self._rebuild_sprites()
         self.icon = QIcon(os.path.join(SPRITE_DIR, "icon.png"))
 
-        # 小鲸鱼挂件形象（第二个的样子）：单张 cut-out，按尺寸预缩放
         self.skin = self.cfg.get("skin", SKIN_PET)
-        whale = QPixmap(os.path.join(ASSET_DIR, WIDGET_SKIN_FILE))
-        self.widget_skin_ok = not whale.isNull()
-        if self.widget_skin_ok:
-            whale = self._crop_alpha(whale)
-            for mult in SIZE_LEVELS.values():
-                h = int(340 * mult)
-                self.sprites[("挂件", h)] = whale.scaledToHeight(
-                    h, Qt.TransformationMode.SmoothTransformation)
-        if self.skin not in (SKIN_PET, SKIN_WIDGET) or (self.skin == SKIN_WIDGET and not self.widget_skin_ok):
+        if self.skin not in (SKIN_PET, SKIN_WIDGET) or (self.skin == SKIN_WIDGET
+                                                        and not self._has_sprite("挂件")):
             self.skin = SKIN_PET
 
         self.cur_h = int(340 * self.cfg["size"])
@@ -769,6 +861,13 @@ class PetWindow(QWidget):
         if self.peak_style not in PEAK_TEXT_STYLES:
             self.peak_style = "默认"
         self._peak_now = None
+        self.layer = self.cfg.get("layer", "top")
+        if self.layer not in ("top", "bottom", "normal"):
+            self.layer = "top"
+        self.opacity = float(self.cfg.get("opacity", 1.0) or 1.0)
+        self.process_alerts = bool(self.cfg.get("process_alerts", True))
+        self._running_procs = None      # 第一次扫描只记录，不冒泡
+        self._last_proc_say = 0.0
         self.snap_on = bool(self.cfg.get("snap_on", True))
         self.flip_on_left = bool(self.cfg.get("flip_on_left", True))
         self.turn_cost_on = bool(self.cfg.get("turn_cost_on", True))
@@ -855,54 +954,55 @@ class PetWindow(QWidget):
         self.show()
         self.snap_into_screen()
         QTimer.singleShot(1500, self.warm_up_sounds)   # 音频设备预热，消掉首次点击的延迟
+        self.setWindowOpacity(self.opacity)
+        QTimer.singleShot(300, self._apply_layer)       # 层级要在窗口真正显示之后再摆
         if self.cfg.get("passthrough", False):
             self._apply_passthrough(True)
+
+        # 进程联动：打开某些应用时冒个泡
+        self.proc_timer = QTimer(self)
+        self.proc_timer.timeout.connect(self.check_processes)
+        self.proc_timer.start(4000)
 
     # ---------- 余额 ----------
     def _api_key(self):
         """优先用配置里的 Key，其次用系统环境变量 DEEPSEEK_API_KEY。"""
         return (self.cfg.get("ds_api_key") or os.environ.get("DEEPSEEK_API_KEY", "") or "").strip()
 
+    def _current_source(self):
+        """当前余额来源 → (显示名, key)。"""
+        name = self.cfg.get("balance_source") or "DeepSeek"
+        if name != "DeepSeek":
+            for item in (self.cfg.get("other_keys") or []):
+                if item.get("name") == name:
+                    return name, (item.get("key") or "").strip()
+        return "DeepSeek", self._api_key()
+
     def refresh_balance(self, silent=True):
         """后台拉余额，结果丢进 _bal_queue 由主线程处理（Qt 界面只在主线程更新）。"""
-        key = self._api_key()
+        name, key = self._current_source()
         if not key:
-            self.bal_error = "未配置 API Key"
+            self.bal_error = f"未配置 {name} 的 Key"
             if not silent:
-                self.say("先在右键菜单里设置 DeepSeek Key 吧！")
+                self.say(f"先在右键菜单里设置 {name} 的 Key 吧！")
             return
         if self.bal_busy:
             return
         self.bal_busy = True
 
         def worker():
-            last_err = "网络错误"
-            for attempt in range(2):
-                try:
-                    r = requests.get(BALANCE_URL,
-                                     headers={"Authorization": f"Bearer {key}"},
-                                     timeout=15)
-                    if r.status_code == 200:
-                        info = pick_balance_info((r.json() or {}).get("balance_infos"))
-                        if info and info.get("total_balance") is not None:
-                            self._bal_queue.append({
-                                "ok": True,
-                                "total": float(info["total_balance"]),
-                                "currency": info.get("currency") or "CNY",
-                                "silent": silent,
-                            })
-                        else:
-                            self._bal_queue.append({"ok": False, "error": "余额返回结构异常",
-                                                    "silent": silent})
-                        return
-                    last_err = f"HTTP {r.status_code}"
-                    if r.status_code < 500:
-                        break
-                except Exception as ex:
-                    last_err = str(ex)[:60]
-                if attempt == 0:
-                    time.sleep(0.6)
-            self._bal_queue.append({"ok": False, "error": last_err, "silent": silent})
+            low = name.lower()
+            if low.startswith("deepseek"):
+                res = query_deepseek_balance(key)
+            elif "openrouter" in low:
+                res = query_openrouter_balance(key)
+            else:
+                # OpenAI / ChatGPT 这类：官方没开放余额接口，如实告诉用户
+                res = {"ok": False, "code": "NO_API",
+                       "error": f"{name} 没有提供余额查询接口，看不到具体余额"}
+            res["name"] = name
+            res["silent"] = silent
+            self._bal_queue.append(res)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -910,14 +1010,23 @@ class PetWindow(QWidget):
         self.bal_busy = False
         if not res.get("ok"):
             self.bal_error = str(res.get("error") or "")
+            if res.get("code") == "NO_API":
+                # 这个服务压根没有余额接口：不报错，如实展示
+                self.balance = {"name": res.get("name") or "?", "total": None,
+                                "currency": "", "today": 0.0, "no_api": True}
+                self.show_balance_bubble(8.0)
+                return
             if not res.get("silent") and self.balance is None:
                 self.say("余额取不到：" + self.bal_error[:14])
             return
 
         total, currency = float(res["total"]), res["currency"]
-        today = record_balance_usage(USAGE_PATH, total, currency)
+        name = res.get("name") or "DeepSeek"
+        # 今日已用记账只对 DeepSeek 有意义（本地按余额差值记账）
+        today = record_balance_usage(USAGE_PATH, total, currency) if name == "DeepSeek" else 0.0
         old = self.balance["total"] if self.balance else None
-        self.balance = {"total": total, "currency": currency, "today": today, "stale": False}
+        self.balance = {"name": name, "total": total, "currency": currency,
+                        "today": today, "stale": False, "no_api": False}
         self.bal_error = ""
         self._start_roll(total)
 
@@ -942,6 +1051,8 @@ class PetWindow(QWidget):
 
     def _display_amount(self):
         if self.balance is None:
+            return 0.0
+        if self.balance.get("total") is None:
             return 0.0
         if self.roll_shown is None or self.roll_t >= 1.0:
             return float(self.balance["total"])
@@ -1102,6 +1213,89 @@ class PetWindow(QWidget):
             self._click_player.volume = self.volume
         self._restore_sound_volume()
 
+    # ---------- 形象加载 ----------
+    def _custom_path(self, view):
+        """该视图用户自定义的图片路径（不存在就返回空）。"""
+        path = (self.cfg.get("custom_skins") or {}).get(view) or ""
+        return path if path and os.path.exists(path) else ""
+
+    def _has_sprite(self, key):
+        return any(k[0] == key for k in self.sprites)
+
+    def _load_view_pixmap(self, view, h):
+        """加载某个视图的某个高度：优先用户自定义图片，其次自带素材。"""
+        custom = self._custom_path(view)
+        if custom:
+            pix = QPixmap(custom)
+            if not pix.isNull():
+                self.custom_skin_ok[view] = True
+                return self._crop_alpha(pix).scaledToHeight(
+                    h, Qt.TransformationMode.SmoothTransformation)
+        self.custom_skin_ok[view] = False
+        if view == "widget":
+            base = QPixmap(os.path.join(ASSET_DIR, WIDGET_SKIN_FILE))
+            if base.isNull():
+                return None
+            return self._crop_alpha(base).scaledToHeight(
+                h, Qt.TransformationMode.SmoothTransformation)
+        name = SPRITE_VIEWS[view]
+        sized = os.path.join(SPRITE_DIR, f"{name}_{h}.png")
+        if os.path.exists(sized):
+            return QPixmap(sized)
+        full = os.path.join(SPRITE_DIR, f"{name}.png")
+        if not os.path.exists(full):
+            return None
+        return QPixmap(full).scaledToHeight(h, Qt.TransformationMode.SmoothTransformation)
+
+    def _rebuild_sprites(self):
+        """重新加载各尺寸精灵（换了自定义图片后调用）。"""
+        sprite_key = {"front": "正面", "side": "侧面", "back": "背面", "widget": "挂件"}
+        self.sprites = {}
+        for _label, mult in SIZE_LEVELS.items():
+            h = int(340 * mult)
+            for view, key in sprite_key.items():
+                pix = self._load_view_pixmap(view, h)
+                if pix is not None and not pix.isNull():
+                    self.sprites[(key, h)] = pix
+        self.widget_skin_ok = self._has_sprite("挂件")
+
+    def pick_custom_skin(self, view):
+        """让用户挑一张图片当作某个视图的形象。"""
+        label = VIEW_LABELS.get(view, view)
+        with self._ui_guard():
+            path, _ok = QFileDialog.getOpenFileName(
+                self, f"选择{label}的图片", os.path.expanduser("~"),
+                "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif)",
+                options=QFileDialog.Option.DontUseNativeDialog)
+        if not path:
+            return
+        if QPixmap(path).isNull():
+            self.say("这张图读不了，换一张试试")
+            return
+        skins = dict(self.cfg.get("custom_skins") or {})
+        skins[view] = path
+        self.cfg["custom_skins"] = skins
+        self._rebuild_sprites()
+        self.set_size(self.cfg.get("size", 0.7))
+        self.save_config()
+        self.say(f"{label}换成你自己的图啦")
+
+    def clear_custom_skin(self, view=None):
+        """恢复默认形象（只清某一个视图，或全清）。"""
+        skins = dict(self.cfg.get("custom_skins") or {})
+        if view:
+            skins.pop(view, None)
+        else:
+            skins = {}
+        self.cfg["custom_skins"] = skins
+        self._rebuild_sprites()
+        if self.skin == SKIN_WIDGET and not self._has_sprite("挂件"):
+            self.skin = SKIN_PET
+            self.cfg["skin"] = SKIN_PET
+        self.set_size(self.cfg.get("size", 0.7))
+        self.save_config()
+        self.say("已恢复自带形象")
+
     def set_skin(self, name):
         """切换形象：大肥鱼（三视图）/ 小鲸鱼挂件（单张）。"""
         if name == SKIN_WIDGET and not self.widget_skin_ok:
@@ -1205,15 +1399,26 @@ class PetWindow(QWidget):
             f_big.setPointSize(15)
             f_big.setBold(True)
             fm_s, fm_b = QFontMetrics(f_small), QFontMetrics(f_big)
-            l1 = "DeepSeek 余额"
-            l2 = f"¥ {self._display_amount():.2f}"
-            l3 = f"今日已用 ¥ {self.balance['today']:.2f}"
+            src = self.balance.get("name") or "DeepSeek"
+            symbol = currency_symbol(self.balance.get("currency"))
             peak_now = is_peak()
+            show_peak_line = bool(self.show_peak and src == "DeepSeek")
+            if self.balance.get("no_api"):
+                # 这个服务不提供余额接口，直接说清楚
+                l1 = src
+                l2 = "无法查询"
+                l3 = "该服务不提供余额接口"
+                show_peak_line = False
+            else:
+                l1 = f"{src} 余额"
+                l2 = f"{symbol} {self._display_amount():.2f}".strip()
+                l3 = (f"今日已用 {symbol} {self.balance['today']:.2f}".strip()
+                      if src == "DeepSeek" else "今日已用 仅 DeepSeek 支持")
             l4 = f"现在 {peak_label(peak_now, self.peak_style)}"
             bw = max(fm_b.horizontalAdvance(l2), fm_s.horizontalAdvance(l1),
                      fm_s.horizontalAdvance(l3), fm_s.horizontalAdvance(l4)) + 28
             bh = fm_s.height() + fm_b.height() + fm_s.height() + 16
-            if self.show_peak:
+            if show_peak_line:
                 bh += fm_s.height()
             bx = (self.width() - bw) / 2
             by = self._bubble_top(bh)
@@ -1235,7 +1440,7 @@ class PetWindow(QWidget):
             p.setFont(f_small)
             p.setPen(QColor(150, 150, 165))
             p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l3)
-            if self.show_peak:
+            if show_peak_line:
                 ty += fm_s.height()
                 p.setFont(f_small)
                 # 高峰暖色、空闲绿色，一眼看出现在贵不贵
@@ -1415,6 +1620,8 @@ class PetWindow(QWidget):
                 self.target = (random.randint(geo.left() + 40, geo.right() - self.width() - 40),
                                random.randint(geo.top() + 40, geo.bottom() - self.height() - 40))
         else:
+            if self.t % 250 == 0:
+                self._look_at_cursor()
             self._maybe_idle_action()
             self.update()
             return
@@ -1435,15 +1642,45 @@ class PetWindow(QWidget):
                 mx = max(geo.left(), min(geo.right() - self.width() + 1, int(nx - self.width() / 2)))
                 my = max(geo.top(), min(geo.bottom() - self.height() + 1, int(ny - self.height() / 2)))
                 self.move(mx, my)
-                if abs(dx) > abs(dy) * 1.15:
+                # 只要横向有明显位移就走侧面（避免"背过身去不转回来"）；
+                # 只有几乎笔直向上才给背影，其余默认正面
+                if abs(dx) > 4:
                     self._set_dir("left" if dx < 0 else "right", 1 if dx < 0 else -1)
+                elif dy < -4:
+                    self._set_dir("up")
                 else:
-                    self._set_dir("up" if dy < 0 else "down")
+                    self._set_dir("down")
             if random.random() < 0.002 and self.jump_t == 0:
                 self.jump_t = 0.5
         target_speed = SPEED if self.target is not None else 0.0
         self.cur_speed += (target_speed - self.cur_speed) * 0.3
         self.update()
+
+    def check_processes(self):
+        """检测到新打开的应用就冒一句（第一次扫描只记录基线，免得一开机刷屏）。"""
+        if not self.process_alerts:
+            return
+        names = list_process_names()
+        watched = {n for n in names if n in PROCESS_LINES}
+        if self._running_procs is None:
+            self._running_procs = watched
+            return
+        started = watched - self._running_procs
+        self._running_procs = watched
+        if started and time.time() - self._last_proc_say > 25:
+            self._last_proc_say = time.time()
+            self.say(random.choice(PROCESS_LINES[sorted(started)[0]]))
+
+    def _look_at_cursor(self):
+        """原地待着的时候偶尔转头看向鼠标，显得机灵点。"""
+        if self.dragging or self.target is not None:
+            return
+        cursor = self.cursor().pos()
+        dx = cursor.x() - (self.x() + self.width() / 2)
+        if abs(dx) > 30:
+            self._set_dir("left" if dx < 0 else "right", 1 if dx < 0 else -1)
+        else:
+            self._set_dir("down")
 
     def _maybe_idle_action(self):
         if random.random() < 0.01:
@@ -1641,11 +1878,45 @@ class PetWindow(QWidget):
             a.setChecked(abs(self.cur_h - 340 * mult) < 2)
             a.triggered.connect(lambda _, v=mult: self.set_size(v))
         skin_menu = m.addMenu("形象")
-        for name in (SKIN_PET, SKIN_WIDGET):
-            a = skin_menu.addAction(name)
+        pet_menu = skin_menu.addMenu(f"{SKIN_PET}（三视图）")
+        a = pet_menu.addAction("用这个形象")
+        a.setCheckable(True)
+        a.setChecked(self.skin == SKIN_PET)
+        a.triggered.connect(lambda _, n=SKIN_PET: self.set_skin(n))
+        pet_menu.addSeparator()
+        for view in ("front", "side", "back"):
+            custom = self._custom_path(view)
+            label = VIEW_LABELS[view] + ("（已自定义）" if custom else "")
+            act = pet_menu.addAction("换成我的图片：" + label)
+            act.triggered.connect(lambda _, v=view: self.pick_custom_skin(v))
+        if any(self._custom_path(v) for v in ("front", "side", "back")):
+            pet_menu.addAction("恢复默认三视图", lambda: self.clear_custom_skin(None))
+        whale_menu = skin_menu.addMenu(f"{SKIN_WIDGET}（单张）")
+        a = whale_menu.addAction("用这个形象")
+        a.setCheckable(True)
+        a.setChecked(self.skin == SKIN_WIDGET)
+        a.triggered.connect(lambda _, n=SKIN_WIDGET: self.set_skin(n))
+        whale_menu.addSeparator()
+        whale_menu.addAction("换成我的图片：小鲸鱼挂件", lambda: self.pick_custom_skin("widget"))
+        if self._custom_path("widget"):
+            whale_menu.addAction("恢复默认小鲸鱼", lambda: self.clear_custom_skin("widget"))
+        skin_menu.addSeparator()
+        skin_menu.addAction("全部恢复默认形象", lambda: self.clear_custom_skin(None))
+        layer_menu = m.addMenu("层级")
+        for key, label in self.LAYER_LABELS.items():
+            a = layer_menu.addAction(label)
             a.setCheckable(True)
-            a.setChecked(self.skin == name)
-            a.triggered.connect(lambda _, n=name: self.set_skin(n))
+            a.setChecked(self.layer == key)
+            a.triggered.connect(lambda _, k=key: self.set_layer(k))
+        opa_menu = m.addMenu("透明度")
+        opa_action = QWidgetAction(opa_menu)
+        opa_slider = QSlider(Qt.Orientation.Horizontal)
+        opa_slider.setRange(20, 100)
+        opa_slider.setValue(int(self.opacity * 100))
+        opa_slider.setFixedWidth(130)
+        opa_slider.valueChanged.connect(lambda v: self.set_opacity(v / 100.0))
+        opa_action.setDefaultWidget(opa_slider)
+        opa_menu.addAction(opa_action)
         weather_menu = m.addMenu("天气")
         weather_menu.addAction("设置默认城市（手动输入）", self.set_city_dialog)
         weather_menu.addAction("查看天气", self._get_weather)
@@ -1656,6 +1927,15 @@ class PetWindow(QWidget):
         bal_menu = m.addMenu("余额")
         bal_menu.addAction("查看余额", lambda: self.refresh_balance(silent=False))
         bal_menu.addAction("设置 Key", self._set_key_dialog)
+        src_menu = bal_menu.addMenu("余额来源")
+        for name in ["DeepSeek"] + [k.get("name", "?") for k in (self.cfg.get("other_keys") or [])]:
+            a = src_menu.addAction(name)
+            a.setCheckable(True)
+            a.setChecked((self.cfg.get("balance_source") or "DeepSeek") == name)
+            a.triggered.connect(lambda _, n=name: self.set_balance_source(n))
+        bal_menu.addAction("添加其他 API Key…", self.add_other_key_dialog)
+        if self.cfg.get("other_keys"):
+            bal_menu.addAction("删除其他 API Key…", self.remove_other_key_dialog)
         bal_menu.addSeparator()
         baa = bal_menu.addAction("余额常显")
         baa.setCheckable(True)
@@ -1712,10 +1992,10 @@ class PetWindow(QWidget):
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
         pa.triggered.connect(lambda on: self.set_passthrough(on))
-        ta = m.addAction("窗口置顶")
-        ta.setCheckable(True)
-        ta.setChecked(self.cfg["topmost"])
-        ta.triggered.connect(lambda on: self.set_topmost(on))
+        pra = m.addAction("进程提醒（开应用时冒泡）")
+        pra.setCheckable(True)
+        pra.setChecked(self.process_alerts)
+        pra.triggered.connect(self.set_process_alerts)
         aa = m.addAction("开机自启")
         aa.setCheckable(True)
         aa.setChecked(self.cfg["autostart"])
@@ -1723,6 +2003,58 @@ class PetWindow(QWidget):
         m.addSeparator()
         m.addAction("退出", self.quit_app)
         return m
+
+    def set_balance_source(self, name):
+        """切换余额来源（DeepSeek / 用户自己加的其他服务）。"""
+        self.cfg["balance_source"] = name
+        self.balance = None           # 换来源先清掉旧数据，免得数错
+        self.save_config()
+        self.refresh_balance(silent=False)
+
+    def add_other_key_dialog(self):
+        """添加别的服务的 API Key（例如 OpenRouter）。"""
+        with self._ui_guard():
+            name, ok = QInputDialog.getText(
+                self, "添加其他 API Key",
+                "服务名称（例如 OpenRouter / OpenAI / Kimi）:",
+                QLineEdit.EchoMode.Normal, "", Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        with self._ui_guard():
+            key, ok2 = QInputDialog.getText(
+                self, f"{name} 的 API Key",
+                f"粘贴 {name} 的 API Key（只存在本地 config.json）:",
+                QLineEdit.EchoMode.Password, "", Qt.WindowType.WindowStaysOnTopHint)
+        if not ok2 or not key.strip():
+            return
+        keys = [k for k in (self.cfg.get("other_keys") or []) if k.get("name") != name]
+        keys.append({"name": name, "key": key.strip()})
+        self.cfg["other_keys"] = keys
+        self.cfg["balance_source"] = name
+        self.save_config()
+        self.say(f"记下 {name} 的 Key 了，我去看看")
+        self.refresh_balance(silent=False)
+
+    def remove_other_key_dialog(self):
+        keys = list(self.cfg.get("other_keys") or [])
+        if not keys:
+            self.say("还没有添加别的 Key 呢")
+            return
+        names = [k.get("name", "?") for k in keys]
+        with self._ui_guard():
+            pick, ok = QInputDialog.getItem(self, "删除其他 API Key", "删掉哪个？",
+                                            names, 0, False,
+                                            Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not pick:
+            return
+        self.cfg["other_keys"] = [k for k in keys if k.get("name") != pick]
+        if (self.cfg.get("balance_source") or "DeepSeek") == pick:
+            self.cfg["balance_source"] = "DeepSeek"
+            self.balance = None
+        self.save_config()
+        self.say(f"已删除 {pick} 的 Key")
+        self.refresh_balance(silent=True)
 
     def _set_key_dialog(self):
         with self._ui_guard():
@@ -1814,6 +2146,47 @@ class PetWindow(QWidget):
         self.peak_style = style
         self.cfg["peak_style"] = style
         self.update()
+
+    # ---------- 层级 / 透明度 ----------
+    LAYER_LABELS = {"top": "置顶", "bottom": "置底（在壁纸之上）", "normal": "普通层"}
+
+    def set_layer(self, layer):
+        """top = 始终置顶；bottom = 沉到所有窗口下面（但仍在壁纸/桌面之上）；normal = 普通。"""
+        if layer not in self.LAYER_LABELS:
+            return
+        self.layer = layer
+        self.cfg["layer"] = layer
+        self.cfg["topmost"] = (layer == "top")
+        self._apply_layer()
+        self.say({"top": "我回到最上面啦",
+                  "bottom": "我到最下面了（壁纸上面那种）",
+                  "normal": "我站在普通层，谁点谁在上面"}[layer])
+
+    def _apply_layer(self):
+        """用 Win32 精确摆放层级：HWND_TOPMOST / HWND_BOTTOM / HWND_NOTOPMOST。"""
+        try:
+            HWND_TOPMOST, HWND_NOTOPMOST, HWND_BOTTOM = -1, -2, 1
+            SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+            after = {"top": HWND_TOPMOST, "bottom": HWND_BOTTOM,
+                     "normal": HWND_NOTOPMOST}.get(self.layer, HWND_TOPMOST)
+            ctypes.windll.user32.SetWindowPos(
+                ctypes.c_void_p(int(self.winId())), ctypes.c_void_p(after),
+                0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+        except Exception:
+            pass
+
+    def set_opacity(self, value):
+        """整体透明度 0.2 ~ 1.0（太低就看不见了，所以留个下限）。"""
+        value = max(0.2, min(1.0, float(value)))
+        self.opacity = value
+        self.cfg["opacity"] = value
+        self.setWindowOpacity(value)
+
+    def set_process_alerts(self, on):
+        self.process_alerts = bool(on)
+        self.cfg["process_alerts"] = bool(on)
+        if on:
+            self.say("好嘞，你开什么我都盯着")
 
     def set_snap(self, on):
         self.snap_on = bool(on)
@@ -1931,10 +2304,42 @@ class PetWindow(QWidget):
         QApplication.quit()
 
 
+SINGLE_INSTANCE_KEY = "dafeiyu-pet-whale-single-instance"
+
+
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    # 单实例：已经在跑了就把那一只叫出来，不再开第二只（快捷方式 / 源码双击都一样）
+    server = None
+    try:
+        from PySide6.QtNetwork import QLocalServer, QLocalSocket
+        probe = QLocalSocket()
+        probe.connectToServer(SINGLE_INSTANCE_KEY)
+        if probe.waitForConnected(300):
+            probe.write(b"show")
+            probe.flush()
+            probe.waitForBytesWritten(300)
+            return 0
+        QLocalServer.removeServer(SINGLE_INSTANCE_KEY)
+        server = QLocalServer()
+        server.listen(SINGLE_INSTANCE_KEY)
+    except Exception:
+        server = None
+
     w = PetWindow()
+
+    if server is not None:
+        def on_new_connection():
+            sock = server.nextPendingConnection()
+            if sock is not None:
+                sock.disconnectFromServer()
+            w.show()
+            w.raise_()
+            w.say("我在这儿呢，有我这只就够啦")
+        server.newConnection.connect(on_new_connection)
+
     sys.exit(app.exec())
 
 
