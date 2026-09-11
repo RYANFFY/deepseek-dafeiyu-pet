@@ -1724,6 +1724,8 @@ class PetWindow(QWidget):
         self._sub_of = {}                # 带子菜单的项 → 它的子菜单（Qt 那边已摘掉，改由浮窗显示）
         self._leave_at = 0.0             # 光标离开"项/子菜单"的时间（0.35 秒宽限用）
         self._keep = None                # 当前保持打开的是哪一项的子菜单（菜单, 项）
+        self._sub_rect = {}              # 各子菜单最后一次显示的位置/大小（被 Qt 收掉后判断"光标还在不在附近"）
+        self._resub = {}                 # 各子菜单"被收掉后补了几次"的计数
         self._flyout = None              # 二级/三级菜单的浮窗（普通窗口，点击一定生效）
         self._flyout_action = None       # 当前浮窗对应的是哪一项
         self._flyout_leave_at = 0.0      # 光标离开浮窗的时间（用来延时收起）
@@ -3526,6 +3528,8 @@ class PetWindow(QWidget):
         m = self._build_menu()
         self._menu_keepalive = m          # 菜单是纯 Python 对象，留个引用防回收
         self._menu_pool = ([m] + self._menu_pool)[:4]     # 留几份，用来看"还有菜单开着吗"
+        self._sub_rect = {}               # 新的一份菜单：上次那些"子菜单位置/补弹次数"作废
+        self._resub = {}
         # 不给菜单强加置顶标志——改成让桌宠自己在菜单期间退到普通层，
         # 这样菜单天然在最上面，而且是 Qt 标准的弹出菜单，二级菜单悬停最稳。
 
@@ -4021,9 +4025,46 @@ class PetWindow(QWidget):
 
     def _menu_tick(self):
         """每 120ms：先对账"让位状态"，再跑 v1.0.10 的"放宽触发范围 + 子菜单重叠"尝试。"""
+        self._adopt_visible_menu()      # 托盘那条路是 Qt 自己弹的，先认准"屏幕上真正开着的那棵"
         self._sync_overlay_state()
         self._menu_hover_watch()
         self._prune_branches()
+
+    def _adopt_visible_menu(self):
+        """把"屏幕上真正在显示的那棵菜单树"接到手里。
+
+        托盘右键这条路的菜单是 Qt 自己弹的，而且每次右键都会重建一份（菜单里的勾选状态
+        是按当前设置现画的）。万一 Qt 弹的是**上一次**那个对象，我们记着的 `_menu_keepalive`
+        就跟屏幕上的对不上 —— 悬停兜底、收子菜单、点击摆渡会全部落空（表现就是
+        "托盘里的二三级菜单还是老毛病"）。这里每 120ms 认一次，认错了就换过来。
+        """
+        try:
+            shown = [w for w in QApplication.topLevelWidgets()
+                     if isinstance(w, QMenu) and w.isVisible()]
+        except RuntimeError:
+            return
+        if not shown:
+            return
+        inner = set()
+        for m in shown:
+            try:
+                for a in m.actions():
+                    child = a.menu()
+                    if child is not None:
+                        inner.add(id(child))
+            except RuntimeError:
+                continue
+        roots = [m for m in shown if id(m) not in inner]
+        if not roots:
+            return
+        popup = QApplication.activePopupWidget()      # 抓着鼠标的那个 = 当前这一支的根
+        top = popup if popup in roots else roots[-1]
+        if getattr(self, "_menu_keepalive", None) is top:
+            return
+        self._menu_keepalive = top
+        if top not in self._menu_pool:
+            self._menu_pool = ([top] + self._menu_pool)[:4]
+        menu_debug("[兜底] 接管屏幕上真正显示的那棵菜单")
 
     def force_recover(self):
         """救急：把"给菜单让位"的状态强行收回来。
@@ -4041,6 +4082,8 @@ class PetWindow(QWidget):
         self._menu_pool = []
         self._hover_subs.clear()
         self._hover_key = None
+        self._sub_rect = {}
+        self._resub = {}
         self._dialog_open = False
         self.ui_open = False
         self._through_applied = False
@@ -4190,16 +4233,31 @@ class PetWindow(QWidget):
                 try:
                     if sub.isVisible() and sub.rect().contains(sub.mapFromGlobal(pos)):
                         self._leave_at = 0.0
+                        self._sub_rect[sub] = (sub.mapToGlobal(QPoint(0, 0)), sub.size())
+                        self._resub.pop(sub, None)
                         self._send_move_point(sub, pos)
                         return
                 except RuntimeError:
                     pass
                 try:
                     if not sub.isVisible():
-                        # Qt 自己把它收了 → 让它按自己的流程重开（不要我们手动 popup，
-                        # 手动弹会把它变成一个"空白/滚动"的怪窗口，用户截图里就是这个）
-                        parent.setActiveAction(None)
-                        parent.setActiveAction(holder)
+                        # Qt 自己把它收了，而光标还停在它原来那一片 → 分三步往回捞：
+                        # ① 让 Qt 按自己的流程重开（最干净）
+                        # ② 还没开，就替 Qt 往这一条的中心塞一个鼠标移动（等于"手又停上去了"）
+                        # ③ 连着几次都开不了，才自己补弹（最后手段，尽量不走到）
+                        rect = self._sub_rect.get(sub)
+                        near = rect is not None and self._point_near_rect(pos, rect[0], rect[1], 60)
+                        tries = self._resub.get(sub, 0) + 1
+                        self._resub[sub] = tries
+                        if parent.isVisible():
+                            parent.setActiveAction(None)
+                            parent.setActiveAction(holder)
+                            if near and tries >= 2:
+                                self._send_move_point(parent, parent.mapToGlobal(
+                                    parent.actionGeometry(holder).center()))
+                            if near and tries >= 3:
+                                self._resub[sub] = 0
+                                sub.popup(self._submenu_pos(parent, holder, sub))
                         return
                 except RuntimeError:
                     pass
