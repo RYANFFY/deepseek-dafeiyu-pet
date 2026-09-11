@@ -41,7 +41,8 @@ from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
                                QSlider, QWidgetAction, QFileDialog, QListWidget,
-                               QListWidgetItem, QLabel, QFileIconProvider, QSizePolicy)
+                               QListWidgetItem, QLabel, QFileIconProvider, QSizePolicy,
+                               QComboBox)
 
 try:
     from PySide6.QtMultimedia import QSoundEffect
@@ -168,6 +169,16 @@ INNER_LINES = [
     "我去！用户彻底怒了！",
 ]
 DRAG_LINES = ["哇——轻点轻点！", "起飞咯——", "放我下来！……好吧，再玩一次。", "晕鱼了晕鱼了……"]
+
+# 可以让用户自己改写的台词分组（键 → 给人看的名字）
+LINE_GROUPS = [
+    ("LINES", "日常台词（闲着的时候）"),
+    ("REACT_LINES", "点击回嘴（点它一下）"),
+    ("INNER_LINES", "心声（灰色斜体小气泡）"),
+    ("DRAG_LINES", "拖拽它的时候"),
+    ("MUSIC_CLICK_LINES", "放歌时点它（可用 {song} 代表《歌名》——歌手）"),
+    ("MUSIC_START_LINES", "换歌的时候（同上）"),
+]
 
 
 # ===== 余额挂件配置 =====
@@ -1603,6 +1614,7 @@ class PetWindow(QWidget):
             "other_keys": [],
             "custom_process_lines": {},
             "default_line_overrides": {},
+            "custom_lines": {},
             "agent_name": "Codex",
             "agent_sessions_dir": "",
             "codex_sessions_dir": CODEX_SESSIONS_DIR
@@ -1908,7 +1920,7 @@ class PetWindow(QWidget):
         if now - self._music_said_at < 6.0:
             return
         self._music_said_at = now
-        self.say(random.choice(MUSIC_START_LINES).format(song=self._song_label()))
+        self.say(random.choice(self.lines_for("MUSIC_START_LINES")).format(song=self._song_label()))
 
     def _start_lyric_fetch(self, key, info):
         self._lyric_fetching = key
@@ -2874,27 +2886,116 @@ class PetWindow(QWidget):
             self._set_dir("down")
 
     def _maybe_idle_action(self):
-        if random.random() < 0.01:
+        # 闲着时的"小动作"概率。原来 0.01、以及说话冷却 1500 帧（约 30 秒）——
+        # 台词太不容易看到了，现在放宽成 0.03 + 冷却 600 帧（约 12 秒）
+        if random.random() < 0.03:
             pick = random.random()
             if pick < 0.35:
                 self.jump_t = 1.0
             elif pick < 0.6:
                 self.action, self.action_t = "sway", 1.0
-            elif pick < 0.8:
+            elif pick < 0.7:
                 self.action, self.action_t = "stretch", 1.0
-            elif pick < 0.9:
+            else:
+                # 剩下 30% 的机会拿来冒话（原来是 10%，台词太不容易看到了）
                 if self._music_playing():
                     return      # 放歌时不插嘴，把位置让给歌词
-                if self.t - self.last_speak_tick >= 1500:
+                if self.t - self.last_speak_tick >= 600:
                     self.last_speak_tick = self.t
-                    if pick < 0.82:
-                        self.say(random.choice(INNER_LINES), inner=True)
+                    if random.random() < 0.4:
+                        self.say(random.choice(self.lines_for("INNER_LINES")), inner=True)
                     else:
-                        self.say(random.choice(LINES))
+                        self.say(random.choice(self.lines_for("LINES")))
 
     def _queue_say(self, text):
         """后台线程调用：只入队，由主线程 tick 统一弹出显示（线程安全）"""
         self._say_queue.append(text)
+
+    # ---------- 台词（用户可自定义 / 可改写内置）----------
+    def lines_for(self, key):
+        """取某一类台词：用户改过就用用户那套，否则用内置默认。"""
+        default = globals().get(key) or []
+        custom = (self.cfg.get("custom_lines") or {}).get(key)
+        if isinstance(custom, list):
+            words = [str(t).strip() for t in custom if str(t).strip()]
+            if words:
+                return words
+        return list(default)
+
+    def set_lines(self, key, words):
+        """写回某一类台词；words 为空 = 恢复内置默认。"""
+        box = dict(self.cfg.get("custom_lines") or {})
+        words = [str(t).strip() for t in (words or []) if str(t).strip()]
+        if words:
+            box[key] = words
+        else:
+            box.pop(key, None)
+        self.cfg["custom_lines"] = box
+        self.save_config()
+
+    def lines_customized(self, key):
+        return bool((self.cfg.get("custom_lines") or {}).get(key))
+
+    def edit_lines_dialog(self):
+        """一个窗口里改所有台词：上面选类别，下面一行一句；可一键恢复默认。"""
+        from PySide6.QtWidgets import QPlainTextEdit
+        dlg = QDialog(self)
+        dlg.setWindowTitle("台词内容（可以自己写，也可以改写内置的）")
+        dlg.resize(560, 460)
+        lay = QVBoxLayout(dlg)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("改哪一类："))
+        combo = QComboBox()
+        for key, label in LINE_GROUPS:
+            combo.addItem(label, key)
+        row.addWidget(combo, 1)
+        lay.addLayout(row)
+        hint = QLabel("一行一句（空行会自动忽略）。放歌那两类里可以写 %s 代表当前歌名。" % "{song}")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#666;")
+        lay.addWidget(hint)
+        edit = QPlainTextEdit()
+        lay.addWidget(edit, 1)
+        state = QLabel("")
+        state.setStyleSheet("color:#666;")
+        lay.addWidget(state)
+        btns = QHBoxLayout()
+        btn_restore = QPushButton("恢复这一类默认")
+        btn_ok = QPushButton("保存")
+        btn_cancel = QPushButton("取消")
+        btns.addWidget(btn_restore)
+        btns.addStretch(1)
+        btns.addWidget(btn_ok)
+        btns.addWidget(btn_cancel)
+        lay.addLayout(btns)
+
+        def current_key():
+            return combo.currentData()
+
+        def load(_=None):
+            key = current_key()
+            edit.setPlainText("\n".join(self.lines_for(key)))
+            state.setText("这一类：已经是你自己写的（保存时留空 = 恢复默认）"
+                          if self.lines_customized(key)
+                          else "这一类：当前用内置默认台词")
+
+        def restore():
+            self.set_lines(current_key(), [])
+            load()
+            self.say("这一类恢复成内置台词了", seconds=2.2, again=True)
+
+        def save():
+            self.set_lines(current_key(), edit.toPlainText().splitlines())
+            load()
+            self.say("台词存好啦", seconds=2.2, again=True)
+
+        combo.currentIndexChanged.connect(load)
+        btn_restore.clicked.connect(restore)
+        btn_ok.clicked.connect(save)
+        btn_cancel.clicked.connect(dlg.reject)
+        load()
+        with self._ui_guard():
+            dlg.exec()
 
     def say(self, text, inner=False, seconds=2.8, again=False):
         if text == self.last_line and not again and not text.startswith("天气"):
@@ -2967,7 +3068,7 @@ class PetWindow(QWidget):
                 self.rest_until = self.t * self.tick_ms + random.randint(6000, 14000)
                 self._snap_to_edge()    # 松手后吸附到最近的边
                 if random.random() < 0.5:
-                    self.say(random.choice(DRAG_LINES))
+                    self.say(random.choice(self.lines_for("DRAG_LINES")))
             else:
                 now_ms = self.t * self.tick_ms
                 quick = (now_ms - self._last_click_ms) <= 380
@@ -2986,13 +3087,13 @@ class PetWindow(QWidget):
         if self._music_playing():
             # 放歌时报"在放什么"，不用随机台词把歌词顶掉
             self.jump_t = 1.0
-            self.say(random.choice(MUSIC_CLICK_LINES).format(song=self._song_label()),
+            self.say(random.choice(self.lines_for("MUSIC_CLICK_LINES")).format(song=self._song_label()),
                      seconds=3.6, again=True)
             return
         if random.random() < 0.7:
             self.jump_t = 1.0
         if random.random() < 0.6:
-            self.say(random.choice(REACT_LINES))
+            self.say(random.choice(self.lines_for("REACT_LINES")))
 
     def _on_double_click(self):
         """快速双击：放歌时瞄一眼余额（5 秒）；平时换姿势。"""
@@ -3237,6 +3338,12 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(self.peak_style == style)
             a.triggered.connect(lambda _, s=style: self.set_peak_style(s))
+        text_menu.addSeparator()
+        # 台词内容：换了形象之后默认台词可能不搭，这里让用户自己写 / 改写内置
+        n_custom = len(self.cfg.get("custom_lines") or {})
+        text_menu.addAction(
+            "台词内容…（自己写 / 改写内置）" + (f"（已改 {n_custom} 类）" if n_custom else ""),
+            self.edit_lines_dialog)
 
         # 每轮消耗：自己的子菜单，Agent 名称/日志目录可配（不是每个人都用 Codex）
         turn_menu = bal_menu.addMenu("每轮消耗统计")
