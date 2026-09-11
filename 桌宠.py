@@ -1252,7 +1252,10 @@ class PetWindow(QWidget):
 
         # 托盘
         self.tray = QSystemTrayIcon(self.icon, self)
-        self.tray.setContextMenu(self._make_menu())
+        # 注意：QSystemTrayIcon 不接管菜单所有权，这里必须自己留引用，
+        # 否则菜单会被 Python 回收，托盘右键就再也弹不出来了（穿透也因此解不开）。
+        self._tray_menu = self._make_menu()
+        self.tray.setContextMenu(self._tray_menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
@@ -1269,6 +1272,9 @@ class PetWindow(QWidget):
         QTimer.singleShot(300, self._apply_layer)       # 层级要在窗口真正显示之后再摆
         if self.cfg.get("passthrough", False):
             self._apply_passthrough(True)
+            # 开机就是穿透状态的话，顺手提醒一下怎么解除
+            QTimer.singleShot(2500, lambda: self.say(
+                "我还开着鼠标穿透呢：右键托盘图标 → 鼠标穿透，或双击托盘图标就能解除"))
 
         # 进程联动：打开某些应用时冒个泡
         self.proc_timer = QTimer(self)
@@ -2533,13 +2539,24 @@ class PetWindow(QWidget):
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Context:
-            self.tray.setContextMenu(self._make_menu())
+            self._tray_menu = self._make_menu()      # 留引用，别被回收
+            self.tray.setContextMenu(self._tray_menu)
         elif reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.toggle_visible()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            # 救急通道：万一穿透了又找不到菜单，双击托盘图标直接解除
+            if self.cfg.get("passthrough", False):
+                self.set_passthrough(False)
+                self.show()
+                self.raise_()
+                self.say("穿透解除了，我回来啦")
+            else:
+                self.toggle_visible()
 
     def _make_menu(self):
         """建右键菜单：打开期间桌宠让位（临时取消置顶）并站住不动。"""
         m = self._build_menu()
+        self._menu_keepalive = m          # 菜单是纯 Python 对象，留个引用防回收
         # 不给菜单强加置顶标志——改成让桌宠自己在菜单期间退到普通层，
         # 这样菜单天然在最上面，而且是 Qt 标准的弹出菜单，二级菜单悬停最稳。
 
@@ -2747,8 +2764,9 @@ class PetWindow(QWidget):
     def set_passthrough(self, on):
         self.cfg["passthrough"] = bool(on)
         self._apply_passthrough(bool(on))
+        self.save_config()               # 立刻落盘，免得重启后又变回穿透状态
         if on:
-            self.say("我隐身了！右键托盘图标解除～")
+            self.say("我隐身啦！右键托盘图标 → 鼠标穿透 可以解除（双击托盘图标也行）")
 
     def set_topmost(self, on):
         self.cfg["topmost"] = bool(on)
