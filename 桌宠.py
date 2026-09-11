@@ -1629,6 +1629,11 @@ class PetWindow(QWidget):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         super().__init__(None, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # v1.0.10：二三级菜单点击的"摆渡"（这台 Windows 会把落在子菜单上的点击送给上层菜单）
+        self._click_bridge = MenuClickBridge(self)
+        _app = QApplication.instance()
+        if _app is not None:
+            _app.installNativeEventFilter(self._click_bridge)
         self.setMouseTracking(True)      # 菜单开着时要靠这个收鼠标移动消息（见 _forward_mouse_to_menu）
         self.setWindowTitle("大肥鱼桌宠")
         
@@ -3728,8 +3733,8 @@ class PetWindow(QWidget):
         menu_debug(f"[点击] 触发 {act.text()}")
         try:
             if act.menu() is not None:              # 还有下一层 → 展开它
-                rect = menu.actionGeometry(act)
-                act.menu().popup(menu.mapToGlobal(QPoint(rect.right() - 8, rect.top() - 6)))
+                sub = act.menu()
+                sub.popup(self._submenu_pos(menu, act, sub))     # 同样按"和本级重叠"放
                 return
             act.trigger()
         except Exception:
@@ -4015,14 +4020,10 @@ class PetWindow(QWidget):
             pass
 
     def _menu_tick(self):
-        """每 120ms 对一次账（只做"让位状态"的对账）。
-
-        二三级菜单的"悬停兜底 / 点击摆渡"试了很多版，在这台机器上始终不够稳
-        （Windows 不把鼠标移动送给弹出式子菜单、点击还会送给上层菜单，而且表现还跟
-        屏幕位置有关）。按主人的决定：**菜单行为回滚成 1.0.7 的原生样子**，
-        这里只保留与菜单无关的那个修复 —— 穿透状态对账（防止卡在穿透里回不来）。
-        """
+        """每 120ms：先对账"让位状态"，再跑 v1.0.10 的"放宽触发范围 + 子菜单重叠"尝试。"""
         self._sync_overlay_state()
+        self._menu_hover_watch()
+        self._prune_branches()
 
     def force_recover(self):
         """救急：把"给菜单让位"的状态强行收回来。
@@ -4075,6 +4076,61 @@ class PetWindow(QWidget):
             self._through_applied = False
             self._menu_click_through(False)
 
+    MENU_TRIGGER_MARGIN_X = 0       # 方案 1 已弃用（主人选方案 2）：不再放宽触发范围
+    MENU_OVERLAP = 16               # v1.0.10 方案 2：子菜单和一级菜单重叠的像素
+
+    def _menu_action_at(self, menu, pos, margin_x=0):
+        """按（可横向放宽的）矩形找光标下那一项；纵向不放宽，免得串到相邻条目上。"""
+        try:
+            local = menu.mapFromGlobal(pos)
+        except RuntimeError:
+            return None
+        if margin_x > 0:
+            try:
+                for a in menu.actions():
+                    if a.isSeparator():
+                        continue
+                    r = menu.actionGeometry(a)
+                    if (r.left() - margin_x <= local.x() <= r.right() + margin_x
+                            and r.top() <= local.y() <= r.bottom()):
+                        return a
+            except RuntimeError:
+                return None
+        return menu.actionAt(local)
+
+    def _submenu_pos(self, parent, holder, sub):
+        """算子菜单该放哪儿：和一级菜单**重叠 MENU_OVERLAP 像素**，缩短鼠标要走的距离。
+
+        关键：位置要在**弹出之前**算好（`sub.popup(位置)`），
+        否则会"先出现在 Qt 算的位置、再跳过来"——主人一眼就看出来了。
+        """
+        try:
+            item = parent.actionGeometry(holder)
+            a = parent.mapToGlobal(item.topLeft())
+            b = parent.mapToGlobal(item.bottomRight())
+            screen = QApplication.screenAt(a) or QApplication.primaryScreen()
+            geo = screen.availableGeometry()
+            size = sub.size() if sub.isVisible() else sub.sizeHint()
+            w, h = max(1, size.width()), max(1, size.height())
+            # 这一层跟着上一层"往哪边弹"走：上一层是往左弹的，这一层也往左。
+            # 不这样的话，孙子菜单会盖到爷爷（一级菜单）头上 —— 实测就是"三级菜单压住了
+            # 一级菜单的「层级」那一条，于是悬停「层级」再也不出子菜单"。
+            flip = bool(getattr(parent, "_dfy_flip_left", False))
+            if flip:
+                x = a.x() - w + self.MENU_OVERLAP
+            else:
+                x = b.x() - self.MENU_OVERLAP      # 先试右边（和这一条重叠）
+                if x + w > geo.right():            # 右边放不下 → 放左边，同样重叠
+                    x = a.x() - w + self.MENU_OVERLAP
+                    flip = True
+            sub._dfy_flip_left = flip
+            y = a.y() - 4
+            x = max(geo.left(), min(max(geo.left(), geo.right() - w), x))
+            y = max(geo.top(), min(max(geo.top(), geo.bottom() - h), y))
+            return QPoint(int(x), int(y))
+        except Exception:
+            return parent.mapToGlobal(QPoint(0, 0))
+
     def _menu_hover_watch(self):
         """菜单悬停的人为规则（用户定的，尽量贴近 Windows 原生）：
 
@@ -4093,30 +4149,37 @@ class PetWindow(QWidget):
         now = time.time()
         # 光标所在的菜单（含已经展开的子菜单）＋它下面的那一条
         menu = self._deepest_menu_at_cursor() or root
-        act = None
-        try:
-            local = menu.mapFromGlobal(pos)
-            if menu.rect().contains(local):
-                act = menu.actionAt(local)
-        except RuntimeError:
-            act = None
+        act = self._menu_action_at(menu, pos, self.MENU_TRIGGER_MARGIN_X)
 
         # ① 光标压在某一条带子菜单的项上（这条的任意位置都算）→ 用它的子菜单
         if act is not None and act.menu() is not None:
             sub = act.menu()
             if self._keep is not None and self._keep[1] is not act:
-                self._close_submenu(self._keep[1].menu())      # 移到别的条：旧的立刻关
-                menu_debug("[兜底] 换条 → 收掉上一个子菜单")
+                old_sub = None
+                try:
+                    old_sub = self._keep[1].menu()
+                except RuntimeError:
+                    old_sub = None
+                # v1.0.10：如果"旧的子菜单"就是光标现在所在这一层（或它的上层），
+                # 千万别关它 —— 关掉它等于把光标脚下的菜单收走（三级菜单一进去就没）。
+                if old_sub is not None and not self._menu_covers(old_sub, menu):
+                    self._close_submenu(old_sub)   # 移到别的条：旧的立刻关
+                    menu_debug("[兜底] 换条 → 收掉上一个子菜单")
             self._keep = (menu, act)
             self._leave_at = 0.0
             self._hover_key = (id(menu), act.text())
+            self._ensure_chain_open(menu)      # 上层被 Qt 收掉了就补回来
             if not sub.isVisible():
-                menu.setActiveAction(act)
+                # 方案 2：弹出前就把位置算成"和一级重叠"，中间不会有跳一下
+                sub.popup(self._submenu_pos(menu, act, sub))
                 menu_debug(f"[兜底] 展开子菜单：{act.text()}")
             return
 
         # ② 光标已经在子菜单里 → 保持（喂一个位置给 Qt，免得它以为鼠标离开了）
         if self._keep is not None:
+            deep_now = self._deepest_menu_at_cursor()
+            if deep_now is not None:
+                self._ensure_chain_open(deep_now)   # 上层被 Qt 收掉了就补回来
             parent, holder = self._keep
             sub = None
             try:
@@ -4141,15 +4204,109 @@ class PetWindow(QWidget):
                 except RuntimeError:
                     pass
             # ③ 既不在条上、也不在子菜单里 → 0.35 秒宽限（从条走到子菜单的空档），超时收
+            if self._menu_action_at(parent, pos, self.MENU_TRIGGER_MARGIN_X) is holder:
+                self._leave_at = 0.0        # v1.0.10：光标还在这一条的"放宽范围"里 → 保持
+                return
             if self._leave_at == 0.0:
                 self._leave_at = now
                 return
             if now - self._leave_at <= 0.35:
                 return
+            # 光标可能落在更深一层（三级菜单）里：那就把"保持目标"跟下去，别手贱收掉
+            deep = self._deepest_menu_at_cursor()
+            if deep is not None and deep is not sub:
+                self._ensure_chain_open(deep)      # Qt 会把上层收掉 → 逐个补回来
+                found = self._find_submenu_parent(deep)
+                if found is not None:
+                    self._keep = found
+                self._leave_at = 0.0
+                return
             self._close_submenu(sub)
             self._keep = None
             self._leave_at = 0.0
         self._hover_key = None
+
+    def _ensure_chain_open(self, deep):
+        """把 deep 以上的祖先菜单逐个保住：Qt 把哪一层收掉了，就重新展开哪一层。"""
+        chain = []
+        cur = deep
+        for _ in range(5):
+            found = self._find_submenu_parent(cur)
+            if found is None:
+                break
+            chain.append(found)
+            cur = found[0]
+        for parent, holder in reversed(chain):
+            try:
+                sub = holder.menu()
+                if sub is not None and not sub.isVisible() and parent.isVisible():
+                    sub.popup(self._submenu_pos(parent, holder, sub))   # 直接补弹（setActiveAction 不一定生效）
+                    menu_debug(f"[兜底] 补回上一层：{holder.text()}")
+            except RuntimeError:
+                continue
+
+    def _menu_covers(self, anc, menu):
+        """anc 是不是 menu 本身、或者 menu 的某一层"上层菜单"。"""
+        if anc is None or menu is None:
+            return False
+        cur = menu
+        for _ in range(6):
+            if cur is anc:
+                return True
+            found = self._find_submenu_parent(cur)
+            if found is None:
+                return False
+            cur = found[0]
+        return False
+
+    def _prune_branches(self):
+        """一次只留一支：光标所在的那一支留着，旁边那些残留的子菜单收掉。
+
+        没有这条对账，会出现"光标已经跑到别的条目上、上一支的子菜单还挂在屏幕上"
+        （实测：形象那一支挂在「层级」旁边，把「层级」的子菜单挡了个正着）。
+        """
+        root = getattr(self, "_menu_keepalive", None)
+        if not self.ui_open or root is None:
+            return
+        deep = self._deepest_menu_at_cursor()
+        if deep is None:
+            return                      # 光标在空档里（0.35 秒宽限中）→ 什么都别动
+        keep = None
+        if self._keep is not None:
+            try:
+                keep = self._keep[1].menu()
+            except RuntimeError:
+                keep = None
+        self._prune_menu(root, deep, keep)
+
+    def _prune_menu(self, menu, deep, keep):
+        for act in menu.actions():
+            try:
+                child = act.menu()
+            except RuntimeError:
+                continue
+            if child is None:
+                continue
+            try:
+                if not child.isVisible():
+                    continue
+            except RuntimeError:
+                continue
+            if self._menu_covers(child, deep) or self._menu_covers(child, keep):
+                self._prune_menu(child, deep, keep)
+            else:
+                self._close_menu_tree(child)
+
+    def _close_menu_tree(self, menu):
+        """把这一支子菜单（含它下面的）全收掉。"""
+        try:
+            for act in menu.actions():
+                child = act.menu()
+                if child is not None:
+                    self._close_menu_tree(child)
+        except RuntimeError:
+            return
+        self._close_submenu(menu)
 
     @staticmethod
     def _close_submenu(sub):
