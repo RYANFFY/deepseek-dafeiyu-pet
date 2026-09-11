@@ -1623,7 +1623,8 @@ class PetWindow(QWidget):
                 self.action = None
 
         if self.ui_open:        # 菜单 / 对话框开着：站住不动，免得跳上去把设置面板遮住
-            self.update()
+            if self.t % 10 == 0:      # 也别 50 帧/秒地刷，免得干扰弹出菜单的悬停判定
+                self.update()
             return
 
         if self.dragging:
@@ -1923,7 +1924,10 @@ class PetWindow(QWidget):
             self.say(f"上一轮消耗 ¥{amount:.4f}（{tokens / 1000:.1f}k token）")
 
     def _build_menu(self):
-        m = QMenu(self)
+        # 菜单不挂在桌宠窗口下面（用无父窗口的弹出菜单）：
+        # 依附桌宠时，子菜单的悬停/收起会受桌宠那个"无边框+半透明+置顶"窗口影响，
+        # 靠屏幕边缘往左弹的子菜单尤其容易被误判成"鼠标离开了菜单"而收起来。
+        m = QMenu()
         mode_menu = m.addMenu("模式")
         for label, key in [("自由散步", "wander"), ("跟随鼠标", "follow"), ("原地待着", "still")]:
             a = mode_menu.addAction(label)
@@ -2139,12 +2143,41 @@ class PetWindow(QWidget):
             self.toggle_visible()
 
     def _make_menu(self):
-        """建右键菜单：菜单本身置顶，并且打开期间让桌宠站住不动。"""
+        """建右键菜单：打开期间桌宠让位（临时取消置顶）并站住不动。"""
         m = self._build_menu()
-        m.setWindowFlags(m.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        m.aboutToShow.connect(lambda: setattr(self, "ui_open", True))
-        m.aboutToHide.connect(lambda: setattr(self, "ui_open", False))
+        # 不给菜单强加置顶标志——改成让桌宠自己在菜单期间退到普通层，
+        # 这样菜单天然在最上面，而且是 Qt 标准的弹出菜单，二级菜单悬停最稳。
+
+        def on_show():
+            self.ui_open = True
+            self._demote_topmost(True)
+
+        def on_hide():
+            self.ui_open = False
+            self._demote_topmost(False)
+
+        m.aboutToShow.connect(on_show)
+        m.aboutToHide.connect(on_hide)
         return m
+
+    def _demote_topmost(self, on):
+        """菜单打开期间把自己降到非置顶（菜单关了再按设定层级还原）。"""
+        try:
+            HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+            SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+            if on:
+                after = HWND_NOTOPMOST
+            elif self.layer == "top":
+                after = HWND_TOPMOST
+            else:
+                after = None
+            if after is None:
+                return
+            ctypes.windll.user32.SetWindowPos(
+                ctypes.c_void_p(int(self.winId())), ctypes.c_void_p(after),
+                0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+        except Exception:
+            pass
 
     def _open_menu(self, pos):
         """弹右键菜单。
@@ -2159,6 +2192,7 @@ class PetWindow(QWidget):
             m.exec(pos)
         finally:
             self.ui_open = False
+            self._demote_topmost(False)      # 保险：菜单没触发 aboutToHide 也要还原层级
 
     def _ui_guard(self):
         """对话框期间用的上下文管理器：桌宠站住不动，免得盖住对话框。"""
@@ -2167,9 +2201,11 @@ class PetWindow(QWidget):
         class _Guard:
             def __enter__(self):
                 pet.ui_open = True
+                pet._demote_topmost(True)
 
             def __exit__(self, *exc):
                 pet.ui_open = False
+                pet._demote_topmost(False)
                 return False
 
         return _Guard()
