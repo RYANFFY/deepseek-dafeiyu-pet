@@ -1,24 +1,31 @@
-# 大肥鱼桌宠 🐋
+# 大肥鱼桌宠 🐋 · DeepSeek 桌面宠物 / 余额挂件（Windows 独立桌面版）
 
 English | [中文](README.md) → [README.en.md](README.en.md)
 
+> **DeepSeek 桌宠 · DeepSeek 桌面宠物 · 大肥鱼 / 鲸鱼娘桌宠 · DeepSeek 余额挂件（独立桌面版，不依赖 DSH）·
+> DeepSeek Harness（DSH）小鲸鱼余额挂件同款能力：余额 / 今日已用 / 峰谷时段 / 每轮消耗统计 ·
+> Windows 双击即用 · 可拖拽吸附 / 左吸附翻面 / 数字滚动 / Q 弹音效**
+
 ## ⬇️ 下载即用（Windows）
 
-[![最新版本](https://img.shields.io/github/v/release/RYANFFY/dafeiyu-pet?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/RYANFFY/dafeiyu-pet/releases/latest)
-[![下载量](https://img.shields.io/github/downloads/RYANFFY/dafeiyu-pet/total?label=%E4%B8%8B%E8%BD%BD%E9%87%8F)](https://github.com/RYANFFY/dafeiyu-pet/releases)
+[![最新版本](https://img.shields.io/github/v/release/RYANFFY/deepseek-dafeiyu-pet?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest)
+[![下载量](https://img.shields.io/github/downloads/RYANFFY/deepseek-dafeiyu-pet/total?label=%E4%B8%8B%E8%BD%BD%E9%87%8F)](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases)
 
-### 👉 [**点这里下载最新版 exe**](https://github.com/RYANFFY/dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
+### 👉 [**点这里下载最新版 exe**](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
 
 约 60MB 单文件，**双击就能用，不需要安装 Python**。（这个链接永远指向最新版，可以直接收藏）
 
 - 首次运行 Windows 可能提示"未知发布者"（exe 没做代码签名）→ 点「更多信息」→「仍要运行」即可
-- 想看历史版本 / 更新说明：[Releases 页面](https://github.com/RYANFFY/dafeiyu-pet/releases) ｜ [CHANGELOG](CHANGELOG.md)
+- 想看历史版本 / 更新说明：[Releases 页面](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases) ｜ [CHANGELOG](CHANGELOG.md)
 - 打包版的设置写在 `%APPDATA%\大肥鱼桌宠\`（不会往桌面丢文件）
 - 用完想卸载：删掉 exe + 上面那个配置目录就行
 
-DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
+DeepSeek V4 Pro 二创形象「鲸鱼娘 · 大肥鱼」的透明桌面宠物（Windows 独立桌面版）。
 
-基于三视图素材（正面 / 侧面 / 背面），用 Python + PySide6 实现，无边框透明置顶窗口。
+基于三视图素材（正面 / 侧面 / 背面），用 Python + PySide6 实现，无边框透明窗口；
+在这套桌宠基础上并入了 **DeepSeek Harness（DSH）小鲸鱼余额挂件**的能力 ——
+余额、今日已用、峰谷时段、每轮消耗统计，所以它既是桌宠，也是一个随桌面常驻的
+**DeepSeek 余额监控挂件**。
 
 ## 功能
 
@@ -194,7 +201,7 @@ PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）�
 - 合并时维护方修复：
   - 线程安全：DeepSeek 回复由后台线程直接调用 Qt 界面改为经队列转发主线程（`_say_queue`）
   - 配置保护：`config.json` 保持不入仓库（本地配置含 API Key，防止泄露）
-- **本仓库的改造**（[RYANFFY/dafeiyu-pet](https://github.com/RYANFFY/dafeiyu-pet)）：在原桌宠基础上删掉 AI 对话 / 喂食 / 系统状态监控，
+- **本仓库的改造**（[RYANFFY/deepseek-dafeiyu-pet](https://github.com/RYANFFY/deepseek-dafeiyu-pet)）：在原桌宠基础上删掉 AI 对话 / 喂食 / 系统状态监控，
   只留「移动 + 天气 + 外观」，再从 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)（MIT）
   并入余额挂件那套能力（余额泡泡、今日已用记账、数字滚动、四边吸附、左吸附翻面、按压 Q 弹、按键音效），
   并额外做了：峰谷时段显示、每轮消耗统计（Agent 名称 / 日志目录可配、兼容多种日志结构）、

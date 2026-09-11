@@ -1,18 +1,22 @@
-# Da Fei Yu Desktop Pet 🐋
+# Da Fei Yu Desktop Pet 🐋 · DeepSeek Desktop Pet & Balance Widget (Windows)
 
 中文版说明见 [README.md](README.md)。
 
+> **Keywords**: DeepSeek desktop pet · DeepSeek 桌宠 · Da Fei Yu / 大肥鱼 / whale-girl pet ·
+> DeepSeek balance widget (standalone, no DSH required) · balance, today's spend, peak/off-peak hours,
+> per-turn cost · Windows, double-click to run · drag-to-snap, flip on left snap, rolling numbers, click sounds
+
 ## ⬇️ Download (Windows)
 
-[![latest release](https://img.shields.io/github/v/release/RYANFFY/dafeiyu-pet?label=latest)](https://github.com/RYANFFY/dafeiyu-pet/releases/latest)
+[![latest release](https://img.shields.io/github/v/release/RYANFFY/deepseek-dafeiyu-pet?label=latest)](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest)
 
-### 👉 [**Download the latest exe**](https://github.com/RYANFFY/dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
+### 👉 [**Download the latest exe**](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
 
 Single file, ~60MB, just double-click — no Python required.
 
 - Windows may warn about an unknown publisher (the exe is not code-signed): click "More info" → "Run anyway"
 - Packaged build keeps its settings in `%APPDATA%\大肥鱼桌宠\`
-- All versions and release notes: [Releases](https://github.com/RYANFFY/dafeiyu-pet/releases)
+- All versions and release notes: [Releases](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases)
 
 A transparent always-on-top desktop pet based on the DeepSeek fan-art character
 「鲸鱼娘 · 大肥鱼」, built with Python + PySide6. It walks around your desktop,
