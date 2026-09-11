@@ -44,6 +44,7 @@ with the balance-widget features ported from
 - Click sounds: press + release clips merged into one complete sound, played through an always-open audio stream (no clipped first note, rapid clicks overlap)
 - **Peak / off-peak indicator**: weekday 09:00–12:00 and 14:00–18:00 are peak, everything else (lunch break, evenings, weekends all day) is off-peak; three wording styles, and it tells you when the period switches
 - **Per-turn cost**: reads the token usage from Codex session logs (`~/.codex-deepseek/sessions/*.jsonl`), converts it with the same peak/off-peak pricing table and reports it after each turn
+- **Menus**: snapping and the peak wording switcher live in their own top-level menus (吸附 / 文案), no longer buried under 余额
 
 **Weather**
 
@@ -63,8 +64,21 @@ with the balance-widget features ported from
 
 **Other**
 
-- Process reactions: it comments when you open Steam, your browser, a player, etc. (edit `PROCESS_LINES`)
+- Process reactions: it comments when you switch to Steam, your browser, a player, etc.
+  Menu "进程联动 → 扫描电脑应用并添加…" opens a **visual list with real app icons** (searchable, like Windows Settings → Apps):
+  built-in apps are marked `● built-in (can't be added twice)` but you can **edit their lines** (`修改默认台词`, replacing the
+  built-in text, with one-click `恢复内置台词`), and any other app can get your own trigger text
 - Multiple balance sources: add another API key (DeepSeek and OpenRouter can be queried; services like OpenAI have no balance API and it will tell you so)
+- **Per-turn cost is agent-agnostic**: set the **agent name** (shows as "last turn Claude cost ¥…") and the **session log
+  directory** from the menu; the log parser understands Codex (`payload.usage`), Claude Code (`message.usage`) and
+  OpenAI-style (`prompt_tokens`/`completion_tokens`) records
+
+**Right-click menu** (top level): 模式 / 大小 / 形象 / 吸附 / 文案 / 天气 / 余额 / 音效 / 层级 / 透明度 / 进程联动 /
+显示隐藏 / 回到屏幕内 / 鼠标穿透 / 开机自启 / 退出
+
+- 吸附: snap to edges / flip when snapped left　文案: peak-off-peak display and its three wording styles
+- 层级: always-on-top / bottom-most / normal　透明度: 100% → 20%
+- 形象: switch skins, and replace any of the three views or the cut-out with your own picture
 
 ## Requirements
 
