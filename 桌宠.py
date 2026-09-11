@@ -316,6 +316,10 @@ PROCESS_LINES = {
 NO_BALANCE_SERVICES = ("openai", "chatgpt", "gpt")
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
+# 从任意 agent 的会话日志里认 token 用量时用到的键名（Codex / Claude Code 等结构不同）
+USAGE_TOKEN_KEYS = ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens",
+                    "cached_input_tokens", "cache_read_input_tokens", "total_tokens")
+
 # 每轮 Codex 对话消耗：读 Codex 会话日志里的 token 用量
 CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex-deepseek", "sessions")
 CODEX_SCAN_MS = 3000        # 扫描间隔
@@ -465,6 +469,79 @@ def query_openrouter_balance(key):
         return {"ok": True, "total": round(total - used, 4), "currency": "USD"}
     except Exception as ex:
         return {"ok": False, "error": str(ex)[:60]}
+
+
+def extract_usage(obj, depth=0):
+    """从任意 agent 的日志行里挖出 token 用量。
+
+    Codex 的日志是 `payload.usage`，Claude Code 之类是 `message.usage`，键名也不一样
+    （input_tokens / prompt_tokens、cached_input_tokens / cache_read_input_tokens）。
+    这里递归找第一个带 token 字段的对象，并归一化成内部统一格式。
+    """
+    if depth > 6 or not isinstance(obj, (dict, list)):
+        return None
+    if isinstance(obj, dict):
+        if any(k in obj for k in USAGE_TOKEN_KEYS):
+            inp = obj.get("input_tokens")
+            if inp is None:
+                inp = obj.get("prompt_tokens")
+            out = obj.get("output_tokens")
+            if out is None:
+                out = obj.get("completion_tokens")
+            if isinstance(inp, (int, float)) or isinstance(out, (int, float)):
+                inp = int(inp or 0)
+                out = int(out or 0)
+                hit = int(obj.get("cached_input_tokens")
+                          or obj.get("cache_read_input_tokens") or 0)
+                total = int(obj.get("total_tokens") or 0) or (inp + out)
+                if inp or out:
+                    return {"input_tokens": inp, "output_tokens": out,
+                            "cached_input_tokens": hit, "total_tokens": total}
+        for value in obj.values():
+            got = extract_usage(value, depth + 1)
+            if got:
+                return got
+    else:
+        for value in obj:
+            got = extract_usage(value, depth + 1)
+            if got:
+                return got
+    return None
+
+
+def scan_apps():
+    """扫描本机应用：正在运行的进程 + 开始菜单里的快捷方式。
+
+    返回 [(exe 名小写, 展示名)]，按展示名排序。
+    """
+    apps = {}
+    for name in list_process_names():
+        if name.endswith(".exe"):
+            apps.setdefault(name, name)
+    # 开始菜单的快捷方式（含用户目录），交给 PowerShell 解析目标 exe
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$sh=New-Object -ComObject WScript.Shell;"
+        "$dirs=@(\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\","
+        "\"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\");"
+        "Get-ChildItem $dirs -Recurse -Filter *.lnk | ForEach-Object {"
+        "$t=$sh.CreateShortcut($_.FullName).TargetPath;"
+        "if($t){ \"$t|$($_.BaseName)\" } }"
+    )
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, timeout=25,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        for line in (out.stdout or "").splitlines():
+            if "|" not in line:
+                continue
+            target, label = line.split("|", 1)
+            exe = os.path.basename(target.strip()).lower()
+            if exe.endswith(".exe"):
+                apps.setdefault(exe, label.strip() or exe)
+    except Exception:
+        pass
+    return sorted(apps.items(), key=lambda kv: kv[1].lower())
 
 
 def foreground_process_name():
@@ -828,6 +905,9 @@ class PetWindow(QWidget):
             "custom_skins": {},
             "balance_source": "DeepSeek",
             "other_keys": [],
+            "custom_process_lines": {},
+            "agent_name": "Codex",
+            "agent_sessions_dir": "",
             "codex_sessions_dir": CODEX_SESSIONS_DIR
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
@@ -942,9 +1022,13 @@ class PetWindow(QWidget):
         self._say_queue = []          # 要冒泡的文本
         self._city_queue = []         # 自动定位结果
         self._city_pick_queue = []    # 城市搜索候选
+        self._app_queue = []          # 扫描到的本机应用列表
 
         # 每轮 Codex 对话消耗（读 Codex 会话日志的 token 用量）
-        self.codex_dir = self.cfg.get("codex_sessions_dir", CODEX_SESSIONS_DIR)
+        self.agent_name = (self.cfg.get("agent_name") or "Codex").strip() or "Codex"
+        self.agent_dir = (self.cfg.get("agent_sessions_dir")
+                          or self.cfg.get("codex_sessions_dir") or CODEX_SESSIONS_DIR)
+        self.codex_dir = self.agent_dir
         self._codex_file = None
         self._codex_pos = 0
         self._codex_turn = None
@@ -1612,6 +1696,8 @@ class PetWindow(QWidget):
                                                 0, False, Qt.WindowType.WindowStaysOnTopHint)
             if ok and pick:
                 self._apply_city(dict(items)[pick])
+        if self._app_queue:
+            self._pick_app_dialog(self._app_queue.pop(0))
 
         if self.jump_t > 0:
             self.jump_t = max(0.0, self.jump_t - 0.06)
@@ -1715,10 +1801,11 @@ class PetWindow(QWidget):
         """
         if not self.process_alerts:
             return
+        lines_map = self._process_lines_map()
         name = foreground_process_name()
         if not name:
             return
-        if name not in PROCESS_LINES:
+        if name not in lines_map:
             self._foreground_proc = name
             return
         if name == self._foreground_proc:
@@ -1729,7 +1816,100 @@ class PetWindow(QWidget):
         if now - self._proc_said_at.get(name, 0) < cooldown:
             return
         self._proc_said_at[name] = now
-        self.say(random.choice(PROCESS_LINES[name]))
+        self.say(random.choice(lines_map[name]))
+
+    def _process_lines_map(self):
+        """默认台词表 + 用户自己加的应用（同名时两句都会说）。"""
+        merged = {k: list(v) for k, v in PROCESS_LINES.items()}
+        for exe, lines in (self.cfg.get("custom_process_lines") or {}).items():
+            exe = (exe or "").strip().lower()
+            if not exe or not lines:
+                continue
+            merged[exe] = list(merged.get(exe, [])) + [t for t in lines if t]
+        return merged
+
+    def scan_apps_dialog(self):
+        """扫描本机应用，然后让用户挑一个加"打开时触发的文字"。"""
+        self.say("我扫一下你电脑上的应用…")
+        threading.Thread(target=lambda: self._app_queue.append(scan_apps()),
+                         daemon=True).start()
+
+    def _pick_app_dialog(self, apps):
+        if not apps:
+            self.say("没扫到应用，等会儿再试")
+            return
+        items = [f"{label}（{exe}）" for exe, label in apps]
+        with self._ui_guard():
+            pick, ok = QInputDialog.getItem(self, "选择应用",
+                                            f"扫到 {len(items)} 个应用，选一个：",
+                                            items, 0, False,
+                                            Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not pick:
+            return
+        exe = pick.rsplit("（", 1)[-1].rstrip("）").strip().lower()
+        with self._ui_guard():
+            text, ok2 = QInputDialog.getText(
+                self, f"{exe} 的触发文字",
+                "打开这个应用时它要说什么？\n（想说多句就用 | 隔开，比如：又玩？|记得喝水）",
+                QLineEdit.EchoMode.Normal, "", Qt.WindowType.WindowStaysOnTopHint)
+        if not ok2 or not text.strip():
+            return
+        lines = [t.strip() for t in text.split("|") if t.strip()]
+        custom = dict(self.cfg.get("custom_process_lines") or {})
+        custom[exe] = list(custom.get(exe, [])) + lines
+        self.cfg["custom_process_lines"] = custom
+        self.save_config()
+        self.say(f"记住啦，开 {exe} 我就说这句")
+
+    def remove_custom_app_dialog(self):
+        custom = dict(self.cfg.get("custom_process_lines") or {})
+        if not custom:
+            self.say("还没有自定义的应用呢")
+            return
+        names = sorted(custom)
+        with self._ui_guard():
+            pick, ok = QInputDialog.getItem(self, "删除自定义应用", "删掉哪个？",
+                                            names, 0, False,
+                                            Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not pick:
+            return
+        custom.pop(pick, None)
+        self.cfg["custom_process_lines"] = custom
+        self.save_config()
+        self.say(f"已删掉 {pick} 的台词")
+
+    def set_agent_name_dialog(self):
+        """设置"每轮消耗"里显示的 agent 名称（不是每个人都用 Codex）。"""
+        with self._ui_guard():
+            name, ok = QInputDialog.getText(
+                self, "Agent 名称",
+                "你用的 agent 叫什么？\n（会显示成「上一轮 XX 消耗 ¥…」，例如 Codex / Claude / Cursor）",
+                QLineEdit.EchoMode.Normal, self.agent_name,
+                Qt.WindowType.WindowStaysOnTopHint)
+        if ok and name.strip():
+            self.agent_name = name.strip()
+            self.cfg["agent_name"] = self.agent_name
+            self.save_config()
+            self.say(f"好，以后就说「上一轮 {self.agent_name} 消耗」")
+
+    def set_agent_dir_dialog(self):
+        """设置会话日志目录（放 .jsonl 的那个目录，别的 agent 也能指向自己的日志）。"""
+        start = self.agent_dir if os.path.isdir(self.agent_dir) else os.path.expanduser("~")
+        with self._ui_guard():
+            path = QFileDialog.getExistingDirectory(
+                self, "选择会话日志目录（里面是 .jsonl）", start,
+                QFileDialog.Option.DontUseNativeDialog)
+        if not path:
+            return
+        self.agent_dir = path
+        self.codex_dir = path
+        self.cfg["agent_sessions_dir"] = path
+        self.save_config()
+        self._codex_file = None          # 重新对齐到最新日志
+        self._codex_pos = 0
+        self._codex_turn = None
+        self._codex_tokens = {}
+        self.say("日志目录换好了，我从现在开始盯")
 
     def _look_at_cursor(self):
         """原地待着的时候偶尔转头看向鼠标，显得机灵点。"""
@@ -1883,21 +2063,28 @@ class PetWindow(QWidget):
         self._report_codex_turn()
 
     def _ingest_codex_line(self, line):
-        if '"token_usage_record"' not in line and '"turn_context"' not in line:
+        if '"usage"' not in line and '"token_usage_record"' not in line and '"turn_context"' not in line:
             return
         try:
             obj = json.loads(line)
         except Exception:
             return
         payload = obj.get("payload") or {}
-        turn = payload.get("turn_id")
+        # 轮次 id：Codex 用 turn_id；别的 agent 用 message.id / uuid / requestId
+        turn = (payload.get("turn_id") or obj.get("turn_id")
+                or payload.get("uuid") or obj.get("uuid") or obj.get("requestId"))
         if not turn:
-            return
+            msg = obj.get("message")
+            if isinstance(msg, dict):
+                turn = msg.get("id")
+        if not turn:
+            turn = self._codex_turn or "current"      # 认不出轮次就靠"安静 20 秒"结算
         if turn != self._codex_turn:
             if self._codex_turn:                  # 上一轮结束了
                 self._report_codex_turn(force=True)
             self._codex_turn = turn
-        usage = payload.get("turn_token_usage") or payload.get("usage")
+        usage = (payload.get("turn_token_usage") or payload.get("usage")
+                 or extract_usage(obj))
         if usage:
             prev = self._codex_tokens.get(turn)
             if not prev or (usage.get("total_tokens") or 0) >= (prev.get("total_tokens") or 0):
@@ -1921,7 +2108,7 @@ class PetWindow(QWidget):
             self._codex_reported = set(list(self._codex_reported)[-25:])
         amount, tokens = codex_usage_cost(self._codex_tokens.get(turn))
         if tokens:
-            self.say(f"上一轮消耗 ¥{amount:.4f}（{tokens / 1000:.1f}k token）")
+            self.say(f"上一轮 {self.agent_name} 消耗 ¥{amount:.4f}（{tokens / 1000:.1f}k token）")
 
     def _build_menu(self):
         # 菜单不挂在桌宠窗口下面（用无父窗口的弹出菜单）：
@@ -2004,28 +2191,53 @@ class PetWindow(QWidget):
         baa.setCheckable(True)
         baa.setChecked(self.balance_always)
         baa.triggered.connect(self.set_balance_always)
-        sna = bal_menu.addAction("拖拽吸附四边")
+
+        # 吸附：独立菜单，不再塞在「余额」下面
+        snap_menu = m.addMenu("吸附")
+        sna = snap_menu.addAction("拖拽吸附四边")
         sna.setCheckable(True)
         sna.setChecked(self.snap_on)
         sna.triggered.connect(self.set_snap)
-        fka = bal_menu.addAction("左吸附时翻面")
+        fka = snap_menu.addAction("左吸附时翻面")
         fka.setCheckable(True)
         fka.setChecked(self.flip_on_left)
         fka.triggered.connect(self.set_flip_on_left)
-        tca = bal_menu.addAction("每轮 Codex 对话后显示消耗")
-        tca.setCheckable(True)
-        tca.setChecked(self.turn_cost_on)
-        tca.triggered.connect(self.set_turn_cost)
-        pka = bal_menu.addAction("显示峰谷时段")
+
+        # 文案：独立菜单（峰谷显示 + 三档文案）
+        text_menu = m.addMenu("文案")
+        pka = text_menu.addAction("显示峰谷时段")
         pka.setCheckable(True)
         pka.setChecked(self.show_peak)
         pka.triggered.connect(self.set_show_peak)
-        peak_menu = bal_menu.addMenu("峰谷文案")
+        peak_menu = text_menu.addMenu("峰谷文案")
         for style in PEAK_TEXT_STYLES:
             a = peak_menu.addAction(style)
             a.setCheckable(True)
             a.setChecked(self.peak_style == style)
             a.triggered.connect(lambda _, s=style: self.set_peak_style(s))
+
+        # 每轮消耗：自己的子菜单，Agent 名称/日志目录可配（不是每个人都用 Codex）
+        turn_menu = bal_menu.addMenu("每轮消耗统计")
+        tca = turn_menu.addAction(f"每轮对话后显示消耗（当前：{self.agent_name}）")
+        tca.setCheckable(True)
+        tca.setChecked(self.turn_cost_on)
+        tca.triggered.connect(self.set_turn_cost)
+        turn_menu.addSeparator()
+        turn_menu.addAction("设置 Agent 名称…", self.set_agent_name_dialog)
+        turn_menu.addAction("设置会话日志目录…", self.set_agent_dir_dialog)
+        turn_menu.addSeparator()
+        turn_menu.addAction(f"日志目录：{os.path.basename(self.agent_dir.rstrip(os.sep)) or self.agent_dir}").setEnabled(False)
+
+        # 进程联动：独立菜单，支持扫描本机应用并自定义触发文字
+        proc_menu = m.addMenu("进程联动")
+        pra = proc_menu.addAction("打开应用时冒泡")
+        pra.setCheckable(True)
+        pra.setChecked(self.process_alerts)
+        pra.triggered.connect(self.set_process_alerts)
+        proc_menu.addSeparator()
+        proc_menu.addAction("扫描电脑应用并添加…", self.scan_apps_dialog)
+        if self.cfg.get("custom_process_lines"):
+            proc_menu.addAction("删除自定义应用…", self.remove_custom_app_dialog)
         snd_menu = m.addMenu("音效")
         so = snd_menu.addAction("按键音效")
         so.setCheckable(True)
@@ -2055,10 +2267,6 @@ class PetWindow(QWidget):
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
         pa.triggered.connect(lambda on: self.set_passthrough(on))
-        pra = m.addAction("进程提醒（开应用时冒泡）")
-        pra.setCheckable(True)
-        pra.setChecked(self.process_alerts)
-        pra.triggered.connect(self.set_process_alerts)
         aa = m.addAction("开机自启")
         aa.setCheckable(True)
         aa.setChecked(self.cfg["autostart"])
