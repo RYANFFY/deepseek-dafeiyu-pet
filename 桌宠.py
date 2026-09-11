@@ -344,8 +344,8 @@ class AppScanDialog(QDialog):
         self.resize(470, 580)
 
         lay = QVBoxLayout(self)
-        self.tip = QLabel("选一个应用 → 点「添加触发文字」。\n"
-                          "● = 默认就有台词　✓ = 你自己加过的")
+        self.tip = QLabel("选一个应用，然后点下面的按钮。\n"
+                          "● 内置默认（已经自带台词，不能重复添加，但可以改）　✎ 已改写　✓ 你自己加的")
         self.tip.setWordWrap(True)
         lay.addWidget(self.tip)
 
@@ -370,8 +370,10 @@ class AppScanDialog(QDialog):
         self.del_btn.clicked.connect(self._del_line)
         close_btn.clicked.connect(self.accept)
         self.listw.itemDoubleClicked.connect(lambda _item: self._add_line())
+        self.listw.currentItemChanged.connect(lambda *_: self._refresh_buttons())
         self.search.textChanged.connect(self._filter)
         self._fill(apps)
+        self._refresh_buttons()
 
     def _fill(self, apps):
         self.listw.clear()
@@ -399,12 +401,42 @@ class AppScanDialog(QDialog):
         exe = item.data(Qt.ItemDataRole.UserRole)
         base = item.data(Qt.ItemDataRole.UserRole + 1)
         custom = self.owner.cfg.get("custom_process_lines") or {}
-        if exe in custom:
-            item.setText(f"{base}　✓已自定义")
-        elif exe in PROCESS_LINES:
-            item.setText(f"{base}　●默认台词")
+        overrides = self.owner.cfg.get("default_line_overrides") or {}
+        if exe in PROCESS_LINES:
+            # 内置应用：已经自带台词，不能再"重复添加"，但可以改写或恢复
+            tag = "✎已改写默认台词" if exe in overrides else "●内置默认（不可重复添加）"
+            item.setText(f"{base}　{tag}")
+        elif exe in custom:
+            item.setText(f"{base}　✓已添加")
         else:
             item.setText(base)
+
+    def _state_of(self, exe):
+        """返回 (是否内置, 当前文字列表, 是否已改写/已添加)。"""
+        overrides = self.owner.cfg.get("default_line_overrides") or {}
+        custom = self.owner.cfg.get("custom_process_lines") or {}
+        if exe in PROCESS_LINES:
+            lines = overrides.get(exe) or PROCESS_LINES[exe]
+            return True, list(lines), exe in overrides
+        lines = custom.get(exe) or []
+        return False, list(lines), bool(lines)
+
+    def _refresh_buttons(self):
+        exe = None
+        item = self.listw.currentItem()
+        if item is not None and not item.isHidden():
+            exe = item.data(Qt.ItemDataRole.UserRole)
+        if not exe:
+            self.add_btn.setEnabled(False)
+            self.del_btn.setEnabled(False)
+            return
+        is_default, lines, changed = self._state_of(exe)
+        self.add_btn.setEnabled(True)
+        self.add_btn.setText("修改默认台词" if is_default else
+                             ("修改触发文字" if lines else "添加触发文字"))
+        self.del_btn.setEnabled(changed)
+        self.del_btn.setText("恢复内置台词" if (is_default and changed) else
+                             ("删除自定义文字" if (not is_default and lines) else "无需清理"))
 
     def _filter(self, text):
         text = (text or "").strip().lower()
@@ -423,35 +455,57 @@ class AppScanDialog(QDialog):
         exe = self._current_exe()
         if not exe:
             return
+        is_default, current, _changed = self._state_of(exe)
+        title = "修改内置台词" if is_default else "触发文字"
+        hint = ("这是内置应用，原来的台词已经在下面了，改完会替换掉它（不会重复添加）："
+                if is_default else "打开这个应用时它要说什么？（一句一行，可以写多行）")
         text, ok = QInputDialog.getMultiLineText(
-            self, f"{exe} 的触发文字",
-            "打开这个应用时它要说什么？（一句一行，可以写多行）", "",
+            self, f"{exe} · {title}", hint, "\n".join(current),
             Qt.WindowType.WindowStaysOnTopHint)
         if not ok or not text.strip():
             return
         lines = [t.strip() for t in text.splitlines() if t.strip()]
-        custom = dict(self.owner.cfg.get("custom_process_lines") or {})
-        custom[exe] = list(custom.get(exe, [])) + lines
-        self.owner.cfg["custom_process_lines"] = custom
+        if is_default:
+            overrides = dict(self.owner.cfg.get("default_line_overrides") or {})
+            overrides[exe] = lines
+            self.owner.cfg["default_line_overrides"] = overrides
+        else:
+            custom = dict(self.owner.cfg.get("custom_process_lines") or {})
+            custom[exe] = lines
+            self.owner.cfg["custom_process_lines"] = custom
         self.owner.save_config()
         self.owner.say(f"记住啦，开 {exe} 我就说这句")
-        self.tip.setText(f"已经给 {exe} 加了 {len(lines)} 句，切到这个应用就会冒泡")
+        self.tip.setText(f"{exe} 现在有 {len(lines)} 句，切到这个应用就会冒泡")
         self._mark_item(self.listw.currentItem())
+        self._refresh_buttons()
 
     def _del_line(self):
         exe = self._current_exe()
         if not exe:
             return
-        custom = dict(self.owner.cfg.get("custom_process_lines") or {})
-        if exe not in custom:
-            self.tip.setText(f"{exe} 没有你自定义的文字（默认台词改不了，但可以在菜单里整体关掉）")
+        is_default, _lines, changed = self._state_of(exe)
+        if not changed:
+            self.tip.setText(f"{exe} 用的是内置原版台词，没什么可清的")
+            self._refresh_buttons()
             return
+        if is_default:
+            overrides = dict(self.owner.cfg.get("default_line_overrides") or {})
+            overrides.pop(exe, None)
+            self.owner.cfg["default_line_overrides"] = overrides
+            self.owner.save_config()
+            self.owner.say(f"{exe} 的台词恢复成内置的了")
+            self.tip.setText(f"{exe} 已恢复内置台词")
+            self._mark_item(self.listw.currentItem())
+            self._refresh_buttons()
+            return
+        custom = dict(self.owner.cfg.get("custom_process_lines") or {})
         custom.pop(exe, None)
         self.owner.cfg["custom_process_lines"] = custom
         self.owner.save_config()
         self.owner.say(f"已删掉 {exe} 的自定义文字")
         self.tip.setText(f"已清掉 {exe} 的自定义文字")
         self._mark_item(self.listw.currentItem())
+        self._refresh_buttons()
 
 
 def is_peak(ts=None):
@@ -1045,6 +1099,7 @@ class PetWindow(QWidget):
             "balance_source": "DeepSeek",
             "other_keys": [],
             "custom_process_lines": {},
+            "default_line_overrides": {},
             "agent_name": "Codex",
             "agent_sessions_dir": "",
             "codex_sessions_dir": CODEX_SESSIONS_DIR
@@ -1958,12 +2013,18 @@ class PetWindow(QWidget):
         self.say(random.choice(lines_map[name]))
 
     def _process_lines_map(self):
-        """默认台词表 + 用户自己加的应用（同名时两句都会说）。"""
+        """默认台词表 → 用户改写的默认台词 → 用户自己加的应用。"""
         merged = {k: list(v) for k, v in PROCESS_LINES.items()}
+        for exe, lines in (self.cfg.get("default_line_overrides") or {}).items():
+            exe = (exe or "").strip().lower()
+            if exe and lines:
+                merged[exe] = [t for t in lines if t]      # 改写内置台词（整组替换）
         for exe, lines in (self.cfg.get("custom_process_lines") or {}).items():
             exe = (exe or "").strip().lower()
             if not exe or not lines:
                 continue
+            if exe in PROCESS_LINES:
+                continue        # 内置应用只走 override，不在这里追加，避免"重复添加"
             merged[exe] = list(merged.get(exe, [])) + [t for t in lines if t]
         return merged
 
@@ -1982,21 +2043,27 @@ class PetWindow(QWidget):
             AppScanDialog(self, apps).exec()
 
     def remove_custom_app_dialog(self):
+        """清理：删掉自己加的应用台词，或把改写过的内置应用恢复成原版。"""
         custom = dict(self.cfg.get("custom_process_lines") or {})
-        if not custom:
-            self.say("还没有自定义的应用呢")
+        overrides = dict(self.cfg.get("default_line_overrides") or {})
+        if not custom and not overrides:
+            self.say("还没有自己加的应用呢")
             return
-        names = sorted(custom)
+        labels = ([f"{exe}（你自己加的）" for exe in sorted(custom)]
+                  + [f"{exe}（改写过内置台词）" for exe in sorted(overrides)])
         with self._ui_guard():
-            pick, ok = QInputDialog.getItem(self, "删除自定义应用", "删掉哪个？",
-                                            names, 0, False,
+            pick, ok = QInputDialog.getItem(self, "清理自定义文字", "要清掉哪一条？",
+                                            labels, 0, False,
                                             Qt.WindowType.WindowStaysOnTopHint)
         if not ok or not pick:
             return
-        custom.pop(pick, None)
+        exe = pick.split("（", 1)[0].strip()
+        custom.pop(exe, None)
+        overrides.pop(exe, None)
         self.cfg["custom_process_lines"] = custom
+        self.cfg["default_line_overrides"] = overrides
         self.save_config()
-        self.say(f"已删掉 {pick} 的台词")
+        self.say(f"已清理 {exe} 的文字")
 
     def set_agent_name_dialog(self):
         """设置"每轮消耗"里显示的 agent 名称（不是每个人都用 Codex）。"""
@@ -2356,8 +2423,8 @@ class PetWindow(QWidget):
         pra.triggered.connect(self.set_process_alerts)
         proc_menu.addSeparator()
         proc_menu.addAction("扫描电脑应用并添加…", self.scan_apps_dialog)
-        if self.cfg.get("custom_process_lines"):
-            proc_menu.addAction("删除自定义应用…", self.remove_custom_app_dialog)
+        if self.cfg.get("custom_process_lines") or self.cfg.get("default_line_overrides"):
+            proc_menu.addAction("清理自定义 / 改写的文字…", self.remove_custom_app_dialog)
         snd_menu = m.addMenu("音效")
         so = snd_menu.addAction("按键音效")
         so.setCheckable(True)
