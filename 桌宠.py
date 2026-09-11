@@ -31,13 +31,15 @@ def load_config():
         }
 
 import requests
-from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice, QEventLoop
+from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice,
+                            QEventLoop, QSize, QFileInfo)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
                            QPolygonF, QImage)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
-                               QSlider, QWidgetAction, QFileDialog)
+                               QSlider, QWidgetAction, QFileDialog, QListWidget,
+                               QListWidgetItem, QLabel, QFileIconProvider)
 
 try:
     from PySide6.QtMultimedia import QSoundEffect
@@ -326,6 +328,132 @@ CODEX_SCAN_MS = 3000        # 扫描间隔
 CODEX_QUIET_S = 20          # 一轮安静这么久就结算并冒泡
 
 
+class AppScanDialog(QDialog):
+    """带图标的应用列表：能搜索、能看图标，选一个给它加"打开时说的话"。
+
+    图标直接从 exe 取（QFileIconProvider），所以不用额外素材；
+    ● 表示这个应用默认就有台词，✓ 表示你已经自定义过。
+    """
+
+    def __init__(self, owner, apps):
+        super().__init__(None)
+        self.owner = owner
+        self._icons = QFileIconProvider()
+        self.setWindowTitle("扫描到的应用")
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.resize(470, 580)
+
+        lay = QVBoxLayout(self)
+        self.tip = QLabel("选一个应用 → 点「添加触发文字」。\n"
+                          "● = 默认就有台词　✓ = 你自己加过的")
+        self.tip.setWordWrap(True)
+        lay.addWidget(self.tip)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索应用名或 exe，例如 steam / edge / 微信")
+        lay.addWidget(self.search)
+
+        self.listw = QListWidget()
+        self.listw.setIconSize(QSize(24, 24))
+        lay.addWidget(self.listw, 1)
+
+        row = QHBoxLayout()
+        self.add_btn = QPushButton("添加触发文字")
+        self.del_btn = QPushButton("删除该应用的文字")
+        close_btn = QPushButton("关闭")
+        row.addWidget(self.add_btn)
+        row.addWidget(self.del_btn)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+
+        self.add_btn.clicked.connect(self._add_line)
+        self.del_btn.clicked.connect(self._del_line)
+        close_btn.clicked.connect(self.accept)
+        self.listw.itemDoubleClicked.connect(lambda _item: self._add_line())
+        self.search.textChanged.connect(self._filter)
+        self._fill(apps)
+
+    def _fill(self, apps):
+        self.listw.clear()
+        for exe, label, path in apps:
+            item = QListWidgetItem()
+            item.setIcon(self._icon_for(path))
+            item.setData(Qt.ItemDataRole.UserRole, exe)
+            item.setData(Qt.ItemDataRole.UserRole + 1, f"{label}（{exe}）")
+            self.listw.addItem(item)
+            self._mark_item(item)
+        if self.listw.count():
+            self.listw.setCurrentRow(0)
+
+    def _icon_for(self, path):
+        try:
+            if path and os.path.exists(path):
+                icon = self._icons.icon(QFileInfo(path))
+                if not icon.isNull():
+                    return icon
+        except Exception:
+            pass
+        return self._icons.icon(QFileIconProvider.IconType.File)
+
+    def _mark_item(self, item):
+        exe = item.data(Qt.ItemDataRole.UserRole)
+        base = item.data(Qt.ItemDataRole.UserRole + 1)
+        custom = self.owner.cfg.get("custom_process_lines") or {}
+        if exe in custom:
+            item.setText(f"{base}　✓已自定义")
+        elif exe in PROCESS_LINES:
+            item.setText(f"{base}　●默认台词")
+        else:
+            item.setText(base)
+
+    def _filter(self, text):
+        text = (text or "").strip().lower()
+        for i in range(self.listw.count()):
+            item = self.listw.item(i)
+            item.setHidden(bool(text) and text not in item.text().lower())
+
+    def _current_exe(self):
+        item = self.listw.currentItem()
+        if item is None or item.isHidden():
+            self.tip.setText("先在上面选一个应用～")
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _add_line(self):
+        exe = self._current_exe()
+        if not exe:
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self, f"{exe} 的触发文字",
+            "打开这个应用时它要说什么？（一句一行，可以写多行）", "",
+            Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not text.strip():
+            return
+        lines = [t.strip() for t in text.splitlines() if t.strip()]
+        custom = dict(self.owner.cfg.get("custom_process_lines") or {})
+        custom[exe] = list(custom.get(exe, [])) + lines
+        self.owner.cfg["custom_process_lines"] = custom
+        self.owner.save_config()
+        self.owner.say(f"记住啦，开 {exe} 我就说这句")
+        self.tip.setText(f"已经给 {exe} 加了 {len(lines)} 句，切到这个应用就会冒泡")
+        self._mark_item(self.listw.currentItem())
+
+    def _del_line(self):
+        exe = self._current_exe()
+        if not exe:
+            return
+        custom = dict(self.owner.cfg.get("custom_process_lines") or {})
+        if exe not in custom:
+            self.tip.setText(f"{exe} 没有你自定义的文字（默认台词改不了，但可以在菜单里整体关掉）")
+            return
+        custom.pop(exe, None)
+        self.owner.cfg["custom_process_lines"] = custom
+        self.owner.save_config()
+        self.owner.say(f"已删掉 {exe} 的自定义文字")
+        self.tip.setText(f"已清掉 {exe} 的自定义文字")
+        self._mark_item(self.listw.currentItem())
+
+
 def is_peak(ts=None):
     """高峰时段：工作日 9:00-12:00 与 14:00-18:00；周末（自 2026-08-23 起）全天谷价。"""
     dt = datetime.fromtimestamp(ts if ts is not None else time.time())
@@ -512,12 +640,13 @@ def extract_usage(obj, depth=0):
 def scan_apps():
     """扫描本机应用：正在运行的进程 + 开始菜单里的快捷方式。
 
-    返回 [(exe 名小写, 展示名)]，按展示名排序。
+    返回 [(exe 名小写, 展示名, exe 完整路径)]，按展示名排序。
+    路径是给对话框取图标用的（拿不到就是空串）。
     """
     apps = {}
-    for name in list_process_names():
+    for name, path in running_processes():
         if name.endswith(".exe"):
-            apps.setdefault(name, name)
+            apps.setdefault(name, (name, path))
     # 开始菜单的快捷方式（含用户目录），交给 PowerShell 解析目标 exe
     script = (
         "$ErrorActionPreference='SilentlyContinue';"
@@ -536,12 +665,14 @@ def scan_apps():
             if "|" not in line:
                 continue
             target, label = line.split("|", 1)
-            exe = os.path.basename(target.strip()).lower()
+            target = target.strip()
+            exe = os.path.basename(target).lower()
             if exe.endswith(".exe"):
-                apps.setdefault(exe, label.strip() or exe)
+                apps.setdefault(exe, (label.strip() or exe, target))
     except Exception:
         pass
-    return sorted(apps.items(), key=lambda kv: kv[1].lower())
+    return sorted(((exe, info[0], info[1]) for exe, info in apps.items()),
+                  key=lambda item: item[1].lower())
 
 
 def foreground_process_name():
@@ -573,9 +704,9 @@ def foreground_process_name():
     return ""
 
 
-def list_process_names():
-    """枚举当前所有进程名（小写、不含路径）。用 Windows API，不依赖 psutil。"""
-    names = set()
+def running_processes():
+    """枚举当前进程，返回 [(exe 小写名, 完整路径)]。用 Windows API，不依赖 psutil。"""
+    out = []
     try:
         from ctypes import wintypes
         psapi = ctypes.WinDLL("psapi.dll")
@@ -584,7 +715,7 @@ def list_process_names():
         arr = (wintypes.DWORD * 4096)()
         needed = wintypes.DWORD()
         if not psapi.EnumProcesses(ctypes.byref(arr), ctypes.sizeof(arr), ctypes.byref(needed)):
-            return names
+            return out
         count = needed.value // ctypes.sizeof(wintypes.DWORD)
         for i in range(count):
             pid = arr[i]
@@ -597,12 +728,20 @@ def list_process_names():
                 buf = ctypes.create_unicode_buffer(1024)
                 size = wintypes.DWORD(len(buf))
                 if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-                    names.add(buf.value.rsplit("\\", 1)[-1].lower())
+                    path = buf.value
+                    exe = path.rsplit("\\", 1)[-1].lower()
+                    if exe:
+                        out.append((exe, path))
             finally:
                 kernel32.CloseHandle(handle)
     except Exception:
         pass
-    return names
+    return out
+
+
+def list_process_names():
+    """只要进程名（小写）的旧接口。"""
+    return {name for name, _path in running_processes()}
 
 
 def locate_city_by_ip():
@@ -1838,28 +1977,9 @@ class PetWindow(QWidget):
         if not apps:
             self.say("没扫到应用，等会儿再试")
             return
-        items = [f"{label}（{exe}）" for exe, label in apps]
+        # 带图标 + 可搜索的应用列表，像「设置 → 应用」那样一眼能认出来
         with self._ui_guard():
-            pick, ok = QInputDialog.getItem(self, "选择应用",
-                                            f"扫到 {len(items)} 个应用，选一个：",
-                                            items, 0, False,
-                                            Qt.WindowType.WindowStaysOnTopHint)
-        if not ok or not pick:
-            return
-        exe = pick.rsplit("（", 1)[-1].rstrip("）").strip().lower()
-        with self._ui_guard():
-            text, ok2 = QInputDialog.getText(
-                self, f"{exe} 的触发文字",
-                "打开这个应用时它要说什么？\n（想说多句就用 | 隔开，比如：又玩？|记得喝水）",
-                QLineEdit.EchoMode.Normal, "", Qt.WindowType.WindowStaysOnTopHint)
-        if not ok2 or not text.strip():
-            return
-        lines = [t.strip() for t in text.split("|") if t.strip()]
-        custom = dict(self.cfg.get("custom_process_lines") or {})
-        custom[exe] = list(custom.get(exe, [])) + lines
-        self.cfg["custom_process_lines"] = custom
-        self.save_config()
-        self.say(f"记住啦，开 {exe} 我就说这句")
+            AppScanDialog(self, apps).exec()
 
     def remove_custom_app_dialog(self):
         custom = dict(self.cfg.get("custom_process_lines") or {})
