@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-大肥鱼桌宠 —— 三视图透明桌宠 + DeepSeek AI 对话
-左键单击：弹出功能列表（🗨️图标）→ 点击🗨️弹出聊天框
-聊天时只禁用移动，呼吸/摇摆/小动作正常
+大肥鱼桌宠 —— 三视图透明桌宠（只会走 + 看天气 + 报余额）
+
+保留：桌面移动、天气（城市可联网添加）、外观（大肥鱼 / 小鲸鱼挂件切换）
+余额挂件特性（对齐 MeteorNOX/DeepSeek-Balance-Whale-Widget, MIT）：
+余额泡泡（余额 / 今日已用）、数字滚动动画、拖拽四边吸附、左吸附整体翻转、
+按压 Q 弹、按键音效、每轮 Codex 对话消耗换算（峰谷定价表取自该项目）
 """
 import ctypes
-import psutil
 import json
 import math
 import os
@@ -13,6 +15,10 @@ import random
 import subprocess
 import sys
 import threading
+import time
+import wave
+from array import array
+from datetime import datetime
 
 def load_config():
     try:
@@ -24,40 +30,44 @@ def load_config():
             "city": "汕头"
         }
 
-try:
-    import pynvml
-    pynvml.nvmlInit()
-    GPU_AVAILABLE = True
-except:
-    GPU_AVAILABLE = False
-
 import requests
-from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF
+from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice, QEventLoop
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
-                           QPolygonF)
+                           QPolygonF, QImage)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
-                               QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton)
+                               QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
+                               QSlider, QWidgetAction)
+
+try:
+    from PySide6.QtMultimedia import QSoundEffect
+    from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
+    AUDIO_AVAILABLE = True
+except Exception:
+    AUDIO_AVAILABLE = False
 
 
-
-# ===== DeepSeek 配置 =====
-DS_BASE_URL = "https://api.deepseek.com/v1"
-DS_MODEL = "deepseek-chat"
-DS_SYSTEM = "你是桌面宠物大肥鱼，贱兮兮但可爱，每句话不超过25字，偶尔吐槽主人但别真骂人。"
 
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
     BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
     PYTHONW = sys.executable
+    # 打包版的配置/账本写到用户目录，别往 exe 旁边（桌面）丢文件
+    USER_DIR = os.path.join(os.environ.get("APPDATA") or APP_DIR, "大肥鱼桌宠")
+    try:
+        os.makedirs(USER_DIR, exist_ok=True)
+    except Exception:
+        USER_DIR = APP_DIR
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     BUNDLE_DIR = APP_DIR
     PYTHONW = os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+    USER_DIR = APP_DIR
 SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
-CONFIG_PATH = os.path.join(APP_DIR, "config.json")
+ASSET_DIR = os.path.join(BUNDLE_DIR, "assets")     # 音效 + 小鲸鱼挂件形象
+CONFIG_PATH = os.path.join(USER_DIR, "config.json")
 
-BUBBLE_H = 56
+BUBBLE_H = 112         # 气泡区高度（要放得下四行余额气泡：余额 / 金额 / 今日已用 / 峰谷）
 MARGIN = 4
 SIZE_LEVELS = {"小": 0.55, "中": 0.7, "大": 0.9}
 SPEED = 380.0
@@ -98,14 +108,485 @@ INNER_LINES = [
     "我去！用户彻底怒了！",
 ]
 DRAG_LINES = ["哇——轻点轻点！", "起飞咯——", "放我下来！……好吧，再玩一次。", "晕鱼了晕鱼了……"]
-FOOD_LINES = {
-    "🐟": ["小鱼干！我的最爱！", "咔嚓咔嚓……谢谢投喂！", "唔，鲜！"],
-    "🍰": ["蛋糕！罪恶但快乐……", "甜到冒泡泡～", "嗝～又圆了一圈……"],
-    "🍭": ["棒棒糖！转圈圈～", "嘎嘣脆，好吃！"],
-    "🍡": ["三色团子！软乎乎～", "糯叽叽，爱了爱了！"],
-    "💎": ["钻石？！这能吃吗……咕咚。真香！", "发财啦！明天开始吃高级鱼粮！"],
+
+
+# ===== 余额挂件配置 =====
+BALANCE_URL = "https://api.deepseek.com/user/balance"
+BALANCE_TTL = 60          # 余额自动刷新间隔（秒）
+USAGE_PATH = os.path.join(USER_DIR, "usage.json")   # 今日已用账本
+
+# 峰谷定价（每百万 token 单价，元）与时段规则取自
+# MeteorNOX/DeepSeek-Balance-Whale-Widget（MIT）
+BASE_PRICE = {"hit": 0.05, "miss": 1.5, "out": 4.5}    # 空闲时段
+PRO_PRICE = {"hit": 0.10, "miss": 3.0, "out": 9.0}     # 高峰时段
+WEEKEND_VALLEY_FROM = datetime(2026, 8, 23)            # 此后周末全天按谷价
+
+# 音效（两套，取自上面那个项目；文件缺失时静默降级）
+SOUND_SETS = {
+    "小黄鸭": ("Ya1.wav", "Ya2.wav"),
+    "音效1": ("D1.wav", "D2.wav"),
 }
-FOODS = ["🐟", "🍰", "🍭", "🍡", "💎"]
+SOUND_POOL = 3          # 每种音效同时可播的实例数（连点不互相打断）
+# 点击音：把原「按压 + 松手」两条 wav 拼成一条，点一次就放完整一段
+CLICK_CLIP_FILES = {"小黄鸭": "click-duck.wav", "音效1": "click-fx1.wav"}
+
+
+def merge_wavs(dest, sources):
+    """把多段 wav 首尾拼成一段（采样率 / 声道 / 位宽必须一致）。"""
+    params = None
+    out = wave.open(dest, "wb")
+    try:
+        for src in sources:
+            with wave.open(src, "rb") as r:
+                p = r.getparams()
+                key = (p.nchannels, p.sampwidth, p.framerate)
+                if params is None:
+                    params = key
+                    out.setnchannels(p.nchannels)
+                    out.setsampwidth(p.sampwidth)
+                    out.setframerate(p.framerate)
+                elif key != params:
+                    raise ValueError("wav 参数不一致，没法拼接")
+                out.writeframes(r.readframes(r.getnframes()))
+    finally:
+        out.close()
+    return dest
+
+
+def wav_seconds(path):
+    """wav 时长（秒），读不出来就返回 0。"""
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate() or 1)
+    except Exception:
+        return 0.0
+
+
+def pick_click_clips():
+    """每套音效的点击音：按压 + 松手两条拼成一条（拼不了就退回更长的那条）。
+
+    返回 {音效名: wav 绝对路径}。
+    """
+    clips = {}
+    for name, files in SOUND_SETS.items():
+        srcs = [p for p in (os.path.join(ASSET_DIR, f) for f in files) if os.path.exists(p)]
+        if not srcs:
+            continue
+        merged = os.path.join(ASSET_DIR, CLICK_CLIP_FILES.get(name, f"click-{name}.wav"))
+        try:
+            outdated = (not os.path.exists(merged)
+                        or os.path.getmtime(merged) < max(os.path.getmtime(s) for s in srcs))
+            if outdated:
+                merge_wavs(merged, srcs)
+            clips[name] = merged
+        except Exception:
+            clips[name] = max(srcs, key=wav_seconds)
+    return clips
+
+
+class ClickPlayer(QIODevice):
+    """常开音频流的小音效播放器（自己混音，音量按样本缩放）。
+
+    为什么不用 QSoundEffect：它每次播放都要重新起流，设备空闲后再点，开头一小段
+    会被吞掉（表现为「有时候 ya1 听不见」）。这里改成常开的 QAudioSink + 自己
+    喂样本：没人点的时候一直输出静音，所以设备始终是醒的，点下去立刻出声、
+    完整一段都不会丢；顺便还支持多条音效重叠（连点）。
+    """
+
+    def __init__(self, parent=None, rate=44100):
+        super().__init__(parent)
+        self.rate = rate
+        self.volume = 0.9
+        self._clips = {}            # 名字 -> array('h') 样本
+        self._voices = []           # [[样本, 播放位置, 音量], ...]
+        self._lock = threading.Lock()
+        self.sink = None
+        self.ok = False
+        if not AUDIO_AVAILABLE:
+            return
+        try:
+            fmt = QAudioFormat()
+            fmt.setSampleRate(rate)
+            fmt.setChannelCount(1)
+            fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            device = QMediaDevices.defaultAudioOutput()
+            if device.isNull():
+                return
+            self.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Unbuffered)
+            self.sink = QAudioSink(device, fmt, self)
+            self.sink.setBufferSize(int(rate * 0.12) * 2)      # ≈120ms 缓冲
+            self.sink.start(self)                              # 常开：一直读我们的样本
+            # 注意：PySide6 里没有 QAudioSink.Error/State 这两个枚举名，
+            # 用字符串判定，免得踩到 AttributeError 直接静音。
+            self.ok = "NoError" in str(self.sink.error())
+        except Exception:
+            self.sink = None
+            self.ok = False
+
+    # --- QIODevice 接口：Qt 音频线程会不断来要数据 ---
+    def isSequential(self):
+        return True
+
+    def bytesAvailable(self):
+        return 1 << 20
+
+    def readData(self, maxlen):
+        frames = max(0, int(maxlen) // 2)
+        out = array("h", bytes(int(maxlen)))
+        with self._lock:
+            for voice in list(self._voices):
+                samples, pos, gain = voice
+                n = min(frames, len(samples) - pos)
+                if n > 0:
+                    for i in range(n):
+                        s = out[i] + int(samples[pos + i] * gain)
+                        out[i] = -32768 if s < -32768 else (32767 if s > 32767 else s)
+                    voice[1] = pos + n
+                if voice[1] >= len(samples):
+                    self._voices.remove(voice)
+        return out.tobytes()
+
+    def writeData(self, _data, _maxlen):
+        return 0
+
+    # --- 给桌宠用的接口 ---
+    def load_clip(self, name, path):
+        try:
+            with wave.open(path, "rb") as w:
+                if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (1, 2, self.rate):
+                    return False
+                data = w.readframes(w.getnframes())
+            samples = array("h")
+            samples.frombytes(data)
+            self._clips[name] = samples
+            return True
+        except Exception:
+            return False
+
+    def has_clip(self, name):
+        return name in self._clips
+
+    def play(self, name, volume=None):
+        samples = self._clips.get(name)
+        if samples is None:
+            return False
+        gain = self.volume if volume is None else volume
+        with self._lock:
+            self._voices.append([samples, 0, gain])
+            if len(self._voices) > 12:        # 太密了就把最老的丢掉
+                self._voices.pop(0)
+        return True
+
+    def stop_all(self):
+        with self._lock:
+            self._voices = []
+
+
+# 形象：大肥鱼（三视图）/ 小鲸鱼挂件（单张 cut-out）
+SKIN_PET = "大肥鱼"
+SKIN_WIDGET = "小鲸鱼挂件"
+WIDGET_SKIN_FILE = "small-whale.png"
+
+# 每轮 Codex 对话消耗：读 Codex 会话日志里的 token 用量
+CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex-deepseek", "sessions")
+CODEX_SCAN_MS = 3000        # 扫描间隔
+CODEX_QUIET_S = 20          # 一轮安静这么久就结算并冒泡
+
+
+def is_peak(ts=None):
+    """高峰时段：工作日 9:00-12:00 与 14:00-18:00；周末（自 2026-08-23 起）全天谷价。"""
+    dt = datetime.fromtimestamp(ts if ts is not None else time.time())
+    if dt >= WEEKEND_VALLEY_FROM and dt.weekday() >= 5:
+        return False
+    return 9 <= dt.hour < 12 or 14 <= dt.hour < 18
+
+
+# 峰谷提示文案（学原挂件的三档：默认 / 梁文峰谷 / !?强强?!）
+PEAK_TEXT_STYLES = {
+    "默认": ("高峰时段", "空闲时段"),
+    "梁文峰谷": ("梁文·峰", "梁文·谷"),
+    "!?强强?!": ("!?强强?!", "…弱弱…"),
+}
+
+
+def peak_label(peak, style="默认"):
+    """当前时段的显示文案。"""
+    hi, lo = PEAK_TEXT_STYLES.get(style) or PEAK_TEXT_STYLES["默认"]
+    return hi if peak else lo
+
+
+def usage_cost(usage):
+    """按峰谷定价把一次对话的 usage 换算成金额，返回 (金额, 总token)。"""
+    if not usage:
+        return 0.0, 0
+    hit = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
+    miss = usage.get("prompt_cache_miss_tokens")
+    if miss is None:
+        miss = max(0, int(usage.get("prompt_tokens", 0) or 0) - hit)
+    miss = int(miss or 0)
+    out = int(usage.get("completion_tokens", 0) or 0)
+    price = PRO_PRICE if is_peak() else BASE_PRICE
+    amount = (hit / 1e6) * price["hit"] + (miss / 1e6) * price["miss"] + (out / 1e6) * price["out"]
+    return amount, hit + miss + out
+
+
+def codex_usage_cost(usage):
+    """把 Codex 会话日志里的 token 用量换算成金额，返回 (金额, 总token)。"""
+    if not usage:
+        return 0.0, 0
+    hit = int(usage.get("cached_input_tokens", 0) or 0)
+    inp = int(usage.get("input_tokens", 0) or 0)
+    miss = max(0, inp - hit)          # Codex 的 input_tokens 已包含 cached
+    out = int(usage.get("output_tokens", 0) or 0)
+    price = PRO_PRICE if is_peak() else BASE_PRICE
+    amount = (hit / 1e6) * price["hit"] + (miss / 1e6) * price["miss"] + (out / 1e6) * price["out"]
+    return amount, inp + out
+
+
+def pick_balance_info(infos):
+    """接口返回的多币种顺序不固定：优先 CNY 且余额 > 0，其次任意非零，再退回 CNY，最后取第一项。"""
+    if not isinstance(infos, list) or not infos:
+        return None
+
+    def num(x):
+        try:
+            return float((x or {}).get("total_balance"))
+        except (TypeError, ValueError):
+            return float("nan")
+
+    for want_cny, need_positive in ((True, True), (False, True), (True, False)):
+        for x in infos:
+            if not isinstance(x, dict):
+                continue
+            if want_cny and x.get("currency") != "CNY":
+                continue
+            v = num(x)
+            if need_positive and not (v > 0):
+                continue
+            return x
+    return infos[0]
+
+
+def lookup_city(query):
+    """联网查城市，返回候选列表 [(显示名, 存进配置的城市名)]。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    items = []
+    try:
+        r = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                         params={"name": q, "count": 6, "language": "zh"}, timeout=10)
+        for x in ((r.json() or {}).get("results") or []):
+            label = x.get("name") or ""
+            extra = " · ".join([v for v in (x.get("admin1"), x.get("country")) if v])
+            if label:
+                items.append((f"{label}（{extra}）" if extra else label, label))
+    except Exception:
+        items = []
+    if not items:
+        # 中文地名地理编码常搜不到，改用天气接口验证能不能查到
+        try:
+            j = requests.get(f"https://wttr.in/{q}?format=j1", timeout=12,
+                             headers={"User-Agent": "Mozilla/5.0"}).json() or {}
+            if j.get("current_condition"):
+                items.append((f"{q}（联网验证可用）", q))
+        except Exception:
+            pass
+    if not items:
+        items = [(q, q)]
+    return items
+
+
+def locate_city_by_ip():
+    """按 IP 联网定位城市，失败返回空串（挂代理时拿到的是节点所在地）。"""
+    for url in ("https://api.ip.sb/geoip", "https://myip.wtf/json"):
+        try:
+            data = requests.get(url, timeout=8,
+                                headers={"User-Agent": "dafeiyu-pet/1.0"}).json() or {}
+            city = (data.get("city") or data.get("YourFuckingCity")
+                    or data.get("region") or "").strip()
+            if city:
+                return city
+        except Exception:
+            continue
+    return ""
+
+
+def has_chinese(text):
+    return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
+
+def to_chinese_city(name):
+    """自动定位拿到的英文城市名尽量换成中文（比如 Singapore -> 新加坡）。"""
+    if not name or has_chinese(name):
+        return name
+    try:
+        for _label, city in lookup_city(name):
+            if has_chinese(city):
+                return city
+    except Exception:
+        pass
+    return name
+
+
+# wttr.in（World Weather Online）的天气代码 → 中文
+WWO_ZH = {
+    113: "晴", 116: "多云", 119: "阴", 122: "阴天", 143: "薄雾", 248: "雾", 260: "冻雾",
+    176: "局部有雨", 179: "局部有雪", 182: "局部雨夹雪", 185: "局部冻毛毛雨",
+    200: "局部雷阵雨", 227: "风吹雪", 230: "暴风雪",
+    263: "局部小雨", 266: "毛毛雨", 281: "冻毛毛雨", 284: "强冻毛毛雨",
+    293: "局部小雨", 296: "小雨", 299: "间中中雨", 302: "中雨",
+    305: "间中大雨", 308: "大雨", 311: "小冻雨", 314: "中到大冻雨",
+    317: "小雨夹雪", 320: "中到大雨夹雪",
+    323: "局部小雪", 326: "小雪", 329: "局部中雪", 332: "中雪",
+    335: "局部大雪", 338: "大雪", 350: "冰粒",
+    353: "小阵雨", 356: "中到大阵雨", 359: "暴雨",
+    362: "小阵雨夹雪", 365: "中到大阵雨夹雪",
+    368: "小阵雪", 371: "中到大阵雪", 374: "小冰粒阵", 377: "中到大冰粒阵",
+    386: "局部雷阵雨", 389: "雷阵雨", 392: "局部雷阵雪", 395: "雷阵雪",
+}
+
+
+def en_weather_to_zh(raw):
+    """英文天气描述兜底翻译（认不出来就返回中文的"未知"，绝不吐英文）。"""
+    t = (raw or "").lower()
+    if "thunder" in t:
+        return "雷阵雪" if "snow" in t else "雷阵雨"
+    if "blizzard" in t or "blowing snow" in t:
+        return "暴风雪"
+    if "snow" in t:
+        if "heavy" in t:
+            return "大雪"
+        if "moderate" in t:
+            return "中雪"
+        return "小雪"
+    if "sleet" in t or "ice pellet" in t or "ice pellets" in t:
+        return "雨夹雪"
+    if "freezing" in t and "rain" in t:
+        return "冻雨"
+    if "drizzle" in t:
+        return "毛毛雨"
+    if "rain" in t or "shower" in t:
+        if "torrential" in t or "heavy" in t:
+            return "大雨"
+        if "moderate" in t:
+            return "中雨"
+        return "小雨"
+    if "freezing fog" in t:
+        return "冻雾"
+    if "fog" in t:
+        return "雾"
+    if "mist" in t or "haze" in t:
+        return "薄雾"
+    if "overcast" in t:
+        return "阴天"
+    if "cloud" in t:
+        return "多云" if ("partly" in t or "patchy" in t) else "阴"
+    if "sunny" in t or "clear" in t:
+        return "晴"
+    if "wind" in t:
+        return "大风"
+    return "未知天气"
+
+
+def weather_desc_zh(cur):
+    """把 wttr.in 的 current_condition 翻成中文描述：优先用天气代码，再退回英文关键词。"""
+    code = cur.get("weatherCode")
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        code = None
+    if code in WWO_ZH:
+        return WWO_ZH[code]
+    desc = ""
+    try:
+        desc = (cur.get("weatherDesc") or [{}])[0].get("value", "")
+    except Exception:
+        desc = ""
+    return en_weather_to_zh(desc)
+
+
+# open-meteo（WMO）天气代码 → 中文，作为 wttr.in 的备用数据源
+WMO_ZH = {
+    0: "晴", 1: "晴间多云", 2: "多云", 3: "阴", 45: "雾", 48: "冻雾",
+    51: "小毛毛雨", 53: "毛毛雨", 55: "大毛毛雨", 56: "冻毛毛雨", 57: "强冻毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨", 66: "冻雨", 67: "强冻雨",
+    71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
+    80: "小阵雨", 81: "中阵雨", 82: "强阵雨", 85: "小阵雪", 86: "大阵雪",
+    95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷阵雨伴冰雹",
+}
+
+
+def fetch_weather(city):
+    """查天气：先问 wttr.in（带重试），不行就用 open-meteo 兜底。
+
+    返回 (温度, 中文描述)；都失败返回 None。
+    """
+    for attempt in range(2):
+        try:
+            r = requests.get(f"https://wttr.in/{city}?format=j1", timeout=12,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            cur = (r.json() or {})["current_condition"][0]
+            return cur["temp_C"], weather_desc_zh(cur)
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.6)
+    try:
+        g = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                         params={"name": city, "count": 1, "language": "zh"},
+                         timeout=10).json() or {}
+        found = g.get("results") or []
+        if found:
+            w = requests.get("https://api.open-meteo.com/v1/forecast",
+                             params={"latitude": found[0]["latitude"],
+                                     "longitude": found[0]["longitude"],
+                                     "current": "temperature_2m,weather_code"},
+                             timeout=10).json() or {}
+            cur = w.get("current") or {}
+            if cur.get("temperature_2m") is not None:
+                code = cur.get("weather_code")
+                desc = WMO_ZH.get(int(code), "未知天气") if code is not None else "未知天气"
+                return str(round(float(cur["temperature_2m"]))), desc
+    except Exception:
+        pass
+    return None
+
+
+def record_balance_usage(path, total, currency):
+    """小鲸鱼记账：只把余额下降记成当日消耗，跨天归零归档，币种变化只重置基准。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {"date": today, "lastBalance": total, "lastCurrency": currency,
+            "todayUsage": 0.0, "history": {}}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data.update(json.load(f) or {})
+    except Exception:
+        pass
+
+    if data.get("date") != today:
+        hist = dict(data.get("history") or {})
+        if data.get("date") and data.get("todayUsage"):
+            hist[data["date"]] = round(float(data["todayUsage"]), 4)
+        hist = dict(sorted(hist.items())[-30:])
+        data = {"date": today, "lastBalance": total, "lastCurrency": currency,
+                "todayUsage": 0.0, "history": hist}
+    else:
+        last, last_cur = data.get("lastBalance"), data.get("lastCurrency")
+        if last is not None and last_cur == currency:
+            delta = float(last) - float(total)
+            if delta > 0:
+                data["todayUsage"] = round(float(data.get("todayUsage") or 0) + delta, 4)
+        data["lastBalance"] = total
+        data["lastCurrency"] = currency
+
+    data["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return float(data.get("todayUsage") or 0)
 
 
 def load_json(path, default):
@@ -127,231 +608,70 @@ def load_json(path, default):
         return default
 
 
-class ChatDialog(QDialog):
-    """聊天对话框 - 缩小版，匹配你的样式"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(420, 56)
-        
-        container = QFrame(self)
-        container.setGeometry(0, 0, 420, 56)
-        container.setStyleSheet("""
-            QFrame {
-                background: white;
-                border-radius: 20px;
-                border: 1px solid #e5e7eb;
-            }
-        """)
-        
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(18, 0, 12, 0)
-        layout.setSpacing(0)
-        
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("给大肥鱼发送消息")
-        self.input.setStyleSheet("""
-            QLineEdit {
-                color: #1a1a1a;
-                font-size: 15px;
-                font-family: Arial, "Microsoft YaHei", sans-serif;
-                border: none;
-                background: transparent;
-            }
-            QLineEdit:focus {
-                border: none;
-            }
-        """)
-        self.input.returnPressed.connect(self._on_submit)
-        self.input.textChanged.connect(self._update_button_style)
-        layout.addWidget(self.input)
-        
-        self.send_btn = QPushButton()
-        self.send_btn.setFixedSize(32, 32)
-        self.send_btn.setText("↑")
-        self.send_btn.clicked.connect(self._on_submit)
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                border-radius: 16px;
-                background: #b9c7ff;
-                border: none;
-                color: white;
-                font-size: 20px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: #a8b8f0;
-            }
-            QPushButton:pressed {
-                background: #9aacd9;
-            }
-        """)
-        layout.addWidget(self.send_btn)
-
-    def _update_button_style(self):
-        if self.input.text().strip():
-            self.send_btn.setStyleSheet("""
-                QPushButton {
-                    border-radius: 16px;
-                    background: #5686fe;
-                    border: none;
-                    color: #ffffff;
-                    font-size: 20px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background: #4575ed;
-                }
-                QPushButton:pressed {
-                    background: #3a66d9;
-                }
-            """)
-        else:
-            self.send_btn.setStyleSheet("""
-                QPushButton {
-                    border-radius: 16px;
-                    background: #b9c7ff;
-                    border: none;
-                    color: white;
-                    font-size: 20px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background: #a8b8f0;
-                }
-                QPushButton:pressed {
-                    background: #9aacd9;
-                }
-            """)
-
-    def _on_submit(self):
-        text = self.input.text().strip()
-        if text:
-            self.input.clear()
-            self.accept()
-            if self.parent():
-                self.parent()._call_ds(text)
-                self.parent().chat_paused = False
-
-    def showEvent(self, event):
-        self.input.setFocus()
-        super().showEvent(event)
-
-    def popup_at(self, x, y):
-        self.move(int(x - self.width() / 2), int(y - self.height() - 10))
-        self.show()
-        self.raise_()
-
-    def reject(self):
-        if self.parent():
-            self.parent().chat_paused = False
-        super().reject()
-
-
-class FunctionPanel(QFrame):
-    """左键弹出的功能列表 - 白底矩形，只有一个🗨️图标"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setStyleSheet("""
-            QFrame {
-                background: rgba(255, 255, 255, 0.92);
-                border-radius: 14px;
-                border: 1px solid rgba(0,0,0,0.06);
-            }
-            QPushButton {
-                background: transparent;
-                border: none;
-                font-size: 28px;
-                padding: 10px 16px;
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background: rgba(0,0,0,0.04);
-            }
-            QPushButton:pressed {
-                background: rgba(0,0,0,0.08);
-            }
-        """)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(0)
-        
-        self.chat_btn = QPushButton("🗨️")
-        self.chat_btn.setFixedSize(52, 48)
-        self.chat_btn.clicked.connect(self._on_chat_clicked)
-        layout.addWidget(self.chat_btn)
-        
-        self.setFixedSize(68, 60)
-        self.hide()
-    
-    def _on_chat_clicked(self):
-        self.hide()
-        if self.parent():
-            self.parent()._show_chat_dialog()
-    
-    def popup_at(self, x, y):
-        self.move(int(x), int(y))
-        self.show()
-        self.raise_()
-
-class FoodPanel(QWidget):
-    """双击弹出的喂食面板"""
-
-    def __init__(self, on_pick):
-        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
-                         | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(310, 64)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(8)
-        for f in FOODS:
-            b = QToolButton()
-            b.setText(f)
-            b.setFont(QFont("Segoe UI Emoji", 20))
-            b.setFixedSize(44, 44)
-            b.setStyleSheet(
-                "QToolButton{background:rgba(255,255,255,235);border:2px solid #ffb3c8;"
-                "border-radius:22px;} QToolButton:hover{background:#ffe3ec;border-color:#ff7fa8;}")
-            b.clicked.connect(lambda _, x=f: on_pick(x))
-            lay.addWidget(b)
-        close = QToolButton()
-        close.setText("✕")
-        close.setFont(QFont("Microsoft YaHei UI", 12))
-        close.setFixedSize(26, 26)
-        close.setStyleSheet("QToolButton{background:rgba(255,255,255,200);border:none;border-radius:13px;color:#666;}"
-                            "QToolButton:hover{background:#ff7fa8;color:#fff;}")
-        close.clicked.connect(self.hide)
-        lay.addWidget(close)
-        self.setStyleSheet("FoodPanel{background:rgba(40,40,60,190);border-radius:14px;}")
-
-    def popup_at(self, x, y):
-        self.move(int(x - self.width() / 2), int(y - self.height() - 10))
-        self.show()
-        self.raise_()
-
 class PetWindow(QWidget):
-    def _set_city_dialog(self):
-        city, ok = QInputDialog.getText(
-            self,
-            "设置城市",
-            "输入城市名:",
-            QLineEdit.EchoMode.Normal,
-            self.cfg.get("city", "汕头")
-        )
+    # ---------- 城市（联网添加） ----------
+    def auto_locate_city(self):
+        """按 IP 联网定位城市（挂梯子时定位到的是节点所在地）。"""
+        self.say("我联网找找你在哪…")
+        threading.Thread(target=lambda: self._city_queue.append(to_chinese_city(locate_city_by_ip())),
+                         daemon=True).start()
 
-        print("输入框结果:", city, ok)
+    def search_city_dialog(self):
+        """联网搜索城市：先查地理编码，查不到就用天气接口验证这个名字能不能用。"""
+        with self._ui_guard():
+            name, ok = QInputDialog.getText(self, "添加城市", "输入城市名（联网搜索）:",
+                                            QLineEdit.EchoMode.Normal, "",
+                                            Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not name.strip():
+            return
+        self.say("查一下这个城市…")
+        threading.Thread(target=lambda: self._city_pick_queue.append(lookup_city(name)),
+                         daemon=True).start()
 
+    def _apply_city(self, name):
+        self.cfg["city"] = name
+        self.save_config()              # 立刻落盘，下次启动就是这个默认城市
+        self.say(f"城市已设置为{name}")
+        self._get_weather()
+
+    def set_city_dialog(self):
+        """手动设置默认城市：直接写进 config.json，不联网、不用等搜索。"""
+        with self._ui_guard():
+            city, ok = QInputDialog.getText(
+                self,
+                "设置默认城市",
+                "输入城市名（中文英文都行，例如：汕头 / Shantou）:",
+                QLineEdit.EchoMode.Normal,
+                self.cfg.get("city", "汕头"),
+                Qt.WindowType.WindowStaysOnTopHint
+            )
         if ok and city.strip():
-            self.cfg["city"] = city.strip()
-            print("cfg现在:", self.cfg["city"])
-            self.say(f"城市已设置为{city}")
+            self._apply_city(city.strip())
+        elif ok:
+            self.say("城市名不能为空")
+
+    # ---------- 配置 ----------
+    def save_config(self):
+        """把当前配置写回 config.json。"""
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.cfg, f, ensure_ascii=False, indent=2)
+            self._cfg_snapshot = json.dumps(self.cfg, ensure_ascii=False, sort_keys=True)
+        except Exception as ex:
+            print("配置保存失败:", repr(ex))
+
+    def autosave_config(self):
+        """配置有变化就顺手存一下，不用等到退出（被杀掉也不丢设置）。"""
+        try:
+            now_snap = json.dumps(self.cfg, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return
+        if now_snap != getattr(self, "_cfg_snapshot", None):
+            self.save_config()
 
     def __init__(self):
-        self.cfg = load_json(CONFIG_PATH, {
+        # 默认配置；老 config.json 缺的新键会自动补上（免得升级后 KeyError）
+        cfg_defaults = {
             "mode": "wander",
             "size": 0.7,
             "topmost": True,
@@ -360,8 +680,23 @@ class PetWindow(QWidget):
             "x": None,
             "y": None,
             "ds_api_key": "",
-            "city": "汕头"
-    })
+            "city": "汕头",
+            "balance_always": False,
+            "snap_on": True,
+            "flip_on_left": True,
+            "turn_cost_on": True,
+            "skin": SKIN_PET,
+            "sound_on": True,
+            "sound_set": "小黄鸭",
+            "volume": 0.9,
+            "show_peak": True,
+            "peak_style": "默认",
+            "codex_sessions_dir": CODEX_SESSIONS_DIR
+        }
+        self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
+        for cfg_key, cfg_value in cfg_defaults.items():
+            self.cfg.setdefault(cfg_key, cfg_value)
+        self._cfg_snapshot = None
         
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         if self.cfg.get("topmost", True):
@@ -384,6 +719,19 @@ class PetWindow(QWidget):
                 self.sprites[(name, h)] = pix
         self.icon = QIcon(os.path.join(SPRITE_DIR, "icon.png"))
 
+        # 小鲸鱼挂件形象（第二个的样子）：单张 cut-out，按尺寸预缩放
+        self.skin = self.cfg.get("skin", SKIN_PET)
+        whale = QPixmap(os.path.join(ASSET_DIR, WIDGET_SKIN_FILE))
+        self.widget_skin_ok = not whale.isNull()
+        if self.widget_skin_ok:
+            whale = self._crop_alpha(whale)
+            for mult in SIZE_LEVELS.values():
+                h = int(340 * mult)
+                self.sprites[("挂件", h)] = whale.scaledToHeight(
+                    h, Qt.TransformationMode.SmoothTransformation)
+        if self.skin not in (SKIN_PET, SKIN_WIDGET) or (self.skin == SKIN_WIDGET and not self.widget_skin_ok):
+            self.skin = SKIN_PET
+
         self.cur_h = int(340 * self.cfg["size"])
         self.win_mx = int(self.cur_h * 0.062) + 6
         self.win_w = max(p.width() for k, p in self.sprites.items() if k[1] == self.cur_h) + self.win_mx * 2
@@ -404,7 +752,6 @@ class PetWindow(QWidget):
         self.bubble_until = 0
         self.bubble_inner = False
         self.last_speak_tick = 0
-        self.last_system_check = 0
         self.t = 0
         self.jump_t = 0
         self.dragging = False
@@ -412,36 +759,90 @@ class PetWindow(QWidget):
         self.drag_start_pos = None
         self.last_line = ""
         self.last_press_pos = None
+
+        # 余额挂件状态
+        self.balance = None          # {"total": 24.05, "currency": "CNY", "today": 0.0, "stale": False}
+        self.bal_until = 0.0         # 余额泡泡显示截止时间（秒）
+        self.balance_always = bool(self.cfg.get("balance_always", False))
+        self.show_peak = bool(self.cfg.get("show_peak", True))
+        self.peak_style = self.cfg.get("peak_style", "默认")
+        if self.peak_style not in PEAK_TEXT_STYLES:
+            self.peak_style = "默认"
+        self._peak_now = None
+        self.snap_on = bool(self.cfg.get("snap_on", True))
+        self.flip_on_left = bool(self.cfg.get("flip_on_left", True))
+        self.turn_cost_on = bool(self.cfg.get("turn_cost_on", True))
+        self.bal_busy = False
+        self.bal_error = ""
+        self._bal_queue = []         # 后台线程 → 主线程的余额结果
+        self._pending_bubbles = []   # [(到点秒, 文本, 是否心声)]
+        self.roll_shown = None       # 数字滚动当前值
+        self.roll_from = None
+        self.roll_to = None
+        self.roll_t = 1.0
+        self.press_t = 0.0           # 按压 Q 弹
+        self.flip_x = False          # 整体水平翻转（左吸附）
+        self.snap_h = None           # 吸附锚点：left / right
+        self.snap_v = None           # top / bottom
+        self.ui_open = False         # 右键菜单 / 对话框开着时，桌宠站住不动
+
+        # 音效
+        self.sound_on = bool(self.cfg.get("sound_on", True))
+        self.sound_set = self.cfg.get("sound_set", "小黄鸭")
+        self.volume = float(self.cfg.get("volume", 0.9))
+        self._sounds = {}
+        self._sound_idx = {}
+        self._pending_sounds = []
+        self._click_clips = pick_click_clips()
+        # 常开音频流（首选）：设备一直是醒的，点下去立刻出声、开头不会被吞
+        self._click_player = None
+        if AUDIO_AVAILABLE:
+            player = ClickPlayer(self)
+            if player.ok:
+                for clip_name, clip_path in self._click_clips.items():
+                    player.load_clip(clip_name, clip_path)
+                self._click_player = player
+            else:
+                player.deleteLater()
+        self._init_sounds()
         
-        # AI 相关
-        self.ds_busy = False
-        self.chat_history = []  # 对话历史
-        self.max_history = 40   # 最多记录40条
-        self._say_queue = []    # 后台线程→主线程的气泡消息队列
-        
-        # 聊天暂停标志
-        self.chat_paused = False
-        
-        # 功能列表
-        self.function_panel = FunctionPanel(self)
-        self.food_panel = FoodPanel(self.on_food)
-        # 单击延迟判定（等双击）：单击=回嘴+弹聊天面板，双击=喂食
-        self._click_timer = QTimer(self)
-        self._click_timer.setSingleShot(True)
-        self._click_timer.timeout.connect(self._on_single_click)
-        
-        # 聊天对话框
-        self.chat_dialog = ChatDialog(self)
-        
+        # 后台线程 → 主线程的结果队列
+        self._say_queue = []          # 要冒泡的文本
+        self._city_queue = []         # 自动定位结果
+        self._city_pick_queue = []    # 城市搜索候选
+
+        # 每轮 Codex 对话消耗（读 Codex 会话日志的 token 用量）
+        self.codex_dir = self.cfg.get("codex_sessions_dir", CODEX_SESSIONS_DIR)
+        self._codex_file = None
+        self._codex_pos = 0
+        self._codex_turn = None
+        self._codex_tokens = {}
+        self._codex_reported = set()
+        self._codex_last_change = 0.0
+        self.cdx_timer = QTimer(self)
+        self.cdx_timer.timeout.connect(self.scan_codex_usage)
+        self.cdx_timer.start(CODEX_SCAN_MS)
+
+        # 有些窗口（比如 Codex）自己也置顶，会盖住桌宠：定期把自己顶到置顶层最前面（不抢焦点）
+        self.top_timer = QTimer(self)
+        self.top_timer.timeout.connect(self._keep_on_top)
+        self.top_timer.start(2000)
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(TICK)
+
+        # 余额：60 秒自动刷新 + 启动后先取一次
+        self.bal_timer = QTimer(self)
+        self.bal_timer.timeout.connect(lambda: self.refresh_balance(silent=True))
+        self.bal_timer.start(BALANCE_TTL * 1000)
+        QTimer.singleShot(1200, lambda: self.refresh_balance(silent=False))
 
         self.bubble_font = QFont("Microsoft YaHei UI", 11)
 
         # 托盘
         self.tray = QSystemTrayIcon(self.icon, self)
-        self.tray.setContextMenu(self._build_menu())
+        self.tray.setContextMenu(self._make_menu())
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
@@ -453,65 +854,305 @@ class PetWindow(QWidget):
         self.move(int(x), int(y))
         self.show()
         self.snap_into_screen()
+        QTimer.singleShot(1500, self.warm_up_sounds)   # 音频设备预热，消掉首次点击的延迟
         if self.cfg.get("passthrough", False):
             self._apply_passthrough(True)
 
-    # ---------- AI 方法 ----------
-    def _call_ds(self, user_msg):
-        if self.ds_busy:
-            self.say("等等，上一句还没回完呢")
-            return
-        
-        key = self.cfg.get("ds_api_key", "")
+    # ---------- 余额 ----------
+    def _api_key(self):
+        """优先用配置里的 Key，其次用系统环境变量 DEEPSEEK_API_KEY。"""
+        return (self.cfg.get("ds_api_key") or os.environ.get("DEEPSEEK_API_KEY", "") or "").strip()
+
+    def refresh_balance(self, silent=True):
+        """后台拉余额，结果丢进 _bal_queue 由主线程处理（Qt 界面只在主线程更新）。"""
+        key = self._api_key()
         if not key:
-            self.say("请先在右键菜单里设置 DeepSeek Key！")
+            self.bal_error = "未配置 API Key"
+            if not silent:
+                self.say("先在右键菜单里设置 DeepSeek Key 吧！")
             return
-        
-        self.ds_busy = True
-        
-        # 构建消息列表
-        messages = [{"role": "system", "content": DS_SYSTEM}]
-        messages.extend(self.chat_history[-self.max_history:])
-        messages.append({"role": "user", "content": user_msg})
-        
+        if self.bal_busy:
+            return
+        self.bal_busy = True
+
         def worker():
-            url = "https://api.deepseek.com/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "deepseek-chat",
-                "messages": messages,
-                "max_tokens": 100,
-                "temperature": 0.9
-            }
-            try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    reply = resp.json()["choices"][0]["message"]["content"].strip()
-                    if len(reply) > 30:
-                        reply = reply[:28] + "…"
-                    # 存入历史
-                    self.chat_history.append({"role": "user", "content": user_msg})
-                    self.chat_history.append({"role": "assistant", "content": reply})
-                    if len(self.chat_history) > self.max_history:
-                        self.chat_history = self.chat_history[-self.max_history:]
-                    self._queue_say(reply)
-                else:
-                    error_msg = resp.json().get("error", {}).get("message", str(resp.status_code))
-                    self._queue_say(f"API错误: {error_msg[:12]}")
-                    print(f"[DeepSeek] 状态码: {resp.status_code}, 返回: {resp.text}")
-            except requests.exceptions.Timeout:
-                self._queue_say("请求超时，检查网络")
-            except requests.exceptions.ConnectionError:
-                self._queue_say("连接失败，检查网络")
-            except Exception as e:
-                self._queue_say(f"请求失败: {str(e)[:12]}")
-            finally:
-                self.ds_busy = False
-        
+            last_err = "网络错误"
+            for attempt in range(2):
+                try:
+                    r = requests.get(BALANCE_URL,
+                                     headers={"Authorization": f"Bearer {key}"},
+                                     timeout=15)
+                    if r.status_code == 200:
+                        info = pick_balance_info((r.json() or {}).get("balance_infos"))
+                        if info and info.get("total_balance") is not None:
+                            self._bal_queue.append({
+                                "ok": True,
+                                "total": float(info["total_balance"]),
+                                "currency": info.get("currency") or "CNY",
+                                "silent": silent,
+                            })
+                        else:
+                            self._bal_queue.append({"ok": False, "error": "余额返回结构异常",
+                                                    "silent": silent})
+                        return
+                    last_err = f"HTTP {r.status_code}"
+                    if r.status_code < 500:
+                        break
+                except Exception as ex:
+                    last_err = str(ex)[:60]
+                if attempt == 0:
+                    time.sleep(0.6)
+            self._bal_queue.append({"ok": False, "error": last_err, "silent": silent})
+
         threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_balance(self, res):
+        self.bal_busy = False
+        if not res.get("ok"):
+            self.bal_error = str(res.get("error") or "")
+            if not res.get("silent") and self.balance is None:
+                self.say("余额取不到：" + self.bal_error[:14])
+            return
+
+        total, currency = float(res["total"]), res["currency"]
+        today = record_balance_usage(USAGE_PATH, total, currency)
+        old = self.balance["total"] if self.balance else None
+        self.balance = {"total": total, "currency": currency, "today": today, "stale": False}
+        self.bal_error = ""
+        self._start_roll(total)
+
+        if not res.get("silent"):
+            self.show_balance_bubble(6.0)
+        elif old is None or abs(total - old) > 1e-9:
+            # 余额变了就滚一次给主人看
+            self.show_balance_bubble(4.0)
+
+    def _start_roll(self, target):
+        """余额变化时从旧值滚到新值。"""
+        if self.roll_shown is None:
+            self.roll_shown = float(target)
+            self.roll_t = 1.0
+            return
+        if abs(float(target) - float(self.roll_shown)) < 1e-9:
+            self.roll_t = 1.0
+            return
+        self.roll_from = float(self.roll_shown)
+        self.roll_to = float(target)
+        self.roll_t = 0.0
+
+    def _display_amount(self):
+        if self.balance is None:
+            return 0.0
+        if self.roll_shown is None or self.roll_t >= 1.0:
+            return float(self.balance["total"])
+        eased = 1 - (1 - self.roll_t) ** 3
+        return self.roll_from + (self.roll_to - self.roll_from) * eased
+
+    def show_balance_bubble(self, seconds=6.0):
+        self.bal_until = self.t * TICK / 1000.0 + seconds
+        # 收起普通气泡，避免两层叠在一起
+        self.bubble_text = ""
+        self.bubble_until = 0.0
+        self.update()
+
+    def _say_later(self, seconds, text, inner=False):
+        self._pending_bubbles.append((self.t * TICK / 1000.0 + seconds, text, inner))
+
+    # ---------- 音效 / 形象 ----------
+    @staticmethod
+    def _crop_alpha(pix):
+        """裁掉四周全透明空白（逐行扫描 alpha，避免逐像素 Python 调用）。"""
+        img = pix.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        w, h = img.width(), img.height()
+        data = bytes(img.constBits())
+        bpl = img.bytesPerLine()
+        minx, miny, maxx, maxy = w, h, -1, -1
+        for y in range(h):
+            alphas = data[y * bpl: y * bpl + w * 4][3::4]
+            if max(alphas) <= 8:
+                continue
+            x = 0
+            while alphas[x] <= 8:
+                x += 1
+            x2 = w - 1
+            while alphas[x2] <= 8:
+                x2 -= 1
+            minx, maxx = min(minx, x), max(maxx, x2)
+            miny, maxy = min(miny, y), y
+        if maxx < 0:
+            return pix
+        return pix.copy(minx, miny, maxx - minx + 1, maxy - miny + 1)
+
+    def _init_sounds(self):
+        """为每套音效准备多个播放实例。
+
+        一次点击只播一声完整音效，不再区分按压/松手；多实例是为了连点时互不打断；
+        没解码好的实例会先登记，等 Ready 立刻补播（避免「点了没声音」）。
+        """
+        if not AUDIO_AVAILABLE:
+            return
+        for name, clip in self._click_clips.items():
+            url = QUrl.fromLocalFile(clip)
+            instances = []
+            for _ in range(SOUND_POOL):
+                eff = QSoundEffect(self)
+                eff.setSource(url)
+                eff.setVolume(self.volume)
+                instances.append(eff)
+            self._sounds[name] = instances
+
+    def play_click(self):
+        """点一下播一声完整音效；池里轮着用，连点就按点击间隔自然响。"""
+        if not self.sound_on:
+            return
+        if self.sound_set in self._click_clips:
+            name = self.sound_set
+        else:
+            name = "小黄鸭"
+        if self._click_player and self._click_player.has_clip(name):
+            self._click_player.volume = self.volume
+            self._click_player.play(name)
+            return
+        pool = self._sounds.get(name)
+        if not pool:
+            self._play_fallback_click()
+            return
+        idx = self._sound_idx.get(name, 0)
+        eff = pool[idx % len(pool)]
+        self._sound_idx[name] = (idx + 1) % len(pool)
+        if eff.source().isEmpty():
+            return
+        try:
+            eff.setVolume(self.volume)
+            if eff.status() == QSoundEffect.Status.Ready:
+                eff.play()
+            else:
+                # 还没解码好：先记下，等 Ready 立刻补播（比直接丢音好）
+                self._pending_sounds.append((eff, time.time()))
+        except Exception:
+            pass
+
+    def _flush_pending_sounds(self):
+        if not self._pending_sounds:
+            return
+        now = time.time()
+        keep = []
+        for eff, ts in self._pending_sounds:
+            if eff.status() == QSoundEffect.Status.Ready:
+                try:
+                    eff.setVolume(self.volume)
+                    eff.play()
+                except Exception:
+                    pass
+            elif now - ts < 1.5:      # 太久了就别补了，免得突然冒出来
+                keep.append((eff, ts))
+        self._pending_sounds = keep
+
+    def warm_up_sounds(self):
+        """启动后把音频设备先唤醒（0 音量静音放一遍），消掉第一次点击的延迟。"""
+        if self._click_player:
+            return                      # 常开流本来就在跑，不用预热
+        for instances in self._sounds.values():
+            for eff in instances:
+                if eff.status() != QSoundEffect.Status.Ready:
+                    continue
+                try:
+                    eff.setVolume(0.0)
+                    eff.play()
+                except Exception:
+                    pass
+        QTimer.singleShot(600, self._restore_sound_volume)
+
+    def _restore_sound_volume(self):
+        for instances in self._sounds.values():
+            for eff in instances:
+                eff.setVolume(self.volume)
+
+    def preview_sounds(self):
+        """试听当前这套点击音效。"""
+        self.play_click()
+
+    def _play_fallback_click(self):
+        """Qt 音频不可用时的兜底：用系统 winsound 异步播 wav（没有音量控制）。"""
+        try:
+            import winsound
+            name = self.sound_set if self.sound_set in self._click_clips else "小黄鸭"
+            path = self._click_clips.get(name)
+            if path and os.path.exists(path):
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC
+                                   | winsound.SND_NODEFAULT)
+        except Exception:
+            pass
+
+    def set_sound(self, on):
+        self.sound_on = bool(on)
+        self.cfg["sound_on"] = bool(on)
+
+    def set_sound_set(self, name):
+        if name not in SOUND_SETS:
+            return
+        self.sound_set = name
+        self.cfg["sound_set"] = name
+        self.play_click()          # 换音效顺手试听一声
+
+    def set_volume(self, vol):
+        self.volume = max(0.0, min(1.0, float(vol)))
+        self.cfg["volume"] = self.volume
+        if self._click_player:
+            self._click_player.volume = self.volume
+        self._restore_sound_volume()
+
+    def set_skin(self, name):
+        """切换形象：大肥鱼（三视图）/ 小鲸鱼挂件（单张）。"""
+        if name == SKIN_WIDGET and not self.widget_skin_ok:
+            self.say("小鲸鱼形象没找到图片")
+            return
+        self.skin = name
+        self.cfg["skin"] = name
+        self.prev_key = None
+        self.cross_t = 0.0
+        self.win_mx = int(self.cur_h * 0.062) + 6
+        self.win_w = max(p.width() for k, p in self.sprites.items()
+                         if k[1] == self.cur_h) + self.win_mx * 2
+        self.setFixedSize(self.win_w, self.cur_h + BUBBLE_H + MARGIN * 2 + 10)
+        self._settle()
+        self.update()
+
+    # ---------- 吸附 / 翻转 ----------
+    def _snap_to_edge(self):
+        """松手后按四分之一区域吸附屏幕四边（角落可组合），左吸附时整体水平翻转。"""
+        if not self.snap_on:
+            self.snap_h = self.snap_v = None
+            self.flip_x = False
+            return
+        geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        cx, cy = self.x() + self.width() / 2, self.y() + self.height() / 2
+        self.snap_h = ("left" if cx < geo.left() + geo.width() / 4
+                       else "right" if cx > geo.right() - geo.width() / 4 else None)
+        self.snap_v = ("top" if cy < geo.top() + geo.height() / 4
+                       else "bottom" if cy > geo.bottom() - geo.height() / 4 else None)
+        self._settle(geo)
+
+    def _settle(self, geo=None):
+        if not self.snap_on or (self.snap_h is None and self.snap_v is None):
+            return
+        geo = geo or (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        x, y = self.x(), self.y()
+        if self.snap_h == "left":
+            x = geo.left()
+        elif self.snap_h == "right":
+            x = geo.right() - self.width() + 1
+        if self.snap_v == "top":
+            y = geo.top()
+        elif self.snap_v == "bottom":
+            y = geo.bottom() - self.height() + 1
+        # 吸附轴已经是精确贴边，只有没吸附的轴才需要钳制在屏幕内
+        if self.snap_h is None:
+            x = max(geo.left(), min(geo.right() - self.width(), x))
+        if self.snap_v is None:
+            y = max(geo.top(), min(geo.bottom() - self.height(), y))
+        self.flip_x = bool(self.flip_on_left and self.snap_h == "left")
+        self.move(int(x), int(y))
 
     # ---------- 绘制 ----------
     def paintEvent(self, _):
@@ -520,14 +1161,15 @@ class PetWindow(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         now = self.t * TICK / 1000.0
 
+        show_balance = self.balance is not None and (self.balance_always or now < self.bal_until)
         if self.bubble_text and now < self.bubble_until:
             if self.bubble_inner:
                 bfont = QFont(self.bubble_font)
                 bfont.setItalic(True)
-                bg, fg = QColor(232, 232, 238, 235), QColor(125, 125, 138)
+                bg, fg = QColor(232, 232, 238, 242), QColor(125, 125, 138)
             else:
                 bfont = QFont(self.bubble_font)
-                bg, fg = QColor(255, 255, 255, 235), QColor(60, 60, 80)
+                bg, fg = QColor(255, 255, 255, 242), QColor(60, 60, 80)
             fm = QFontMetrics(bfont)
             max_w = min(240, self.width() - 16)
             words = self.bubble_text
@@ -540,20 +1182,65 @@ class PetWindow(QWidget):
                 else:
                     cur += ch
             lines.append(cur)
-            bw = max(fm.horizontalAdvance(l) for l in lines) + 20
-            bh = len(lines) * fm.height() + 14
+            bw = max(fm.horizontalAdvance(l) for l in lines) + 28
+            bh = len(lines) * fm.height() + 16
             bx = (self.width() - bw) / 2
-            by = 6.0
+            by = self._bubble_top(bh)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
-            p.drawRoundedRect(QRectF(bx, by, bw, bh), 10, 10)
+            p.drawRoundedRect(QRectF(bx, by, bw, bh), 14, 14)
             tail = QPointF(self.width() / 2, by + bh)
-            p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 6, tail.y() + 8), QPointF(tail.x() + 6, tail.y() + 8)]))
+            p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
+                                     QPointF(tail.x() + 7, tail.y() + 9)]))
             p.setPen(fg)
             p.setFont(bfont)
             for i, l in enumerate(lines):
-                p.drawText(QRectF(bx, by + 7 + i * fm.height(), bw, fm.height()),
+                p.drawText(QRectF(bx, by + 8 + i * fm.height(), bw, fm.height()),
                            Qt.AlignmentFlag.AlignCenter, l)
+        elif show_balance:
+            # 余额气泡：余额 / 今日已用（数字带滚动动画）
+            f_small = QFont(self.bubble_font)
+            f_small.setPointSize(9)
+            f_big = QFont(self.bubble_font)
+            f_big.setPointSize(15)
+            f_big.setBold(True)
+            fm_s, fm_b = QFontMetrics(f_small), QFontMetrics(f_big)
+            l1 = "DeepSeek 余额"
+            l2 = f"¥ {self._display_amount():.2f}"
+            l3 = f"今日已用 ¥ {self.balance['today']:.2f}"
+            peak_now = is_peak()
+            l4 = f"现在 {peak_label(peak_now, self.peak_style)}"
+            bw = max(fm_b.horizontalAdvance(l2), fm_s.horizontalAdvance(l1),
+                     fm_s.horizontalAdvance(l3), fm_s.horizontalAdvance(l4)) + 28
+            bh = fm_s.height() + fm_b.height() + fm_s.height() + 16
+            if self.show_peak:
+                bh += fm_s.height()
+            bx = (self.width() - bw) / 2
+            by = self._bubble_top(bh)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 242))
+            p.drawRoundedRect(QRectF(bx, by, bw, bh), 14, 14)
+            tail = QPointF(self.width() / 2, by + bh)
+            p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
+                                     QPointF(tail.x() + 7, tail.y() + 9)]))
+            ty = by + 8
+            p.setFont(f_small)
+            p.setPen(QColor(130, 138, 158))
+            p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l1)
+            ty += fm_s.height()
+            p.setFont(f_big)
+            p.setPen(QColor(32, 49, 112))
+            p.drawText(QRectF(bx, ty, bw, fm_b.height()), Qt.AlignmentFlag.AlignCenter, l2)
+            ty += fm_b.height()
+            p.setFont(f_small)
+            p.setPen(QColor(150, 150, 165))
+            p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l3)
+            if self.show_peak:
+                ty += fm_s.height()
+                p.setFont(f_small)
+                # 高峰暖色、空闲绿色，一眼看出现在贵不贵
+                p.setPen(QColor(198, 90, 20) if peak_now else QColor(46, 125, 50))
+                p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l4)
 
         cx = self.width() / 2
         walking = self.target is not None and not self.dragging
@@ -573,13 +1260,17 @@ class PetWindow(QWidget):
             act_sy = 0.06 * math.sin(self.action_t * 3.14159)
             act_sx = -0.03 * math.sin(self.action_t * 3.14159)
 
+        # 按压 Q 弹：底部坐标不变，横向撑开、纵向压扁
+        press_sx = 1 + 0.13 * self.press_t
+        press_sy = 1 - 0.13 * self.press_t
+
         def draw_one(key, opacity):
             if key is None:
                 return
             name, h, facing = key
             pix = self.sprites[(name, h)]
-            ph = pix.height() * scale * (1 + act_sy)
-            pw = pix.width() * scale * (1 + act_sx)
+            ph = pix.height() * scale * (1 + act_sy) * press_sy
+            pw = pix.width() * scale * (1 + act_sx) * press_sx
             dx = cx - pw / 2
             bottom = BUBBLE_H + MARGIN + self.cur_h
             dy = bottom - ph + jump + bob
@@ -588,7 +1279,8 @@ class PetWindow(QWidget):
             p.translate(cx, bottom)
             p.rotate(sway + act_rot)
             p.translate(-cx, -bottom)
-            if facing < 0:
+            # 行走朝向 与 左吸附整体翻转 叠加（异或）
+            if (facing < 0) != bool(self.flip_x):
                 p.translate(cx, 0)
                 p.scale(-1, 1)
                 p.translate(-cx, 0)
@@ -602,7 +1294,14 @@ class PetWindow(QWidget):
         else:
             draw_one(cur_key, 1.0)
 
+    def _bubble_top(self, bh):
+        """气泡贴着鱼头顶：尾巴尖落在精灵上沿附近。"""
+        return max(2.0, BUBBLE_H + MARGIN - 10 - bh)
+
     def _sprite_key(self):
+        if self.skin == SKIN_WIDGET:
+            return ("挂件", self.cur_h,
+                    self.facing if self.dir in ("left", "right") else 1)
         name = {"left": "侧面", "right": "侧面", "up": "背面", "down": "正面"}[self.dir]
         return (name, self.cur_h, self.facing if self.dir in ("left", "right") else 1)
 
@@ -618,14 +1317,64 @@ class PetWindow(QWidget):
     def tick(self):
         self.t += 1
 
-        # 处理后台线程（DeepSeek 等）排队的气泡消息，Qt 界面必须在主线程更新
+        # 大约每 5 秒顺手存一次配置：改了城市/大小/音效这些不用等退出也不会丢
+        if self.t % 250 == 0:
+            self.autosave_config()
+
+        # 峰谷切换提醒：每秒看一次，跨进新时段就说一声
+        if self.t % 50 == 0:
+            peak_now = is_peak()
+            if self._peak_now is None:
+                self._peak_now = peak_now
+            elif peak_now != self._peak_now:
+                self._peak_now = peak_now
+                self.say("进入" + peak_label(peak_now, self.peak_style)
+                         + ("，这会儿聊起来贵一点" if peak_now else "，这会儿便宜"))
+
+        # 处理后台线程排队的气泡消息，Qt 界面必须在主线程更新
         if self._say_queue:
             for text in self._say_queue:
                 self.say(text)
             self._say_queue.clear()
 
-        self.check_system_status()
-        
+        # 余额结果（后台线程 → 主线程）
+        if self._bal_queue:
+            self._apply_balance(self._bal_queue.pop(0))
+
+        # 余额数字滚动 + 按压回弹 + 音效补播
+        if self.roll_t < 1.0:
+            self.roll_t = min(1.0, self.roll_t + 0.07)
+            if self.roll_t >= 1.0 and self.balance:
+                self.roll_shown = float(self.balance["total"])
+        if self.press_t > 0:
+            self.press_t = max(0.0, self.press_t - 0.12)
+        self._flush_pending_sounds()
+
+        # 延迟气泡（每轮消耗等）
+        if self._pending_bubbles:
+            now_s = self.t * TICK / 1000.0
+            due = [x for x in self._pending_bubbles if x[0] <= now_s]
+            if due:
+                self._pending_bubbles = [x for x in self._pending_bubbles if x[0] > now_s]
+                _, text, inner = due[0]
+                self.say(text, inner=inner)
+
+        # 城市定位 / 搜索结果
+        if self._city_queue:
+            city = self._city_queue.pop(0)
+            if city:
+                self._apply_city(city)
+            else:
+                self.say("没定位到，右键「天气 → 添加城市」搜一个吧")
+        if self._city_pick_queue:
+            items = self._city_pick_queue.pop(0)
+            labels = [x[0] for x in items]
+            with self._ui_guard():
+                pick, ok = QInputDialog.getItem(self, "选择城市", "选一个城市：", labels,
+                                                0, False, Qt.WindowType.WindowStaysOnTopHint)
+            if ok and pick:
+                self._apply_city(dict(items)[pick])
+
         if self.jump_t > 0:
             self.jump_t = max(0.0, self.jump_t - 0.06)
         if self.cross_t > 0:
@@ -634,11 +1383,11 @@ class PetWindow(QWidget):
             self.action_t = max(0.0, self.action_t - 0.03)
             if self.action_t == 0:
                 self.action = None
-        
-        if self.chat_paused:
+
+        if self.ui_open:        # 菜单 / 对话框开着：站住不动，免得跳上去把设置面板遮住
             self.update()
             return
-        
+
         if self.dragging:
             self.update()
             return
@@ -681,7 +1430,11 @@ class PetWindow(QWidget):
             else:
                 step = self.cur_speed * TICK / 1000.0
                 nx, ny = cx + dx / dist * step, cy + dy / dist * step
-                self.move(int(nx - self.width() / 2), int(ny - self.height() / 2))
+                # 整个窗口都要留在屏幕内，否则气泡会被顶出屏幕
+                geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+                mx = max(geo.left(), min(geo.right() - self.width() + 1, int(nx - self.width() / 2)))
+                my = max(geo.top(), min(geo.bottom() - self.height() + 1, int(ny - self.height() / 2)))
+                self.move(mx, my)
                 if abs(dx) > abs(dy) * 1.15:
                     self._set_dir("left" if dx < 0 else "right", 1 if dx < 0 else -1)
                 else:
@@ -722,50 +1475,14 @@ class PetWindow(QWidget):
         self.bubble_until = self.t * TICK / 1000.0 + 2.8
         self.update()
 
-    def check_system_status(self):
-            now = self.t * TICK
-
-            if now - getattr(self, "last_system_check", 0) < 10000:
-                return
-
-            self.last_system_check = now
-
-            cpu = psutil.cpu_percent()
-
-            if cpu >= 90:
-                self.say("CPU跑满了，再这样下去我就卡死了")
-                return
-
-            ram = psutil.virtual_memory().percent
-
-            if ram >= 95:
-                self.say("内存爆了，快关掉几个没用的东西吧，注意，别把我关了")
-                return
-
-            if GPU_AVAILABLE:
-                try:
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-
-                    temp = pynvml.nvmlDeviceGetTemperature(
-                        handle,
-                        pynvml.NVML_TEMPERATURE_GPU
-                    )
-
-                    if temp > 80:
-                        self.say("我感觉我的鱼鳍快熟了")
-
-                except Exception as e:
-                    print("GPU读取失败:", e)
-
     # ---------- 鼠标事件 ----------
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            self.press_t = 1.0          # 按压 Q 弹
+            self.play_click()           # 点一次响一声完整音效（不再区分松手）
             self.last_press_pos = e.globalPosition().toPoint()
             self.dragging = False
             self.drag_start_pos = e.globalPosition().toPoint()
-            self.function_panel.hide()
-            self.chat_dialog.hide()
-            self.chat_paused = True
 
     def mouseMoveEvent(self, e):
         if e.buttons() & Qt.MouseButton.LeftButton and self.drag_start_pos is not None:
@@ -789,102 +1506,125 @@ class PetWindow(QWidget):
                 self._set_dir("down", 1)
                 self.target = None
                 self.rest_until = self.t * TICK + random.randint(6000, 14000)
+                self._snap_to_edge()    # 松手后吸附到最近的边
                 if random.random() < 0.5:
                     self.say(random.choice(DRAG_LINES))
-                self.chat_paused = False
             else:
-                self._click_timer.start(280)  # 等双击判定；单击则回嘴+弹聊天面板
+                self._on_single_click()
             self.last_press_pos = None
             self.drag_start_pos = None
 
-    def mouseDoubleClickEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._click_timer.stop()
-            self.food_panel.popup_at(self.x() + self.width() / 2, self.y() + BUBBLE_H)
-
     def _on_single_click(self):
-        """单击：蹦跳回嘴 + 弹聊天面板（两不误，不想聊点鱼身外关闭）"""
+        """单击：蹦跳 + 回嘴 + 顺手刷一下余额。"""
+        self.refresh_balance(silent=True)      # 点一下顺手刷新余额
         if random.random() < 0.7:
             self.jump_t = 1.0
         if random.random() < 0.6:
             self.say(random.choice(REACT_LINES))
-        panel = self.function_panel
-        panel.popup_at(self.x() + self.width() / 2 - panel.width() / 2,
-                       self.y() - panel.height() - 10)
-
-    def on_food(self, food):
-        self.food_panel.hide()
-        self.eat_t = 1.0
-        self.jump_t = 0.6
-        lines = FOOD_LINES.get(food, ["好吃！"])
-        self.say(random.choice(lines))
-
-    def _show_chat_dialog(self):
-        key = self.cfg.get("ds_api_key", "")
-        if not key:
-            self.say("请先在右键菜单里设置 DeepSeek Key！")
-            self.chat_paused = False
-            return
-        self.chat_dialog.popup_at(
-            self.x() + self.width() / 2,
-            self.y() + BUBBLE_H
-        )
-
-    """def _get_city_by_ip(self):
-        try:
-            r = requests.get("http://ip-api.com/json/?fields=city&lang=zh-CN", timeout=5)
-            if r.status_code == 200:
-                city = r.json().get("city", "")
-                if city:
-                    return city
-        except:
-            pass
-        return "汕头" """
 
     def _get_weather(self):
+        """联网查天气（后台线程，别卡住桌宠）。"""
+        city = self.cfg.get("city", "汕头")
+
+        def worker():
+            got = fetch_weather(city)
+            if got:
+                temp, desc = got
+                self._queue_say(f"{city}今天{temp}°，天气{desc}")
+            else:
+                self._queue_say("天气没查到，等会儿再试试")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- 每轮 Codex 对话消耗 ----------
+    def scan_codex_usage(self):
+        """尾巴式读最新的 Codex 会话日志，按 turn 汇总 token 用量。"""
+        if not self.turn_cost_on:
+            return
+        newest = None
         try:
-            city = self.cfg.get("city", "汕头")
-            print("当前城市:", city)
+            for root, _dirs, files in os.walk(self.codex_dir):
+                for fn in files:
+                    if not fn.endswith(".jsonl"):
+                        continue
+                    p = os.path.join(root, fn)
+                    try:
+                        m = os.path.getmtime(p)
+                    except OSError:
+                        continue
+                    if newest is None or m > newest[0]:
+                        newest = (m, p)
+        except Exception:
+            return
+        if not newest:
+            return
 
-            url = f"https://wttr.in/{city}?format=j1"
+        path = newest[1]
+        if path != self._codex_file:
+            # 换文件了：从末尾开始，别把历史轮次当成本轮
+            self._codex_file = path
+            try:
+                self._codex_pos = os.path.getsize(path)
+            except OSError:
+                self._codex_pos = 0
+            self._codex_turn = None
+            self._codex_tokens = {}
+            return
 
-            r = requests.get(
-                url,
-                timeout=10,
-                headers={
-                    "User-Agent": "Mozilla/5.0"
-                }
-            )
+        try:
+            size = os.path.getsize(path)
+            if size < self._codex_pos:      # 文件被截断/轮转
+                self._codex_pos = 0
+            if size > self._codex_pos:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(self._codex_pos)
+                    for line in f:
+                        self._ingest_codex_line(line)
+                    self._codex_pos = f.tell()
+        except OSError:
+            return
+        self._report_codex_turn()
 
-            print("状态:", r.status_code)
-            print(r.text[:500])
+    def _ingest_codex_line(self, line):
+        if '"token_usage_record"' not in line and '"turn_context"' not in line:
+            return
+        try:
+            obj = json.loads(line)
+        except Exception:
+            return
+        payload = obj.get("payload") or {}
+        turn = payload.get("turn_id")
+        if not turn:
+            return
+        if turn != self._codex_turn:
+            if self._codex_turn:                  # 上一轮结束了
+                self._report_codex_turn(force=True)
+            self._codex_turn = turn
+        usage = payload.get("turn_token_usage") or payload.get("usage")
+        if usage:
+            prev = self._codex_tokens.get(turn)
+            if not prev or (usage.get("total_tokens") or 0) >= (prev.get("total_tokens") or 0):
+                self._codex_tokens[turn] = usage      # 累计值：取最大的那份
+            else:
+                merged = dict(prev)
+                for k, v in usage.items():
+                    if isinstance(v, (int, float)):
+                        merged[k] = (prev.get(k) or 0) + v
+                self._codex_tokens[turn] = merged
+            self._codex_last_change = time.time()
 
-            data = r.json()
-
-            weather = data["current_condition"][0]
-
-            temp = weather["temp_C"]
-
-            weather_map = {
-                "Sunny": "晴",
-                "Clear": "晴",
-                "Partly cloudy": "多云",
-                "Cloudy": "阴",
-                "Light rain": "小雨",
-                "Moderate rain": "中雨",
-                "Heavy rain": "大雨"
-            }
-
-            raw_weather = weather["weatherDesc"][0]["value"]
-
-            desc = weather_map.get(raw_weather, raw_weather)
-
-            self.say(f"{city}今天{temp}°，天气{desc}")
-
-        except Exception as e:
-            print("天气错误:", repr(e))
-            self.say("天气获取失败")
-    
+    def _report_codex_turn(self, force=False):
+        turn = self._codex_turn
+        if not turn or turn in self._codex_reported:
+            return
+        if not force and time.time() - self._codex_last_change < CODEX_QUIET_S:
+            return
+        self._codex_reported.add(turn)
+        if len(self._codex_reported) > 50:
+            self._codex_reported = set(list(self._codex_reported)[-25:])
+        amount, tokens = codex_usage_cost(self._codex_tokens.get(turn))
+        if tokens:
+            self.say(f"上一轮消耗 ¥{amount:.4f}（{tokens / 1000:.1f}k token）")
 
     def _build_menu(self):
         m = QMenu(self)
@@ -900,8 +1640,71 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(abs(self.cur_h - 340 * mult) < 2)
             a.triggered.connect(lambda _, v=mult: self.set_size(v))
-        m.addAction("设置 Key", self._set_key_dialog)
-        m.addAction("查看天气", self._get_weather)
+        skin_menu = m.addMenu("形象")
+        for name in (SKIN_PET, SKIN_WIDGET):
+            a = skin_menu.addAction(name)
+            a.setCheckable(True)
+            a.setChecked(self.skin == name)
+            a.triggered.connect(lambda _, n=name: self.set_skin(n))
+        weather_menu = m.addMenu("天气")
+        weather_menu.addAction("设置默认城市（手动输入）", self.set_city_dialog)
+        weather_menu.addAction("查看天气", self._get_weather)
+        weather_menu.addAction("自动定位城市（按 IP，挂梯子会不准）", self.auto_locate_city)
+        weather_menu.addAction("添加城市（联网搜索）", self.search_city_dialog)
+        weather_menu.addSeparator()
+        weather_menu.addAction(f"当前城市：{self.cfg.get('city', '汕头')}").setEnabled(False)
+        bal_menu = m.addMenu("余额")
+        bal_menu.addAction("查看余额", lambda: self.refresh_balance(silent=False))
+        bal_menu.addAction("设置 Key", self._set_key_dialog)
+        bal_menu.addSeparator()
+        baa = bal_menu.addAction("余额常显")
+        baa.setCheckable(True)
+        baa.setChecked(self.balance_always)
+        baa.triggered.connect(self.set_balance_always)
+        sna = bal_menu.addAction("拖拽吸附四边")
+        sna.setCheckable(True)
+        sna.setChecked(self.snap_on)
+        sna.triggered.connect(self.set_snap)
+        fka = bal_menu.addAction("左吸附时翻面")
+        fka.setCheckable(True)
+        fka.setChecked(self.flip_on_left)
+        fka.triggered.connect(self.set_flip_on_left)
+        tca = bal_menu.addAction("每轮 Codex 对话后显示消耗")
+        tca.setCheckable(True)
+        tca.setChecked(self.turn_cost_on)
+        tca.triggered.connect(self.set_turn_cost)
+        pka = bal_menu.addAction("显示峰谷时段")
+        pka.setCheckable(True)
+        pka.setChecked(self.show_peak)
+        pka.triggered.connect(self.set_show_peak)
+        peak_menu = bal_menu.addMenu("峰谷文案")
+        for style in PEAK_TEXT_STYLES:
+            a = peak_menu.addAction(style)
+            a.setCheckable(True)
+            a.setChecked(self.peak_style == style)
+            a.triggered.connect(lambda _, s=style: self.set_peak_style(s))
+        snd_menu = m.addMenu("音效")
+        so = snd_menu.addAction("按键音效")
+        so.setCheckable(True)
+        so.setChecked(self.sound_on)
+        so.triggered.connect(self.set_sound)
+        pick_menu = snd_menu.addMenu("音效选择")
+        for name in SOUND_SETS:
+            a = pick_menu.addAction(name)
+            a.setCheckable(True)
+            a.setChecked(self.sound_set == name)
+            a.triggered.connect(lambda _, n=name: self.set_sound_set(n))
+        vol_menu = snd_menu.addMenu("音量")
+        vol_action = QWidgetAction(vol_menu)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(int(self.volume * 100))
+        slider.setFixedWidth(130)
+        slider.valueChanged.connect(lambda v: self.set_volume(v / 100.0))
+        vol_action.setDefaultWidget(slider)
+        vol_menu.addAction(vol_action)
+        snd_menu.addSeparator()
+        snd_menu.addAction("试听音效", self.preview_sounds)
         m.addSeparator()
         m.addAction("显示/隐藏", self.toggle_visible)
         m.addAction("回到屏幕内", self.snap_into_screen)
@@ -922,33 +1725,114 @@ class PetWindow(QWidget):
         return m
 
     def _set_key_dialog(self):
-        key, ok = QInputDialog.getText(
-            self, 
-            "设置 DeepSeek Key", 
-            "输入你的 API Key（从 platform.deepseek.com 获取）:",
-            QLineEdit.EchoMode.Normal,
-            self.cfg.get("ds_api_key", "")
-        )
+        with self._ui_guard():
+            key, ok = QInputDialog.getText(
+                self,
+                "设置 DeepSeek Key",
+                "输入你的 API Key（从 platform.deepseek.com 获取）:",
+                QLineEdit.EchoMode.Normal,
+                self.cfg.get("ds_api_key", ""),
+                Qt.WindowType.WindowStaysOnTopHint
+            )
         if ok and key.strip():
             self.cfg["ds_api_key"] = key.strip()
-            self.say("Key 设置成功！")
+            self.say("Key 设置成功！我看看还剩多少钱")
+            self.refresh_balance(silent=False)
         elif ok and not key.strip():
             self.say("Key 不能为空")
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Context:
-            self.tray.setContextMenu(self._build_menu())
+            self.tray.setContextMenu(self._make_menu())
         elif reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.toggle_visible()
 
+    def _make_menu(self):
+        """建右键菜单：菜单本身置顶，并且打开期间让桌宠站住不动。"""
+        m = self._build_menu()
+        m.setWindowFlags(m.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        m.aboutToShow.connect(lambda: setattr(self, "ui_open", True))
+        m.aboutToHide.connect(lambda: setattr(self, "ui_open", False))
+        return m
+
+    def _open_menu(self, pos):
+        """弹右键菜单：先显示再抬到最前，并保证菜单开着的时候不跟桌宠抢置顶。"""
+        m = self._make_menu()
+        loop = QEventLoop()
+        m.aboutToHide.connect(loop.quit)
+        # 菜单开着的时候，别让「保持置顶」的定时器把桌宠抬到菜单上面去
+        keep = QTimer()
+        keep.setInterval(400)
+        keep.timeout.connect(m.raise_)
+        try:
+            m.popup(pos)
+            m.raise_()
+            keep.start()
+            loop.exec()
+        finally:
+            keep.stop()
+            self.ui_open = False
+
+    def _ui_guard(self):
+        """对话框期间用的上下文管理器：桌宠站住不动，免得盖住对话框。"""
+        pet = self
+
+        class _Guard:
+            def __enter__(self):
+                pet.ui_open = True
+
+            def __exit__(self, *exc):
+                pet.ui_open = False
+                return False
+
+        return _Guard()
+
     def contextMenuEvent(self, e):
-        self._build_menu().exec(e.globalPos())
+        self._open_menu(e.globalPos())
 
     # ---------- 功能 ----------
     def set_mode(self, mode):
         self.mode = mode
         self.target = None
         self.cfg["mode"] = mode
+
+    def set_balance_always(self, on):
+        self.balance_always = bool(on)
+        self.cfg["balance_always"] = bool(on)
+        if on and self.balance is None:
+            self.refresh_balance(silent=False)
+        self.update()
+
+    def set_show_peak(self, on):
+        self.show_peak = bool(on)
+        self.cfg["show_peak"] = bool(on)
+        self.update()
+
+    def set_peak_style(self, style):
+        if style not in PEAK_TEXT_STYLES:
+            return
+        self.peak_style = style
+        self.cfg["peak_style"] = style
+        self.update()
+
+    def set_snap(self, on):
+        self.snap_on = bool(on)
+        self.cfg["snap_on"] = bool(on)
+        if not on:
+            self.snap_h = self.snap_v = None
+            self.flip_x = False
+        self.update()
+
+    def set_flip_on_left(self, on):
+        self.flip_on_left = bool(on)
+        self.cfg["flip_on_left"] = bool(on)
+        if not on:
+            self.flip_x = False
+        self.update()
+
+    def set_turn_cost(self, on):
+        self.turn_cost_on = bool(on)
+        self.cfg["turn_cost_on"] = bool(on)
 
     def set_size(self, mult):
         self.cur_h = int(340 * mult)
@@ -965,6 +1849,30 @@ class PetWindow(QWidget):
         x = max(geo.left(), min(geo.right() - self.width(), self.x()))
         y = max(geo.top(), min(geo.bottom() - self.height(), self.y()))
         self.move(x, y)
+        self._settle(geo)
+
+    def _keep_on_top(self):
+        """定期把自己顶到置顶窗口的最前面（SWP_NOACTIVATE，不抢焦点）。
+
+        有的窗口（例如 Codex 主窗口）本身也是置顶的，两个置顶窗口重叠时就按 z 序排，
+        不主动提一下的话桌宠会被盖住。
+        """
+        if (not self.cfg.get("topmost", True) or not self.isVisible()
+                or self.ui_open):     # 菜单/对话框开着时别抢，免得盖住设置面板
+            return
+        try:
+            self.raise_()          # 先把窗口抬到同类窗口最前面
+        except Exception:
+            pass
+        try:
+            SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+            ctypes.windll.user32.SetWindowPos(
+                ctypes.c_void_p(int(self.winId())),
+                ctypes.c_void_p(-1),          # HWND_TOPMOST（必须按指针传，直接传 -1 会被截断）
+                0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+        except Exception:
+            pass
 
     def _apply_passthrough(self, on):
         hwnd = int(self.winId())
@@ -1018,8 +1926,7 @@ class PetWindow(QWidget):
 
     def quit_app(self):
         self.cfg["x"], self.cfg["y"] = self.x(), self.y()
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.cfg, f, ensure_ascii=False, indent=2)
+        self.save_config()
         self.tray.hide()
         QApplication.quit()
 
