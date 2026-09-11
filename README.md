@@ -162,8 +162,10 @@ PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）�
 2. 要发新版本（带 exe 下载）时重新打包并建 Release：
    ```bash
    pyinstaller --noconfirm --clean 桌宠.spec
-   gh release create v1.0.1 "dist/大肥鱼桌宠.exe" --title "大肥鱼桌宠 v1.0.1" --notes "这次改了什么"
+   gh release create v1.0.8 "dist/大肥鱼桌宠.exe" --title "大肥鱼桌宠 v1.0.8" --notes "这次改了什么"
    ```
+   版本号按现有最高版本 +1（桌面上的「发布到GitHub.bat」会自动算好，不用手动记）；
+   内容没变就别重发，版本号保持连续、不跳号。
 
 ## 更换形象
 
