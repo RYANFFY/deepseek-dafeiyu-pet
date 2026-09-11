@@ -467,6 +467,35 @@ def query_openrouter_balance(key):
         return {"ok": False, "error": str(ex)[:60]}
 
 
+def foreground_process_name():
+    """当前前台窗口属于哪个进程（小写进程名）；拿不到就返回空串。"""
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32.dll")
+        kernel32 = ctypes.WinDLL("kernel32.dll")
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not handle:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(buf))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return buf.value.rsplit("\\", 1)[-1].lower()
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    return ""
+
+
 def list_process_names():
     """枚举当前所有进程名（小写、不含路径）。用 Windows API，不依赖 psutil。"""
     names = set()
@@ -868,6 +897,10 @@ class PetWindow(QWidget):
         self.process_alerts = bool(self.cfg.get("process_alerts", True))
         self._running_procs = None      # 第一次扫描只记录，不冒泡
         self._last_proc_say = 0.0
+        self._foreground_proc = None     # 上一次的前台应用
+        self._proc_said_at = {}          # 每个应用上次吐槽的时间
+        self._last_pos = (0, 0)          # 卡住自检用
+        self._stuck_ticks = 0
         self.snap_on = bool(self.cfg.get("snap_on", True))
         self.flip_on_left = bool(self.cfg.get("flip_on_left", True))
         self.turn_cost_on = bool(self.cfg.get("turn_cost_on", True))
@@ -962,7 +995,7 @@ class PetWindow(QWidget):
         # 进程联动：打开某些应用时冒个泡
         self.proc_timer = QTimer(self)
         self.proc_timer.timeout.connect(self.check_processes)
-        self.proc_timer.start(4000)
+        self.proc_timer.start(2000)
 
     # ---------- 余额 ----------
     def _api_key(self):
@@ -1607,8 +1640,10 @@ class PetWindow(QWidget):
             if near:
                 self.target = None
             else:
-                tx = max(geo.left(), min(geo.right() - self.width(), cursor.x() - self.width() / 2))
-                ty = max(geo.top(), min(geo.bottom() - self.height(), cursor.y() - 90))
+                # 目标点按"窗口中心"算，并且夹在可达范围内，否则贴边时会永远够不到
+                half_w, half_h = self.width() / 2, self.height() / 2
+                tx = max(geo.left() + half_w, min(geo.right() - half_w, cursor.x()))
+                ty = max(geo.top() + half_h, min(geo.bottom() - half_h, cursor.y() + 60))
                 self.target = (tx, ty)
         elif self.mode == "wander":
             if self.target is None:
@@ -1617,8 +1652,10 @@ class PetWindow(QWidget):
                     self.update()
                     return
                 geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
-                self.target = (random.randint(geo.left() + 40, geo.right() - self.width() - 40),
-                               random.randint(geo.top() + 40, geo.bottom() - self.height() - 40))
+                # 同样按窗口中心取点，保证这个点在"窗口不出屏"的钳制范围内可达
+                half_w, half_h = self.width() / 2, self.height() / 2
+                self.target = (random.randint(int(geo.left() + half_w), int(geo.right() - half_w)),
+                               random.randint(int(geo.top() + half_h), int(geo.bottom() - half_h)))
         else:
             if self.t % 250 == 0:
                 self._look_at_cursor()
@@ -1627,6 +1664,18 @@ class PetWindow(QWidget):
             return
 
         if self.target is not None:
+            # 卡住保护：有目标却几乎没挪窝（比如贴着屏幕边），2 秒就换个目标
+            moved = abs(self.x() - self._last_pos[0]) + abs(self.y() - self._last_pos[1])
+            self._last_pos = (self.x(), self.y())
+            self._stuck_ticks = 0 if moved >= 2 else self._stuck_ticks + 1
+            if self._stuck_ticks > 100:
+                self._stuck_ticks = 0
+                self.target = None
+                self.rest_until = self.t * TICK + random.randint(2000, 6000)
+                self._set_dir("down")
+                self.update()
+                return
+
             cx, cy = self.x() + self.width() / 2, self.y() + self.height() / 2
             dx, dy = self.target[0] - cx, self.target[1] - cy
             dist = (dx * dx + dy * dy) ** 0.5
@@ -1657,19 +1706,29 @@ class PetWindow(QWidget):
         self.update()
 
     def check_processes(self):
-        """检测到新打开的应用就冒一句（第一次扫描只记录基线，免得一开机刷屏）。"""
+        """切到（或刚打开）某个应用时冒一句吐槽。
+
+        改成看"前台窗口"而不是"新出现的进程"：这样已经开着的微信 / 浏览器 /
+        QQ 也算数，不会像以前那样只有刚启动的 Steam 会触发。同一个应用
+        10 分钟（ChatGPT 15 分钟）只吐槽一次，避免刷屏。
+        """
         if not self.process_alerts:
             return
-        names = list_process_names()
-        watched = {n for n in names if n in PROCESS_LINES}
-        if self._running_procs is None:
-            self._running_procs = watched
+        name = foreground_process_name()
+        if not name:
             return
-        started = watched - self._running_procs
-        self._running_procs = watched
-        if started and time.time() - self._last_proc_say > 25:
-            self._last_proc_say = time.time()
-            self.say(random.choice(PROCESS_LINES[sorted(started)[0]]))
+        if name not in PROCESS_LINES:
+            self._foreground_proc = name
+            return
+        if name == self._foreground_proc:
+            return
+        self._foreground_proc = name
+        now = time.time()
+        cooldown = 900 if name == "chatgpt.exe" else 600
+        if now - self._proc_said_at.get(name, 0) < cooldown:
+            return
+        self._proc_said_at[name] = now
+        self.say(random.choice(PROCESS_LINES[name]))
 
     def _look_at_cursor(self):
         """原地待着的时候偶尔转头看向鼠标，显得机灵点。"""
@@ -2088,21 +2147,17 @@ class PetWindow(QWidget):
         return m
 
     def _open_menu(self, pos):
-        """弹右键菜单：先显示再抬到最前，并保证菜单开着的时候不跟桌宠抢置顶。"""
+        """弹右键菜单。
+
+        用 exec() 走 Qt 的弹出菜单模态循环：二级菜单能正常悬停展开、贴屏幕边缘时
+        也会自动往反方向弹。之前用 popup + 定时 raise_() 会把子菜单顶掉，
+        鼠标离开一级菜单整个菜单就消失，所以改回 exec()；菜单开着的时候
+        桌宠本身也不再抢置顶（见 _keep_on_top），不会被压住。
+        """
         m = self._make_menu()
-        loop = QEventLoop()
-        m.aboutToHide.connect(loop.quit)
-        # 菜单开着的时候，别让「保持置顶」的定时器把桌宠抬到菜单上面去
-        keep = QTimer()
-        keep.setInterval(400)
-        keep.timeout.connect(m.raise_)
         try:
-            m.popup(pos)
-            m.raise_()
-            keep.start()
-            loop.exec()
+            m.exec(pos)
         finally:
-            keep.stop()
             self.ui_open = False
 
     def _ui_guard(self):
