@@ -1,15 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
+import PySide6
+import shiboken6
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('sprites', 'sprites')]
+datas = [('sprites', 'sprites'), ('assets', 'assets')]
 binaries = []
 hiddenimports = []
-tmp_ret = collect_all('psutil')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('requests')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('pynvml')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# PyInstaller 会漏收 PySide6 自带的部分 MSVC 运行库（尤其 msvcp140_codecvt_ids.dll），
+# 缺了它们 Qt6Core.dll 会报 "DLL load failed ... 找不到指定的程序"。
+for _pkg in (PySide6, shiboken6):
+    _dir = os.path.dirname(_pkg.__file__)
+    for _name in ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+                  'msvcp140_codecvt_ids.dll', 'vcruntime140.dll', 'vcruntime140_1.dll',
+                  'concrt140.dll', 'vcamp140.dll', 'vccorlib140.dll', 'vcomp140.dll'):
+        _src = os.path.join(_dir, _name)
+        if os.path.exists(_src):
+            for _dest in ('.', 'PySide6', 'shiboken6'):
+                binaries.append((_src, _dest))
 
 
 a = Analysis(
@@ -27,13 +39,20 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# 关键修复：这台机器上 PyInstaller 会把 Codex 运行时里 ICU 78 的 icuuc.dll / icudt78.dll
+# 也打进包，而 Qt6Core.dll 期望的是 Windows 自带那份 ICU 72，版本不匹配会报
+# "DLL load failed while importing QtCore: 找不到指定的程序"。剔掉它们，让 Qt 用系统的。
+_drop = ('icuuc.dll', 'icuin.dll', 'icuio.dll', 'icutu.dll', 'icuuc', 'icudt')
+a.binaries = [b for b in a.binaries
+              if not any(os.path.basename(b[0]).lower().startswith(p) for p in _drop)]
+
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
     a.datas,
     [],
-    name='桌宠',
+    name='大肥鱼桌宠',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

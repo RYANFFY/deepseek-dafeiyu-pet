@@ -1,5 +1,7 @@
 # 大肥鱼桌宠 🐋
 
+English | [中文](README.md) → [README.en.md](README.en.md)
+
 DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 
 基于三视图素材（正面 / 侧面 / 背面），用 Python + PySide6 实现，无边框透明置顶窗口。
@@ -91,6 +93,10 @@ pyinstaller --noconfirm --onefile --windowed --name 大肥鱼桌宠 --add-data "
 
 产物在 `dist/大肥鱼桌宠.exe`，对方双击即用，无需安装 Python。
 （杀毒软件可能对 PyInstaller 产物误报，加信任即可。）
+
+小提示：如果你自己打包后启动报 `DLL load failed while importing QtCore`，是因为
+PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）也打进了包，和 Qt 期望的
+系统 ICU 版本冲突；`桌宠.spec` 里已经加了过滤，直接用它打包就不会踩这个坑。
 
 ## 更换形象
 
