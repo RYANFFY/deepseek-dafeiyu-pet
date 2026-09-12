@@ -171,7 +171,7 @@ LINE_FREQ_LEVELS = {
     "安静": {"cooldown": 1500, "hint": "约 30 秒一句"},
     "正常": {"cooldown": 600, "hint": "约 12~17 秒一句"},
     "话多": {"cooldown": 300, "hint": "约 7~8 秒一句"},
-    "话痨": {"cooldown": 150, "hint": "约 3~4 秒一句"},
+    "话痨": {"cooldown": 150, "hint": "约 4~6 秒一句"},
 }
 LINE_FREQ_DEFAULT = "正常"
 SPEED = 380.0
