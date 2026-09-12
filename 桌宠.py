@@ -4189,7 +4189,7 @@ class PetWindow(QWidget):
             self.say("菜单日志关啦")
 
     MENU_TRIGGER_MARGIN_X = 0       # 方案 1 已弃用（主人选方案 2）：不再放宽触发范围
-    MENU_OVERLAP = 16               # v1.0.10 方案 2：子菜单和一级菜单重叠的像素
+    MENU_OVERLAP = 12               # v1.0.10 方案 2：子菜单和上一级菜单重叠的像素（主人觉得 16 太多，减 25%）
 
     def _menu_action_at(self, menu, pos, margin_x=0):
         """按（可横向放宽的）矩形找光标下那一项；纵向不放宽，免得串到相邻条目上。"""
