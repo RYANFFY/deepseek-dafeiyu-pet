@@ -254,6 +254,7 @@ MUSIC_APPS = {
 MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
 MUSIC_HOLD_SEC = 5.0          # 放歌时：双击看余额 / 点"查看天气"，都显示 5 秒
 MUSIC_PEEK_SEC = MUSIC_HOLD_SEC
+PEEK_SEC = MUSIC_HOLD_SEC       # 快速双击看余额：顶上来显示几秒
 MENU_HOVER_MS = 120           # 菜单悬停兜底的检查间隔
 MENU_HOVER_FAST_MS = 40       # 菜单开着时用这个间隔（纠位置差不多是"瞬间"）
 MENU_HOVER_DELAY = 0.22       # 光标在带子菜单的项上停多久就替它弹出子菜单
@@ -1822,6 +1823,8 @@ class PetWindow(QWidget):
         self._music_played = 0.0         # 播放器不给进度时，按实际播放时长累加
         self._music_tick_at = 0.0        # 上一次累加的时刻
         self._bal_peek_until = 0.0       # 放歌时快速双击 → 临时看余额
+        self._peek_pending = False        # 双击要的那一眼，等余额回来再冒泡
+        self._key_hint_shown = False      # "没配 Key，双击看不了余额"这句每次启动只提醒一次
         self._last_click_ms = -99999     # 快速双击判定
         self._lyric_key = ""             # 当前歌「歌名|歌手」
         self._lyric_lines = []           # [(秒, 词)]
@@ -2162,6 +2165,11 @@ class PetWindow(QWidget):
         self.bal_error = ""
         self._start_roll(total)
 
+        if getattr(self, "_peek_pending", False):
+            # 双击要的那一眼：不管是不是在放歌，都把余额顶上来显示 5 秒
+            self._peek_pending = False
+            self._peek_balance(PEEK_SEC)
+            return
         if self._music_playing():
             return          # 放歌时不打断歌词；想看余额快速双击就行
         if not res.get("silent"):
@@ -3322,7 +3330,10 @@ class PetWindow(QWidget):
                 if random.random() < 0.5:
                     self.say(random.choice(self.lines_for("DRAG_LINES")))
             else:
-                now_ms = self.t * self.tick_ms
+                # 用**墙上时间**判双击：以前用桌宠自己的动画时钟（self.t × tick_ms），
+                # 一旦动画停一下 / 卡一下，时钟就走得比真实时间慢，两次隔了 0.8 秒的点击
+                # 也会被当成"快速双击"。
+                now_ms = time.time() * 1000.0
                 quick = (now_ms - self._last_click_ms) <= 380
                 self._last_click_ms = now_ms
                 if quick:
@@ -3348,18 +3359,30 @@ class PetWindow(QWidget):
             self.say(random.choice(self.lines_for("REACT_LINES")))
 
     def _on_double_click(self):
-        """快速双击：放歌时瞄一眼余额（5 秒）；平时换姿势。"""
-        if self._music_playing():
-            if self.balance is not None:
-                self.show_balance_bubble(MUSIC_PEEK_SEC)
-                self._bal_peek_until = self._secs() + MUSIC_PEEK_SEC
-                return
-            _name, key = self._current_source()
-            if key:
-                self.refresh_balance(silent=False)      # 有 Key 还没取到，拉一把
-            else:
-                self.say("还没填余额 Key：右键 →「余额 → 设置 Key」", seconds=4.0, again=True)
+        """快速双击：瞄一眼余额（显示 5 秒）。
+
+        没配 Key 的话这个功能**不启用** —— 还是原来的"换姿势"，只提醒一次怎么配。
+        """
+        name, key = self._current_source()
+        if not key:
+            self.action, self.action_t = random.choice(("sway", "stretch")), 1.0
+            self.jump_t = max(self.jump_t, 0.6)
+            if not self._key_hint_shown:
+                self._key_hint_shown = True
+                self.say(f"双击看余额要先填 {name} 的 Key：右键 →「余额 → 设置 Key」",
+                         seconds=4.0, again=True)
             return
+        if self.balance is not None:
+            self._peek_balance(PEEK_SEC)                # 顶上来显示 5 秒
+            return
+        # 还没取到过：拉一把，结果回来会自动冒 5 秒（放歌时也一样）
+        self._peek_pending = True
+        self.refresh_balance(silent=False)
+
+    def _peek_balance(self, seconds=PEEK_SEC):
+        """把余额泡泡临时顶上来显示几秒（快速双击用它；放歌时优先于歌词）。"""
+        self.show_balance_bubble(seconds)
+        self._bal_peek_until = self._secs() + seconds
         self.action, self.action_t = random.choice(("sway", "stretch")), 1.0
         self.jump_t = max(self.jump_t, 0.6)
 
@@ -3634,7 +3657,9 @@ class PetWindow(QWidget):
         music_menu.addAction(self._music_menu_label()).setEnabled(False)
         music_menu.addAction("立刻看一眼在放什么", self.check_music_now)
         music_menu.addSeparator()
-        music_menu.addAction("放歌时：单击=报歌名，快速双击=看 5 秒余额").setEnabled(False)
+        music_menu.addAction("单击=回嘴（放歌时报歌名）· 快速双击=看 5 秒余额"
+                             + ("（已启用）" if self._current_source()[1] else "（要先配 Key）")
+                             ).setEnabled(False)
 
         # 流畅度：动画优先 / 省资源，自己选
         perf_menu = m.addMenu("流畅度")
