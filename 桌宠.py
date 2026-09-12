@@ -302,6 +302,7 @@ LYRIC_OFFSET_LEVELS = [
 LYRIC_OFFSET_DEFAULT = 0.2      # 默认让文字稍微等一下（实测文字容易抢在声音前头）
 LYRIC_ANIM_SEC = 0.15           # 歌词换句时的过渡动画时长（秒）
 LYRIC_ANIM_MS = 10              # 过渡期间用 100 帧/秒重绘（主时钟在休闲模式只有 25 帧，不够顺）
+BUBBLE_ANIM_SEC = 0.15          # 气泡自己变大/变小也用同样长的过渡（跟着 100 帧/秒的计时器走）
 LYRIC_KARAOKE_ON = True         # "唱到哪高亮到哪"
 LYRIC_KARAOKE_COLOR = (72, 104, 240)   # 已唱到的那部分的颜色（DeepSeek 蓝）
 LYRIC_MAX_ROWS = 4              # 当前这句最多折几行（再多就先把字号缩一档）
@@ -1321,6 +1322,76 @@ def lyric_index(lines, pos):
     return idx
 
 
+_YRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
+_YRC_WORD_RE = re.compile(r"\((\d+),(\d+),(\d+)\)")
+_LRC_TIME_RE = re.compile(r"^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+_LRC_INLINE_RE = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
+
+
+def _ms_or_sec(a, b, c):
+    """[mm:ss.xx] / <mm:ss.xx> 三段 → 秒。"""
+    return int(a) * 60 + int(b) + (int((c or "0").ljust(3, "0")) / 1000.0)
+
+
+def parse_word_lyrics(text):
+    """解析"逐字歌词"，返回 {这句的开始秒: [(字, 这个字的开始秒), ...]}。
+
+    支持两种：
+    · 网易云的 yrc：`[16250,2140](16250,430,0)有(16680,430,0)些(17110,430,0)话...`
+    · 带行内时间戳的增强 LRC：`[00:16.25]有<00:16.68>些<00:17.11>话...`
+    解析不出来就返回空 dict（那就退回"按这句的起止时间匀速推"）。
+    """
+    out = {}
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _YRC_LINE_RE.match(line)
+        if m and _YRC_WORD_RE.search(line):
+            start = int(m.group(1)) / 1000.0
+            body, words = m.group(3), []
+            for wm in _YRC_WORD_RE.finditer(body):
+                words.append((int(wm.group(1)) / 1000.0, None))
+            chars = [c for c in _YRC_WORD_RE.sub("\x00", body).replace("\x00", "").strip()]
+            if len(chars) != len(words):        # 字数对不上就不敢用（怕错位）
+                continue
+            out[start] = [(c, t) for c, (t, _x) in zip(chars, words)]
+            continue
+        m = _LRC_TIME_RE.match(line)
+        if m and _LRC_INLINE_RE.search(line):
+            start = _ms_or_sec(m.group(1), m.group(2), m.group(3))
+            body = line[m.end():]
+            pairs, pos, cur = [], 0, start
+            for im in _LRC_INLINE_RE.finditer(body):
+                piece = body[pos:im.start()].strip()
+                if piece:
+                    pairs.extend((c, cur) for c in piece)
+                cur = _ms_or_sec(im.group(1), im.group(2), im.group(3))
+                pos = im.end()
+            tail = body[pos:].strip()
+            if tail:
+                pairs.extend((c, cur) for c in tail)
+            if pairs:
+                out[start] = pairs
+    return out
+
+
+def sung_chars(words, pos):
+    """逐字时间戳下，pos 秒时这句已经唱到第几个字（可以是小数，按当前字推进）。"""
+    if not words:
+        return 0.0
+    n = 0
+    for _c, t in words:
+        if t <= pos:
+            n += 1
+        else:
+            nxt_t = max(pos, t)
+            prev_t = words[n - 1][1] if n > 0 else t
+            span = max(0.05, nxt_t - prev_t)
+            return float(n) + max(0.0, min(1.0, (pos - prev_t) / span))
+    return float(n)
+
+
 def _best_song(items, title, artist, name_of, artist_of):
     """在搜索结果里挑最像的那一首：歌名优先，歌手用来加分 / 排除。"""
     want_t = (title or "").strip().lower()
@@ -1364,11 +1435,14 @@ def _netease_lyric(title, artist):
     if not song:
         return ""
     r2 = requests.get("https://music.163.com/api/song/lyric",
-                      params={"id": song.get("id"), "lv": 1, "kv": 1, "tv": -1},
+                      params={"id": song.get("id"), "lv": 1, "kv": 1, "tv": -1, "yv": 1},
                       headers={"User-Agent": "Mozilla/5.0",
                                "Referer": "https://music.163.com/"},
                       timeout=10)
-    return ((r2.json() or {}).get("lrc") or {}).get("lyric") or ""
+    data = r2.json() or {}
+    # 有逐字歌词（yrc）就用它：这样"唱到哪高亮到哪"能完全贴合真人演唱，而不是匀速推
+    word = ((data.get("yrc") or {}).get("lyric") or "").strip()
+    return word or ((data.get("lrc") or {}).get("lyric") or "")
 
 
 def _qq_lyric(title, artist):
@@ -1932,6 +2006,7 @@ class PetWindow(QWidget):
         self._last_click_ms = -99999     # 快速双击判定
         self._lyric_key = ""             # 当前歌「歌名|歌手」
         self._lyric_lines = []           # [(秒, 词)]
+        self._lyric_words = {}           # {这句开始秒: [(字, 这个字的开始秒), ...]}（有逐字歌词时才有）
         self._lyric_queue = []           # 后台线程找回来的歌词
         self._lyric_fetching = ""        # 正在找歌词的那首
         self._lyric_cache = load_lyric_cache()
@@ -1942,6 +2017,10 @@ class PetWindow(QWidget):
         self._lyric_last_h = 0.0         # 最近一次画出来的气泡高度
         self._lyric_prev_w = 0.0         # 上一句时气泡多宽（过渡期间宽度也平滑变化）
         self._lyric_last_w = 0.0         # 最近一次画出来的气泡宽度
+        self._bub_w = 0.0                # 气泡当前（动画中）的宽
+        self._bub_h = 0.0                # 气泡当前（动画中）的高
+        self._bub_target = (0.0, 0.0)    # 目标宽高（每帧由绘制算出来）
+        self._bub_t = None               # 上一帧的时间（用来按真实帧间隔推进动画）
         self._lyric_timer = QTimer(self)  # 过渡期间专用：100 帧/秒
         self._lyric_timer.setInterval(LYRIC_ANIM_MS)
         self._lyric_timer.timeout.connect(self._lyric_anim_step)
@@ -2136,9 +2215,22 @@ class PetWindow(QWidget):
         """
         info = self.now_playing or {}
         pos = info.get("position")
+        playing = bool(info.get("playing"))
         if pos is not None and float(pos) > 0.5:
+            if not playing:
+                return max(0.0, float(pos))        # 暂停：就停在这个位置，别继续往前跑
             return max(0.0, float(pos) + (time.time() - float(info.get("at") or time.time())))
         return max(0.0, self._music_played)
+
+    def _word_times_for(self, start_sec):
+        """这一句的逐字时间戳（没有就返回空）。"""
+        table = getattr(self, "_lyric_words", None) or {}
+        if not table:
+            return []
+        key = min(table, key=lambda k: abs(k - float(start_sec)))
+        if abs(key - float(start_sec)) > 0.35:
+            return []
+        return table.get(key) or []
 
     def _current_lyric_pair(self):
         """按"当前进度 - 对时偏移"算出该显示的（这一句, 下一句）。"""
@@ -2157,13 +2249,28 @@ class PetWindow(QWidget):
         span = max(0.4, float(end) - float(start))
         return max(0.0, min(1.0, (pos - start) / span))
 
+    def _lyric_sung_total(self, text, start_sec):
+        """这句已经唱到第几个字（可以是小数）。
+
+        有**逐字歌词**（网易云 yrc / 增强 LRC）就按每个字的真实时间算 —— 这样能完全贴合
+        真人演唱（唱歌不是匀速的）；没有就退回"按这句的起止时间匀速推"。
+        """
+        total = max(0, len(text))
+        if total == 0:
+            return 0.0
+        pos = max(0.0, self._music_position() - float(getattr(self, "lyric_offset", 0.0)))
+        words = self._word_times_for(start_sec)
+        if words:
+            return max(0.0, min(float(total), sung_chars(words, pos) / max(1, len(words)) * total))
+        return total * self._lyric_progress()
+
     @staticmethod
-    def _karaoke_split(rows, progress):
-        """把"唱到几成"摊到每一行上：返回每行已经唱到的字数。"""
+    def _karaoke_split(rows, sung_total):
+        """把"已唱到第几个字"摊到每一行上：返回每行已经唱到的字数。"""
         total = sum(len(r) for r in rows)
         if total <= 0:
             return [0] * len(rows)
-        sung = int(round(total * max(0.0, min(1.0, progress))))
+        sung = int(round(max(0.0, min(float(total), float(sung_total)))))
         out, used = [], 0
         for r in rows:
             n = max(0, min(len(r), sung - used))
@@ -2173,13 +2280,13 @@ class PetWindow(QWidget):
 
     def _lyric_anim_step(self):
         """换句过渡期间专用的一帧：走得比主时钟密（100 帧/秒），所以更顺。"""
-        if self._lyric_anim_t <= 0:
-            self._lyric_timer.stop()
-            return
-        self._lyric_anim_t = max(
-            0.0, self._lyric_anim_t - (LYRIC_ANIM_MS / 1000.0) / max(0.05, LYRIC_ANIM_SEC))
+        if self._lyric_anim_t > 0:
+            self._lyric_anim_t = max(
+                0.0, self._lyric_anim_t - (LYRIC_ANIM_MS / 1000.0) / max(0.05, LYRIC_ANIM_SEC))
         self.update()
-        if self._lyric_anim_t <= 0:
+        bubble_moving = (abs(self._bub_target[0] - self._bub_w) > 0.6
+                         or abs(self._bub_target[1] - self._bub_h) > 0.6)
+        if self._lyric_anim_t <= 0 and not bubble_moving:
             self._lyric_timer.stop()
 
     def _apply_now_playing(self, info):
@@ -2197,16 +2304,30 @@ class PetWindow(QWidget):
                 self.update()
             return
         self.now_playing = info
-        key = f"{info.get('title', '')}|{info.get('artist', '')}"
+        title = (info.get("title") or "").strip()
+        key = f"{title}|{info.get('artist', '')}"
+        if not title and self._lyric_key:
+            # 暂停 / 缓冲时有些播放器（尤其网易云）会短暂不给歌名：
+            # 这时候**不能**当成换歌，否则歌词会从头开始显示（主人反馈的 bug）。
+            self.update()
+            return
         if key != self._lyric_key:
             self._lyric_key = key
             self._music_played = 0.0
             cached = self._lyric_cache.get(key)
             self._lyric_lines = parse_lrc(cached) if cached else []
+            self._lyric_words = parse_word_lyrics(cached) if cached else {}
             if not cached and self.music_lyrics and not self._lyric_fetching:
                 self._start_lyric_fetch(key, info)
             if info.get("playing") and info.get("title"):
                 self._announce_song()
+        else:
+            # 同一首歌：如果播放器报的进度和我们自己推的差很多（拖动进度条 / 回退），
+            # 就以播放器报的为准 —— 不然歌词不会跟着跳（主人反馈过这个问题）。
+            pos = info.get("position")
+            if (pos is not None and float(pos) > 0.5        # 只信"报了真实进度"的播放器
+                    and abs(float(pos) - self._music_played) > 2.5):
+                self._music_played = max(0.0, float(pos))
         self.update()
 
     def _announce_song(self):
@@ -2233,6 +2354,7 @@ class PetWindow(QWidget):
             save_lyric_cache(self._lyric_cache)
         if key == self._lyric_key:
             self._lyric_lines = parse_lrc(lrc) if lrc else []
+            self._lyric_words = parse_word_lyrics(lrc) if lrc else {}
             self.update()
 
     def _music_menu_label(self):
@@ -3045,15 +3167,22 @@ class PetWindow(QWidget):
         if prev_rows:
             widths += [fm_m.horizontalAdvance(t) for t, _f, _c in prev_rows]
         height = sum(QFontMetrics(font).height() for _t, font, _c in rows) + 20
-        # 气泡"窗口"高度在过渡期间平滑变化：不这么做，换到行数不同的那句时
-        # 会突然变大/变小，看起来像"窗口先消失、又弹出一个新的"。
-        if anim > 0 and self._lyric_prev_h > 0:
-            height += (self._lyric_prev_h - height) * anim
-        self._lyric_last_h = height
         bw = max(widths) + 28
-        if anim > 0 and self._lyric_prev_w > 0:      # 宽度也平滑变化，别忽大忽小
-            bw += (self._lyric_prev_w - bw) * anim
+        # 气泡"窗口"自己也会平滑变大/变小（0.15 秒、100 帧/秒那套），
+        # 不然换到字数不同的那句时会"啪"地换一个框，看着像窗口重新弹了一次。
+        now = time.time()
+        dt = 0.0 if self._bub_t is None else max(0.0, min(0.12, now - self._bub_t))
+        self._bub_t = now
+        self._bub_target = (bw, height)
+        if abs(bw - self._bub_w) < 0.6 and abs(height - self._bub_h) < 0.6:
+            self._bub_w, self._bub_h = bw, height
+        else:
+            k = min(1.0, dt / max(0.05, BUBBLE_ANIM_SEC))
+            self._bub_w += (bw - self._bub_w) * k
+            self._bub_h += (height - self._bub_h) * k
+        bw, height = self._bub_w, self._bub_h
         self._lyric_last_w = bw
+        self._lyric_last_h = height
         bx = (self.width() - bw) / 2
         by = self._bubble_top(height)
         p.setPen(Qt.PenStyle.NoPen)
@@ -3077,8 +3206,14 @@ class PetWindow(QWidget):
             p.setOpacity(max(0.15, 1.0 - anim * 0.85))
             ty += anim * 8
         # "唱到哪、字就变到哪"：当前这句按进度给已唱到的部分换颜色
-        sung = self._karaoke_split(cur_lines, self._lyric_progress()) if (
-            LYRIC_KARAOKE_ON and real_lyric) else [0] * len(cur_lines)
+        if LYRIC_KARAOKE_ON and real_lyric:
+            line_start = self._lyric_lines[lyric_index(
+                self._lyric_lines,
+                max(0.0, self._music_position() - float(getattr(self, "lyric_offset", 0.0))))][0]
+            sung_total = self._lyric_sung_total("".join(cur_lines), line_start)
+            sung = self._karaoke_split(cur_lines, sung_total)
+        else:
+            sung = [0] * len(cur_lines)
         for i, (text, font, color) in enumerate(rows):
             fm = QFontMetrics(font)
             p.setFont(font)
@@ -3132,8 +3267,11 @@ class PetWindow(QWidget):
                 self._lyric_prev_h = self._lyric_last_h or 0.0
                 self._lyric_prev_w = self._lyric_last_w or 0.0
                 self._lyric_anim_t = 1.0
-        if self._lyric_anim_t > 0 and not self._lyric_timer.isActive():
-            self._lyric_timer.start()          # 过渡期间换成 100 帧/秒的密帧重绘
+        # 过渡期间（换句动画、或者气泡正在变大变小）换成 100 帧/秒的密帧重绘
+        bubble_moving = (abs(self._bub_target[0] - self._bub_w) > 0.6
+                         or abs(self._bub_target[1] - self._bub_h) > 0.6)
+        if (self._lyric_anim_t > 0 or bubble_moving) and not self._lyric_timer.isActive():
+            self._lyric_timer.start()
 
         # 大约每 5 秒顺手存一次配置：改了城市/大小/音效这些不用等退出也不会丢
         if self.t % 250 == 0:
@@ -5345,6 +5483,7 @@ class PetWindow(QWidget):
             self.now_playing = None
             self._lyric_key = ""
             self._lyric_lines = []
+            self._lyric_words = {}
             self.say("行，那我不听了")
         self.update()
 
