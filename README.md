@@ -302,6 +302,12 @@ PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）�
    **不传到 GitHub**：Release 里只放 `dafeiyu-pet-setup.exe` 和 `dafeiyu-pet.exe`。
    单独补一份本地 zip：`powershell -File F:\Codex\work\publish-pet.ps1 -ZipOnly -Version 1.0.16`
 
+> 平时只管跟 Codex 说一句「推送」：它会跑 `F:\Codex\work\publish-pet.ps1`
+> （提交 → 推送 → 打包 → 发新版），Release 里放绿色版 + 安装包，
+> 微信 zip 留在 `outputs\` 本地并把文件名写进回复。
+> 桌面上那个「发布到GitHub.bat」也是同一个脚本，但它遇到"没有代码改动"会整段跳过（连 Release 都不发），
+> 需要补发一版时给它加 `-Force`。
+
 > 改了右键菜单（尤其新增带二级菜单的项）之后，记得用真鼠标点一遍二级菜单：
 > 这台的 Windows 有时不会把鼠标移动消息送给弹出菜单，得确认「悬停兜底」（`_menu_hover_watch`）
 > 仍然能把子菜单弹出来、点得中。

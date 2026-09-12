@@ -63,6 +63,33 @@ pyinstaller --noconfirm --clean 桌宠.spec
 - `make_zip.py` 里的 `BASE` / `OUT` 还是旧机器路径（`D:\图图\大肥鱼\…`），
   在当前位置要用得先改这两个常量。
 
+## 发版：主人说「推送 / 发布 / 发版」时怎么做
+
+主人 2026-09-13 定的规矩（原话）：
+> 之后如果我说推送等词，就把绿色安装版发送到 github 里，微信 zip 包留在之前一直放的文件夹里，
+> 在回复里给我和以前一样写出来就可以，桌面命令可能因为项目创建原因好像不管用了
+
+所以：**主人一说「推送」就由我（Codex）直接跑发布脚本**，别指望桌面上那个 `.bat`
+（它是好的，但"没有代码改动"时整段跳过、连 Release 都不发，看起来就像"不管用"）。
+
+1. 先看有没有代码改动（`git status --short`）：
+   - **有改动** → 跑 `publish-pet.ps1`（自动：提交 → 推送 → 打包 → 发新版 Release）
+   - **没改动、但当前版本的 Release 还没发** → 加 `-Force` 跑，否则等于什么都没做
+   - **没改动、Release 也发过了** → 直接回主人「内容没变，不重发」，别硬发新版
+2. 命令（脚本在 `F:\Codex\work\publish-pet.ps1`，**不在仓库里**，所以改它不用发版）：
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File F:\Codex\work\publish-pet.ps1 `
+     -Message "feat: 中文说明" [-Force]
+   ```
+3. **Release 里只放** `dafeiyu-pet.exe`（绿色版）+ `dafeiyu-pet-setup.exe`（中文安装包，能选安装位置）。
+4. **微信 zip 不上传**，只做在本地（主人要求「在本地给我」）：
+   `F:\Codex\2026-09-11\deepseek-harness-dsh-ai-harness-deepseek\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`
+   —— **回复里要把这个文件名 + 完整路径写给主人**（和以前一样）。
+   只想补做 zip：`publish-pet.ps1 -ZipOnly -Version X.Y.Z`
+5. 版本号 = 现有最高版本 + 1（脚本自己从 Release 列表算），保持连续、不跳号。
+6. 打包用 `桌宠.spec`（别手写 PyInstaller 参数），安装包用
+   `F:\Codex\tools\innosetup\ISCC.exe /DMyAppVersion=X.Y.Z installer.iss`。
+
 ## 对话与分支
 
 - 一个任务开一个新对话，做完归档；用项目而不是用超长对话来保存上下文。
