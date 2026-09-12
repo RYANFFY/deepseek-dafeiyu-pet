@@ -356,6 +356,7 @@ def defer_dialog(fn):
     return wrapper
 LYRIC_CACHE_PATH = os.path.join(USER_DIR, "lyrics_cache.json")
 LYRIC_CACHE_MAX = 300         # 歌词缓存最多留多少首
+LYRIC_CACHE_VERSION = 2       # 缓存格式版本：2 = 可能含逐字歌词（yrc）；旧缓存会自动重抓一次
 
 # 放歌时点它的回嘴（{song} 会替换成《歌名》——歌手）
 MUSIC_CLICK_LINES = [
@@ -1349,13 +1350,21 @@ def parse_word_lyrics(text):
         m = _YRC_LINE_RE.match(line)
         if m and _YRC_WORD_RE.search(line):
             start = int(m.group(1)) / 1000.0
-            body, words = m.group(3), []
-            for wm in _YRC_WORD_RE.finditer(body):
-                words.append((int(wm.group(1)) / 1000.0, None))
-            chars = [c for c in _YRC_WORD_RE.sub("\x00", body).replace("\x00", "").strip()]
-            if len(chars) != len(words):        # 字数对不上就不敢用（怕错位）
-                continue
-            out[start] = [(c, t) for c, (t, _x) in zip(chars, words)]
+            body = m.group(3)
+            marks = list(_YRC_WORD_RE.finditer(body))
+            pairs = []
+            for i, mk in enumerate(marks):
+                end = marks[i + 1].start() if i + 1 < len(marks) else len(body)
+                piece = body[mk.end():end]          # 这个词的文字（可能不止一个字，比如 "OP"）
+                if not piece:
+                    continue
+                t0 = int(mk.group(1)) / 1000.0
+                dur = int(mk.group(2)) / 1000.0
+                n = len(piece)
+                for k, ch in enumerate(piece):      # 词内按字数均分时间，避免几个字一起跳
+                    pairs.append((ch, t0 + dur * k / max(1, n)))
+            if pairs:
+                out[start] = pairs
             continue
         m = _LRC_TIME_RE.match(line)
         if m and _LRC_INLINE_RE.search(line):
@@ -1490,7 +1499,15 @@ def fetch_lyrics(title, artist):
 def load_lyric_cache():
     """歌词缓存：按「歌名|歌手」存，换歌不用每次都联网。"""
     data = load_json(LYRIC_CACHE_PATH, {})
-    return data if isinstance(data, dict) else {}
+    out = {}
+    for key, value in (data or {}).items():
+        if isinstance(value, dict):
+            out[key] = {"v": int(value.get("v") or 1), "text": str(value.get("text") or "")}
+        else:
+            # 老版本缓存的是纯文本（那时候只存了行级歌词）→ 标记成旧版，回头再抓一次，
+            # 这样有逐字歌词的歌能升级成"唱到哪高亮到哪"
+            out[key] = {"v": 1, "text": str(value or "")}
+    return out
 
 
 def save_lyric_cache(cache):
@@ -2010,6 +2027,8 @@ class PetWindow(QWidget):
         self._lyric_queue = []           # 后台线程找回来的歌词
         self._lyric_fetching = ""        # 正在找歌词的那首
         self._lyric_cache = load_lyric_cache()
+        self._lyric_retry_at = 0.0       # 歌词没抓到时的重试时间
+        self._music_pos_memo = {}        # 歌 → 上次放到哪（暂停/切走再回来接着走）
         self._lyric_shown = ""           # 现在气泡里显示的是哪一句
         self._lyric_prev = ""            # 上一句（换句动画用）
         self._lyric_anim_t = 0.0         # 换句动画进度（1 → 0）
@@ -2309,6 +2328,10 @@ class PetWindow(QWidget):
                 self._music_played = 0.0
                 self.update()
             return
+        # 换歌前先把"上一首放到哪"记下来（注意：要在覆盖 now_playing **之前**算，
+        # 不然算出来的会是新歌的位置 —— 之前就踩过这个坑）
+        old_key = self._lyric_key
+        old_pos = self._music_position() if self.now_playing else 0.0
         self.now_playing = info
         title = (info.get("title") or "").strip()
         key = f"{title}|{info.get('artist', '')}"
@@ -2318,12 +2341,23 @@ class PetWindow(QWidget):
             self.update()
             return
         if key != self._lyric_key:
+            if old_key:                             # 记下上一首放到哪（回来时不用从头开始）
+                self._music_pos_memo[old_key] = old_pos
+                if len(self._music_pos_memo) > 30:  # 别无限涨
+                    for k in list(self._music_pos_memo)[:-20]:
+                        self._music_pos_memo.pop(k, None)
             self._lyric_key = key
-            self._music_played = 0.0
-            cached = self._lyric_cache.get(key)
-            self._lyric_lines = parse_lrc(cached) if cached else []
-            self._lyric_words = parse_word_lyrics(cached) if cached else {}
-            if not cached and self.music_lyrics and not self._lyric_fetching:
+            # 播放器不报进度时，用"记忆里的位置"接着走（暂停→放别的→切回来 不会从 0 开始）
+            memo = self._music_pos_memo.get(key, 0.0)
+            reported = info.get("position")
+            pos_ok = reported is not None and float(reported) > 0.5
+            self._music_played = max(0.0, float(reported)) if pos_ok else max(0.0, memo)
+            cached = self._lyric_cache.get(key) or {}
+            text = cached.get("text") or ""
+            self._lyric_lines = parse_lrc(text) if text else []
+            self._lyric_words = parse_word_lyrics(text) if text else {}
+            stale = bool(text) and int(cached.get("v", 1)) < LYRIC_CACHE_VERSION
+            if (not text or stale) and self.music_lyrics and not self._lyric_fetching:
                 self._start_lyric_fetch(key, info)
             if info.get("playing") and info.get("title"):
                 self._announce_song()
@@ -2356,11 +2390,16 @@ class PetWindow(QWidget):
     def _apply_lyric_result(self, key, lrc):
         self._lyric_fetching = ""
         if lrc:
-            self._lyric_cache[key] = lrc
+            self._lyric_cache[key] = {"v": LYRIC_CACHE_VERSION, "text": lrc}
             save_lyric_cache(self._lyric_cache)
-        if key == self._lyric_key:
-            self._lyric_lines = parse_lrc(lrc) if lrc else []
-            self._lyric_words = parse_word_lyrics(lrc) if lrc else {}
+            if key == self._lyric_key:
+                self._lyric_lines = parse_lrc(lrc)
+                self._lyric_words = parse_word_lyrics(lrc)
+                self.update()
+        elif key == self._lyric_key:
+            # 这次没抓到（网络抽风 / 这首歌没歌词）：**不要**把正在显示的歌词擦掉，
+            # 过一会儿自己再试一次 —— 主人反馈过"歌词不显示，要切歌才恢复"。
+            self._lyric_retry_at = time.time() + 15.0
             self.update()
 
     def _music_menu_label(self):
@@ -3291,6 +3330,13 @@ class PetWindow(QWidget):
                          or abs(self._bub_target[1] - self._bub_h) > 0.6)
         if (self._lyric_anim_t > 0 or bubble_moving) and not self._lyric_timer.isActive():
             self._lyric_timer.start()
+
+        # 歌词没抓到就自己重试（原来要等切歌才会重抓，主人反馈过"歌词不显示"）
+        if (self.music_on and self.music_lyrics and self._lyric_key
+                and not self._lyric_lines and not self._lyric_fetching
+                and time.time() >= self._lyric_retry_at):
+            self._lyric_retry_at = time.time() + 15.0
+            self._start_lyric_fetch(self._lyric_key, self.now_playing or {})
 
         # 大约每 5 秒顺手存一次配置：改了城市/大小/音效这些不用等退出也不会丢
         if self.t % 250 == 0:
