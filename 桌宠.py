@@ -300,6 +300,10 @@ LYRIC_OFFSET_LEVELS = [
     ("文字延后 1.0 秒", 1.0),
 ]
 LYRIC_OFFSET_DEFAULT = 0.2      # 默认让文字稍微等一下（实测文字容易抢在声音前头）
+LYRIC_ANIM_SEC = 0.30           # 歌词换句时的过渡动画时长（秒）
+LYRIC_MAX_ROWS = 4              # 当前这句最多折几行（再多就先把字号缩一档）
+LYRIC_MIN_PT = 7                # 折行还是超了时，字号最小缩到几磅（只有"迷你档 + 超长英文句"才会用到）
+LYRIC_OVERFLOW_ROWS = 8         # 缩到底还装不下时最多铺几行（宁可气泡高一点，也别丢歌词）
 MUSIC_HOLD_SEC = 5.0          # 放歌时：双击看余额 / 点"查看天气"，都显示 5 秒
 MUSIC_PEEK_SEC = MUSIC_HOLD_SEC
 PEEK_SEC = MUSIC_HOLD_SEC       # 快速双击看余额：顶上来显示几秒
@@ -1922,6 +1926,9 @@ class PetWindow(QWidget):
         self._lyric_queue = []           # 后台线程找回来的歌词
         self._lyric_fetching = ""        # 正在找歌词的那首
         self._lyric_cache = load_lyric_cache()
+        self._lyric_shown = ""           # 现在气泡里显示的是哪一句
+        self._lyric_prev = ""            # 上一句（换句动画用）
+        self._lyric_anim_t = 0.0         # 换句动画进度（1 → 0）
 
         # 菜单悬停兜底（见 _menu_hover_watch）
         self._hover_key = None
@@ -2925,15 +2932,45 @@ class PetWindow(QWidget):
             return "balance"
         return None
 
-    def _paint_lyric_bubble(self, p):
-        """歌词气泡：小字「应用 · 歌名」，大字当前这句，再淡一行下一句。"""
-        info = self.now_playing or {}
+    def _lyric_rows(self, head, cur, nxt, max_w):
+        """把歌词折成"要画的几行"。
+
+        一句太长就先把字号往下缩（11 → 8 磅）；缩到底还超才截到 LYRIC_MAX_ROWS 行 ——
+        主人反馈过"歌词显示不全"，所以尽量别丢掉半句话。
+        返回 (rows, 折好的当前句, 当前句用的字体, 它的 QFontMetrics)。
+        """
         f_small = QFont(self.bubble_font)
         f_small.setPointSize(9)
         f_main = QFont(self.bubble_font)
         f_main.setPointSize(11)
-        fm_s, fm_m = QFontMetrics(f_small), QFontMetrics(f_main)
-        max_w = min(260, self.width() - 16) - 22
+        head_lines = wrap_text(QFontMetrics(f_small), head, max_w)[:1]
+        cur_lines = wrap_text(QFontMetrics(f_main), cur, max_w)
+        pt = 11
+        while len(cur_lines) > LYRIC_MAX_ROWS and pt > LYRIC_MIN_PT:
+            pt -= 1
+            f_main.setPointSize(pt)
+            cur_lines = wrap_text(QFontMetrics(f_main), cur, max_w)
+        total = len(cur_lines)
+        fm_m = QFontMetrics(f_main)
+        if total > LYRIC_MAX_ROWS:
+            # 字号已经缩到底还是装不下（比如迷你尺寸下遇到很长的英文句）：
+            # 再多给两行，同时把顶部那行「♪ 应用 · 歌名」去掉，腾出高度，
+            # 尽量让整句歌词都看得见（主人反馈过"歌词显示不全"）。
+            keep = cur_lines[:LYRIC_OVERFLOW_ROWS]
+            rows = [(line, f_main, QColor(38, 44, 66)) for line in keep]
+            return rows, keep, f_main, fm_m
+        cur_lines = cur_lines[:LYRIC_MAX_ROWS]
+        nxt_lines = (wrap_text(QFontMetrics(f_small), nxt, max_w)[:1]
+                     if nxt and total == 1 else [])
+        rows = ([(head_lines[0], f_small, QColor(140, 148, 168))]
+                + [(line, f_main, QColor(38, 44, 66)) for line in cur_lines]
+                + [(line, f_small, QColor(158, 158, 172)) for line in nxt_lines])
+        return rows, cur_lines, f_main, fm_m
+
+    def _paint_lyric_bubble(self, p):
+        """歌词气泡：小字「应用 · 歌名」，大字当前这句，再淡一行下一句。"""
+        info = self.now_playing or {}
+        max_w = min(300, self.width() - 12) - 22
         head = "♪ " + (f"{info.get('app', '')} · {info.get('title', '')}".strip(" ·")
                        or "在放歌")
         # 对时：正数 = 文字延后（等一下声音）；不同输出设备（外放 / 蓝牙耳机）延迟不一样
@@ -2941,14 +2978,17 @@ class PetWindow(QWidget):
         if not cur:
             # 还没找到歌词 / 用户关了歌词 → 就挂个「♪ 歌名」
             cur, nxt = self._song_label() or "在放歌", ""
-        head_lines = wrap_text(fm_s, head, max_w)[:1]
-        cur_lines = wrap_text(fm_m, cur, max_w)[:2]
-        nxt_lines = (wrap_text(fm_s, nxt, max_w)[:1]
-                     if nxt and len(cur_lines) == 1 else [])
-        rows = ([(head_lines[0], f_small, QColor(140, 148, 168))]
-                + [(line, f_main, QColor(38, 44, 66)) for line in cur_lines]
-                + [(line, f_small, QColor(158, 158, 172)) for line in nxt_lines])
+        rows, cur_lines, f_main, fm_m = self._lyric_rows(head, cur, nxt, max_w)
+        # 换句时的过渡：新的一句淡入、旧的淡出并往上滑一点（不然"啪"一下太生硬）
+        anim = max(0.0, min(1.0, getattr(self, "_lyric_anim_t", 0.0)))
+        prev_text = getattr(self, "_lyric_prev", "")
+        prev_rows = []
+        if anim > 0 and prev_text and prev_text != cur:
+            prev_rows = [(line, f_main, QColor(38, 44, 66))
+                         for line in wrap_text(fm_m, prev_text, max_w)[:LYRIC_MAX_ROWS]]
         widths = [QFontMetrics(font).horizontalAdvance(text) for text, font, _c in rows]
+        if prev_rows:
+            widths += [fm_m.horizontalAdvance(t) for t, _f, _c in prev_rows]
         height = sum(QFontMetrics(font).height() for _t, font, _c in rows) + 20
         bw = max(widths) + 28
         bx = (self.width() - bw) / 2
@@ -2960,12 +3000,26 @@ class PetWindow(QWidget):
         p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
                                  QPointF(tail.x() + 7, tail.y() + 9)]))
         ty = by + 10
+        if prev_rows:                    # 旧的这句：往上滑出去 + 淡出
+            p.setOpacity(anim)
+            oy = ty - (1.0 - anim) * 8
+            for text, font, color in prev_rows:
+                fm = QFontMetrics(font)
+                p.setFont(font)
+                p.setPen(color)
+                p.drawText(QRectF(bx, oy, bw, fm.height()), Qt.AlignmentFlag.AlignCenter, text)
+                oy += fm.height()
+            p.setOpacity(1.0)
+        if anim > 0:                     # 新的一句：从下面 8px 滑上来 + 淡入
+            p.setOpacity(max(0.15, 1.0 - anim * 0.85))
+            ty += anim * 8
         for text, font, color in rows:
             fm = QFontMetrics(font)
             p.setFont(font)
             p.setPen(color)
             p.drawText(QRectF(bx, ty, bw, fm.height()), Qt.AlignmentFlag.AlignCenter, text)
             ty += fm.height()
+        p.setOpacity(1.0)
 
     def _sprite_key(self):
         if self.skin == SKIN_WIDGET:
@@ -2985,6 +3039,17 @@ class PetWindow(QWidget):
     # ---------- 逻辑 ----------
     def tick(self):
         self.t += 1
+
+        # 歌词换句的过渡动画：发现"该显示的那一句"变了就淡入淡出一下
+        if self._music_playing() and self.music_lyrics and self._lyric_lines:
+            cur_line = self._current_lyric_pair()[0]
+            if cur_line and cur_line != self._lyric_shown:
+                self._lyric_prev = self._lyric_shown
+                self._lyric_shown = cur_line
+                self._lyric_anim_t = 1.0
+        if self._lyric_anim_t > 0:
+            self._lyric_anim_t = max(0.0, self._lyric_anim_t -
+                                     (self.tick_ms / 1000.0) / max(0.05, LYRIC_ANIM_SEC))
 
         # 大约每 5 秒顺手存一次配置：改了城市/大小/音效这些不用等退出也不会丢
         if self.t % 250 == 0:
