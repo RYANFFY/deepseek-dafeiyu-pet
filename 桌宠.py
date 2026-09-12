@@ -2095,7 +2095,13 @@ class PetWindow(QWidget):
         self._audio_dev_watched = False
         self._audio_dev_timer = QTimer(self)
         self._audio_dev_timer.timeout.connect(self._check_audio_device)
-        self._audio_dev_timer.start(2000)
+        self._audio_dev_timer.start(500)          # 兜底轮询：0.5 秒一次（原来 2 秒，插耳机要等太久）
+        # 有信号就直接用信号：插耳机 / 切蓝牙音箱时 QMediaDevices 会立刻发 audioOutputsChanged
+        try:
+            self._devices = QMediaDevices(self)
+            self._devices.audioOutputsChanged.connect(self._on_audio_output_changed)
+        except Exception:
+            self._devices = None
         QTimer.singleShot(1200, self._check_audio_device)
         
         # 后台线程 → 主线程的结果队列
@@ -2614,8 +2620,12 @@ class PetWindow(QWidget):
         self.play_click()
 
     def _on_audio_output_changed(self, _device=None):
-        """系统默认播放设备变了 → 缓一拍重开音频流（设备刚切换时马上开会失败）。"""
-        QTimer.singleShot(300, self._rebuild_audio_output)
+        """系统默认播放设备变了 → 缓一小拍就重开音频流（设备刚切换时马上开会失败）。
+
+        主人反馈"插耳机要等近 2 秒才切过去"——那是 2 秒轮询的锅；现在有信号就立刻走这条，
+        再留 0.5 秒轮询兜底（有些设备不触发信号）。
+        """
+        QTimer.singleShot(150, self._rebuild_audio_output)
 
     def _check_audio_device(self):
         """每 2 秒看一眼系统默认输出设备是不是换了；换了就把点击音切过去。"""
@@ -2638,8 +2648,17 @@ class PetWindow(QWidget):
             ok = self._click_player.rebuild_output()
             menu_debug(f"[音频] 默认输出设备变了 → 重开音频流，成功={ok}")
             if not self._click_player.ok:
-                self._click_player = None          # 新设备开不了：退回 QSoundEffect 池
-                self._init_sounds()
+                # 新设备可能还没就绪：隔一小会儿再试两次，别直接退回 QSoundEffect 池
+                tries = getattr(self, "_audio_retry", 0) + 1
+                self._audio_retry = tries
+                if tries <= 3:
+                    QTimer.singleShot(400, self._rebuild_audio_output)
+                else:
+                    self._audio_retry = 0
+                    self._click_player = None      # 实在开不了：退回 QSoundEffect 池
+                    self._init_sounds()
+            else:
+                self._audio_retry = 0
         else:
             self._init_sounds()
 
