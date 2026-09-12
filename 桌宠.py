@@ -34,7 +34,8 @@ def load_config():
 
 import requests
 from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice,
-                            QEventLoop, QSize, QFileInfo, QEvent, QAbstractNativeEventFilter)
+                            QEventLoop, QSize, QFileInfo, QEvent, QAbstractNativeEventFilter,
+                            QObject)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
                            QPolygonF, QImage, QCursor, QMouseEvent)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
@@ -56,6 +57,27 @@ class _NativeMsg(ctypes.Structure):
     _fields_ = [("hWnd", ctypes.c_void_p), ("message", ctypes.c_uint),
                 ("wParam", ctypes.c_void_p), ("lParam", ctypes.c_void_p),
                 ("time", ctypes.c_ulong), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long)]
+
+
+class SubmenuPlaceFix(QObject):
+    """子菜单**一显示的那一瞬间**就把它摆到"贴住这一条"的位置。
+
+    为什么需要：Qt 自己弹子菜单时用的是它自己那套摆法（在条目边上、没有我们那 12px 重叠），
+    我们下一拍（120ms 后）才发现"位置不对"再挪过去 —— 主人看到的就是
+    "先小部分重叠、再往里移动"。装上这个过滤器以后，摆正发生在同一帧里，看不出来。
+    """
+
+    def __init__(self, pet):
+        super().__init__(pet)
+        self.pet = pet
+
+    def eventFilter(self, obj, ev):
+        if isinstance(obj, QMenu) and ev.type() == QEvent.Type.Show:
+            try:
+                self.pet._place_shown_submenu(obj)
+            except Exception:
+                pass
+        return False
 
 
 class MenuClickBridge(QAbstractNativeEventFilter):
@@ -213,6 +235,7 @@ MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
 MUSIC_HOLD_SEC = 5.0          # 放歌时：双击看余额 / 点"查看天气"，都显示 5 秒
 MUSIC_PEEK_SEC = MUSIC_HOLD_SEC
 MENU_HOVER_MS = 120           # 菜单悬停兜底的检查间隔
+MENU_HOVER_FAST_MS = 40       # 菜单开着时用这个间隔（纠位置差不多是"瞬间"）
 MENU_HOVER_DELAY = 0.22       # 光标在带子菜单的项上停多久就替它弹出子菜单
 MENU_HOVER_GRACE = 0.5        # 光标离开子菜单后，再等这么久才收（给手抖 / 斜着划过去留余地）
 MENU_DEBUG_LOG = os.path.join(USER_DIR, "menu-debug.log")   # 菜单排查用日志
@@ -3545,6 +3568,7 @@ class PetWindow(QWidget):
         self._menu_pool = ([m] + self._menu_pool)[:4]     # 留几份，用来看"还有菜单开着吗"
         self._sub_rect = {}               # 新的一份菜单：上次那些"子菜单位置/补弹次数"作废
         self._resub = {}
+        self._install_place_fix(m)        # 让每层子菜单"一显示就摆正"（同一帧，看不见挪动）
         # 不给菜单强加置顶标志——改成让桌宠自己在菜单期间退到普通层，
         # 这样菜单天然在最上面，而且是 Qt 标准的弹出菜单，二级菜单悬停最稳。
 
@@ -3566,6 +3590,19 @@ class PetWindow(QWidget):
         m.aboutToShow.connect(on_show)
         m.aboutToHide.connect(on_hide)
         return m
+
+    def _install_place_fix(self, menu):
+        """给这棵菜单树里每一层都装上"一显示就摆正"的过滤器（重复调用没关系）。"""
+        if getattr(self, "_place_fix", None) is None:
+            self._place_fix = SubmenuPlaceFix(self)
+        for m in self._all_menus(menu):
+            if getattr(m, "_dfy_placefix", False):
+                continue
+            m._dfy_placefix = True
+            try:
+                m.installEventFilter(self._place_fix)
+            except RuntimeError:
+                continue
 
     def _deepest_menu_at_cursor(self):
         """光标所在的最里面那层菜单（按窗口矩形找，不依赖"父项"链）。"""
@@ -4045,6 +4082,32 @@ class PetWindow(QWidget):
         self._menu_hover_watch()
         self._prune_branches()
         self._close_orphan_submenus()
+        # 菜单开着的时候跑勤一点（40ms）：万一某层子菜单被 Qt 摆歪，下 40ms 就纠回来，
+        # 眼睛基本看不到"先摆一版再挪"；没菜单的时候回到 120ms，不白费电。
+        want_ms = MENU_HOVER_FAST_MS if self.ui_open else MENU_HOVER_MS
+        try:
+            if self.hover_timer.interval() != want_ms:
+                self.hover_timer.start(want_ms)
+        except Exception:
+            pass
+
+    def _place_shown_submenu(self, sub):
+        """子菜单刚显示：立刻摆到"贴住这一条"的位置（同一帧，不留位移痕迹）。"""
+        found = self._find_submenu_parent(sub)
+        if found is None:
+            return
+        parent, holder = found
+        try:
+            if not parent.isVisible():
+                return
+            want = self._submenu_pos(parent, holder, sub)
+            cur = sub.pos()
+            if abs(cur.x() - want.x()) > 2 or abs(cur.y() - want.y()) > 2:
+                sub.move(want)
+                menu_debug(f"[兜底] 子菜单一显示就摆正：{holder.text()} "
+                           f"({cur.x()},{cur.y()}) → ({want.x()},{want.y()})")
+        except RuntimeError:
+            return
 
     def _close_orphan_submenus(self):
         """根菜单已经关了，却还有子菜单挂在屏幕上 → 收掉。
@@ -4363,6 +4426,18 @@ class PetWindow(QWidget):
                     self._keep = found
                 self._leave_at = 0.0
                 return
+            # 超时了，可光标还停在"这个子菜单原来那一片"上 → 说明是被 Qt 误收的，别放弃：
+            # 自己把它弹回来（不然就成了"进去就没了"，实测 20 条里偶尔会中一条）。
+            rect = self._sub_rect.get(sub)
+            if rect is not None and self._point_near_rect(pos, rect[0], rect[1], 60):
+                try:
+                    if parent.isVisible():
+                        sub.popup(self._submenu_pos(parent, holder, sub))
+                        menu_debug("[兜底] 光标还在原地 → 重新弹出被误收的子菜单")
+                        self._leave_at = 0.0
+                        return
+                except RuntimeError:
+                    pass
             self._close_submenu(sub)
             self._keep = None
             self._leave_at = 0.0
