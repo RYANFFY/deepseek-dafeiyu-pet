@@ -288,6 +288,18 @@ MUSIC_APPS = {
     "cloudmusic": "网易云音乐",
 }
 MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
+
+# 歌词对时：正数 = 文字延后（等等声音），负数 = 文字提前。不同输出设备延迟不一样：
+# 笔记本外放几乎没延迟，蓝牙耳机/音箱能差 0.3~1 秒，所以做成可选项。
+LYRIC_OFFSET_LEVELS = [
+    ("文字提前 0.5 秒", -0.5),
+    ("文字提前 0.2 秒", -0.2),
+    ("刚好同步", 0.0),
+    ("文字延后 0.2 秒", 0.2),
+    ("文字延后 0.5 秒", 0.5),
+    ("文字延后 1.0 秒", 1.0),
+]
+LYRIC_OFFSET_DEFAULT = 0.2      # 默认让文字稍微等一下（实测文字容易抢在声音前头）
 MUSIC_HOLD_SEC = 5.0          # 放歌时：双击看余额 / 点"查看天气"，都显示 5 秒
 MUSIC_PEEK_SEC = MUSIC_HOLD_SEC
 PEEK_SEC = MUSIC_HOLD_SEC       # 快速双击看余额：顶上来显示几秒
@@ -487,9 +499,15 @@ class ClickPlayer(QIODevice):
         self.ok = False
         if not AUDIO_AVAILABLE:
             return
+        self._open_sink()
+
+    def _open_sink(self):
+        """按**当前**系统默认输出设备开一条常开音频流。"""
+        if not AUDIO_AVAILABLE:
+            return
         try:
             fmt = QAudioFormat()
-            fmt.setSampleRate(rate)
+            fmt.setSampleRate(self.rate)
             fmt.setChannelCount(1)
             fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
             device = QMediaDevices.defaultAudioOutput()
@@ -497,7 +515,7 @@ class ClickPlayer(QIODevice):
                 return
             self.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Unbuffered)
             self.sink = QAudioSink(device, fmt, self)
-            self.sink.setBufferSize(int(rate * 0.12) * 2)      # ≈120ms 缓冲
+            self.sink.setBufferSize(int(self.rate * 0.12) * 2)     # ≈120ms 缓冲
             self.sink.start(self)                              # 常开：一直读我们的样本
             # 注意：PySide6 里没有 QAudioSink.Error/State 这两个枚举名，
             # 用字符串判定，免得踩到 AttributeError 直接静音。
@@ -505,6 +523,24 @@ class ClickPlayer(QIODevice):
         except Exception:
             self.sink = None
             self.ok = False
+
+    def rebuild_output(self):
+        """系统默认输出设备换了（插耳机 / 切蓝牙音箱）→ 重开一条流，让声音跟着走。
+
+        主人反馈："一开始用笔记本外放，插上耳机以后别的声音都进耳机了，
+        点击音效还在外放"——就是因为这条常开流一直绑在**开机时那个**设备上。
+        """
+        old = self.sink
+        self.sink = None
+        self.ok = False
+        try:
+            if old is not None:
+                old.stop()
+                old.deleteLater()
+        except Exception:
+            pass
+        self._open_sink()
+        return self.ok
 
     # --- QIODevice 接口：Qt 音频线程会不断来要数据 ---
     def isSequential(self):
@@ -1756,6 +1792,7 @@ class PetWindow(QWidget):
             "show_peak": True,
             "peak_style": "默认",
             "line_freq": LINE_FREQ_DEFAULT,
+            "lyric_offset": LYRIC_OFFSET_DEFAULT,
             "layer": "top",
             "opacity": 1.0,
             "process_alerts": True,
@@ -1846,6 +1883,10 @@ class PetWindow(QWidget):
         self.peak_style = self.cfg.get("peak_style", "默认")
         self.line_freq = (self.cfg.get("line_freq")
                           if self.cfg.get("line_freq") in LINE_FREQ_LEVELS else LINE_FREQ_DEFAULT)
+        try:
+            self.lyric_offset = float(self.cfg.get("lyric_offset", LYRIC_OFFSET_DEFAULT))
+        except (TypeError, ValueError):
+            self.lyric_offset = LYRIC_OFFSET_DEFAULT
         if self.peak_style not in PEAK_TEXT_STYLES:
             self.peak_style = "默认"
         self._peak_now = None
@@ -1944,6 +1985,15 @@ class PetWindow(QWidget):
             else:
                 player.deleteLater()
         self._init_sounds()
+        # 系统默认播放设备变了（插耳机 / 切蓝牙音箱）→ 重开音频流，点击音跟着走。
+        # 注意：这个 PySide6 版本的 QMediaDevices 没有 defaultAudioOutputChanged 信号，
+        # 所以干脆每 2 秒自己查一次（有信号的话也顺手接上）。
+        self._audio_dev_id = None
+        self._audio_dev_watched = False
+        self._audio_dev_timer = QTimer(self)
+        self._audio_dev_timer.timeout.connect(self._check_audio_device)
+        self._audio_dev_timer.start(2000)
+        QTimer.singleShot(1200, self._check_audio_device)
         
         # 后台线程 → 主线程的结果队列
         self._say_queue = []          # 要冒泡的文本
@@ -2065,6 +2115,11 @@ class PetWindow(QWidget):
         if pos is not None and float(pos) > 0.5:
             return max(0.0, float(pos) + (time.time() - float(info.get("at") or time.time())))
         return max(0.0, self._music_played)
+
+    def _current_lyric_pair(self):
+        """按"当前进度 - 对时偏移"算出该显示的（这一句, 下一句）。"""
+        pos = self._music_position() - float(getattr(self, "lyric_offset", 0.0))
+        return lyric_pair(self._lyric_lines, max(0.0, pos))
 
     def _apply_now_playing(self, info):
         now = time.time()
@@ -2374,6 +2429,36 @@ class PetWindow(QWidget):
     def preview_sounds(self):
         """试听当前这套点击音效。"""
         self.play_click()
+
+    def _on_audio_output_changed(self, _device=None):
+        """系统默认播放设备变了 → 缓一拍重开音频流（设备刚切换时马上开会失败）。"""
+        QTimer.singleShot(300, self._rebuild_audio_output)
+
+    def _check_audio_device(self):
+        """每 2 秒看一眼系统默认输出设备是不是换了；换了就把点击音切过去。"""
+        try:
+            dev = QMediaDevices.defaultAudioOutput()
+            dev_id = bytes(dev.id()) if dev is not None and not dev.isNull() else b""
+        except Exception:
+            return
+        if dev_id == self._audio_dev_id:
+            return
+        self._audio_dev_id = dev_id
+        if not self._audio_dev_watched:          # 第一次只是记下来，不用重开
+            self._audio_dev_watched = True
+            return
+        self._rebuild_audio_output()
+
+    def _rebuild_audio_output(self):
+        """把点击音切到当前默认输出设备上（插耳机后声音跟着进耳机）。"""
+        if self._click_player is not None:
+            ok = self._click_player.rebuild_output()
+            menu_debug(f"[音频] 默认输出设备变了 → 重开音频流，成功={ok}")
+            if not self._click_player.ok:
+                self._click_player = None          # 新设备开不了：退回 QSoundEffect 池
+                self._init_sounds()
+        else:
+            self._init_sounds()
 
     def _play_fallback_click(self):
         """Qt 音频不可用时的兜底：用系统 winsound 异步播 wav（没有音量控制）。"""
@@ -2851,7 +2936,8 @@ class PetWindow(QWidget):
         max_w = min(260, self.width() - 16) - 22
         head = "♪ " + (f"{info.get('app', '')} · {info.get('title', '')}".strip(" ·")
                        or "在放歌")
-        cur, nxt = lyric_pair(self._lyric_lines, self._music_position())
+        # 对时：正数 = 文字延后（等一下声音）；不同输出设备（外放 / 蓝牙耳机）延迟不一样
+        cur, nxt = self._current_lyric_pair()
         if not cur:
             # 还没找到歌词 / 用户关了歌词 → 就挂个「♪ 歌名」
             cur, nxt = self._song_label() or "在放歌", ""
@@ -3729,6 +3815,12 @@ class PetWindow(QWidget):
         mlb.setCheckable(True)
         mlb.setChecked(self.music_lyrics)
         mlb.triggered.connect(self.set_music_lyrics)
+        off_menu = music_menu.addMenu("歌词对时" + self._lyric_offset_label())
+        for label, off in LYRIC_OFFSET_LEVELS:
+            a = off_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(abs(self.lyric_offset - off) < 1e-6)
+            a.triggered.connect(lambda _, o=off: self.set_lyric_offset(o))
         music_menu.addSeparator()
         music_menu.addAction(self._music_menu_label()).setEnabled(False)
         music_menu.addAction("立刻看一眼在放什么", self.check_music_now)
@@ -5114,6 +5206,26 @@ class PetWindow(QWidget):
         if on and self.now_playing and self._lyric_key and not self._lyric_lines \
                 and not self._lyric_fetching:
             self._start_lyric_fetch(self._lyric_key, self.now_playing)
+
+    def _lyric_offset_label(self):
+        """菜单标题里显示当前对时（例如「（文字延后 0.2 秒）」）。"""
+        for label, off in LYRIC_OFFSET_LEVELS:
+            if abs(getattr(self, "lyric_offset", 0.0) - off) < 1e-6:
+                return "" if abs(off) < 1e-6 else f"（{label}）"
+        return ""
+
+    def set_lyric_offset(self, offset):
+        """歌词对时：正数 = 文字延后（等一下声音），负数 = 文字提前。"""
+        try:
+            offset = float(offset)
+        except (TypeError, ValueError):
+            return
+        self.lyric_offset = offset
+        self.cfg["lyric_offset"] = offset
+        self.update()
+        tip = "歌词跟声音对齐啦" if abs(offset) < 1e-6 else (
+            f"歌词{'延后' if offset > 0 else '提前'} {abs(offset):.1f} 秒")
+        self.say(tip + "（觉得还对不上就再调一档）", seconds=3.2, again=True)
         self.update()
 
     def set_snap(self, on):
