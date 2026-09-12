@@ -181,6 +181,9 @@ TICK = 20
 # 「原地待着时也跟着鼠标转」的"鼠标贴身上"半径：鼠标在这个圈里就当正面（不左右转）
 STILL_FACE_NEAR = 70
 
+# 闲着时冒的一句"双击我给你看余额"——双击被改成别的（或没配 Key）时就不再冒它（见 _maybe_idle_action）
+DOUBLE_CLICK_HINT_LINE = "双击我一下，余额马上给你看"
+
 LINES = [
     "梁白开，更适合国人的大硬鲸模型",
     "五梁威力，变身！",
@@ -196,7 +199,7 @@ LINES = [
     "我搞砸了.....好消息是数据还在你的脑子里。",
     "不是…而是…大学习",
     "又来看余额了？省着点花，别把我饿着",
-    "双击我一下，余额马上给你看",
+    DOUBLE_CLICK_HINT_LINE,
     "嫌我吵就把「语录频率」调成安静，我立刻闭嘴",
     "嫌我大就把我调小一点，别拿我当抱枕",
 ]
@@ -224,6 +227,13 @@ INNER_LINES = [
     "又要我小声点了，唉",
 ]
 DRAG_LINES = ["哇——轻点轻点！", "起飞咯——", "放我下来！……好吧，再玩一次。", "晕鱼了晕鱼了……"]
+# 快速双击选「说一句我写的台词」时冒的这几句（默认这几句，用户可整组改写）
+DOUBLE_CLICK_LINES = [
+    "双击我干嘛，我这不是在的嘛",
+    "在的在的，有事说事",
+    "摸鱼可以，别摸我",
+    "省着点花，我还想多活两天",
+]
 
 # 切成某一档「语录频率」时冒的话（每档都能在「台词内容…」里自己改写）
 FREQ_LINES = {
@@ -244,6 +254,7 @@ LINE_GROUPS = [
     ("REACT_LINES", "点击回嘴（点它一下）"),
     ("INNER_LINES", "心声（灰色斜体小气泡）"),
     ("DRAG_LINES", "拖拽它的时候"),
+    ("DOUBLE_CLICK_LINES", "快速双击说的话（自己写）"),
     ("MUSIC_CLICK_LINES", "放歌时点它（可用 {song} 代表《歌名》——歌手）"),
     ("MUSIC_START_LINES", "换歌的时候（同上）"),
     ("FREQ_LINES_安静", "说多勤·安静（切到这一档时说的）"),
@@ -257,6 +268,11 @@ LINE_GROUPS = [
 BALANCE_URL = "https://api.deepseek.com/user/balance"
 BALANCE_TTL = 60          # 余额自动刷新间隔（秒）
 USAGE_PATH = os.path.join(USER_DIR, "usage.json")   # 今日已用账本
+# 账本抗跳变：余额下降不等于"用量"，平台侧（赠送额度到期/回收、退款、接口抽风）
+# 也会让余额掉一大块。单次刷新掉得太多就不算用量，改成记「余额变动」。
+# 阈值按两次采样的间隔放宽（每小时最多信 5 元），免得关一晚桌宠之后把正常用量也挡掉。
+USAGE_JUMP_LIMIT = 20.0   # 元：60 秒这种短间隔下，单次最多信这么多是用量
+USAGE_JUMP_RATE = 5.0     # 元/小时：间隔拉长时按这个放宽
 
 # 峰谷定价（每百万 token 单价，元）与时段规则取自
 # MeteorNOX/DeepSeek-Balance-Whale-Widget（MIT）
@@ -321,6 +337,20 @@ LYRIC_OVERFLOW_ROWS = 8         # 缩到底还装不下时最多铺几行（宁�
 MUSIC_HOLD_SEC = 5.0          # 放歌时：双击看余额 / 点"查看天气"，都显示 5 秒
 MUSIC_PEEK_SEC = MUSIC_HOLD_SEC
 PEEK_SEC = MUSIC_HOLD_SEC       # 快速双击看余额：顶上来显示几秒
+
+# 快速双击（鼠标快点两下桌宠）冒什么：一级菜单「快速双击」里选。
+# 「看一眼余额」必须**配了 Key 才给选** —— 没配 Key 时双击不会弹余额窗口，
+# 还是原来的"换姿势"，只在本次启动里提醒一次怎么配（见 PetWindow._on_double_click）。
+DOUBLE_CLICK_CHOICES = [
+    ("balance", "看一眼余额（5 秒）"),
+    ("weather", "看一眼天气"),
+    ("music", "看一眼在放什么"),
+    ("lines", "说一句我写的台词"),
+]
+DOUBLE_CLICK_DEFAULT = "balance"
+# 双击之后留几秒"让位"：这几秒里的自言自语先憋着，别把刚弹出来的那一眼盖掉
+DOUBLE_CLICK_HOLD_SEC = {"balance": PEEK_SEC, "weather": MUSIC_HOLD_SEC,
+                         "music": MUSIC_HOLD_SEC, "lines": 4.0}
 MENU_HOVER_MS = 120           # 菜单悬停兜底的检查间隔
 MENU_HOVER_FAST_MS = 40       # 菜单开着时用这个间隔（纠位置差不多是"瞬间"）
 MENU_HOVER_DELAY = 0.22       # 光标在带子菜单的项上停多久就替它弹出子菜单
@@ -1364,7 +1394,11 @@ def currency_symbol(currency):
 
 
 def query_deepseek_balance(key):
-    """查 DeepSeek 余额，返回 {ok, total, currency} 或 {ok: False, error}。"""
+    """查 DeepSeek 余额，返回 {ok, total, currency, granted, topped_up} 或 {ok: False, error}。
+
+    granted / topped_up 是接口给的「赠送余额 / 充值余额」，账本靠这两个字段认得出
+    「赠送额度整块到期被收回」——那种下降不是用量。
+    """
     last = "网络错误"
     for attempt in range(2):
         try:
@@ -1372,8 +1406,16 @@ def query_deepseek_balance(key):
             if r.status_code == 200:
                 info = pick_balance_info((r.json() or {}).get("balance_infos"))
                 if info and info.get("total_balance") is not None:
+                    def num(name):
+                        try:
+                            return float(info.get(name))
+                        except (TypeError, ValueError):
+                            return None
+
                     return {"ok": True, "total": float(info["total_balance"]),
-                            "currency": info.get("currency") or "CNY"}
+                            "currency": info.get("currency") or "CNY",
+                            "granted": num("granted_balance"),
+                            "topped_up": num("topped_up_balance")}
                 return {"ok": False, "error": "余额返回结构异常"}
             last = f"HTTP {r.status_code}"
             if r.status_code < 500:
@@ -2169,41 +2211,161 @@ def fetch_weather(city):
     return None
 
 
-def record_balance_usage(path, total, currency):
-    """小鲸鱼记账：只把余额下降记成当日消耗，跨天归零归档，币种变化只重置基准。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    data = {"date": today, "lastBalance": total, "lastCurrency": currency,
-            "todayUsage": 0.0, "history": {}}
+def key_fingerprint(key):
+    """Key 指纹：只用来认「还是不是同一个账号的账本」，不还原、不外传。"""
+    key = (key or "").strip()
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8] if key else ""
+
+
+def balance_drop_reason(prev, delta, granted, gap_sec):
+    """这次余额下降算不算用量？算用量返回 ""，不算就返回原因。
+
+    不算用量的两种：
+    1) 赠送额度整块消失（到期 / 被平台收回）——上一次 granted 有值，这次基本归零，
+       而且下降额对得上那笔赠送；
+    2) 一次刷新掉得太多（60 秒掉二十几块不可能是 API 用量），间隔长时按小时放宽。
+    """
+    pg = prev.get("lastGranted")
+    if pg and granted is not None and delta >= 0.5:
+        gone = float(pg) - float(granted)
+        if gone > 0 and gone >= delta - 0.05 and float(granted) <= max(0.05, float(pg) * 0.02):
+            return "赠送额度到期/被收回"
+    limit = max(USAGE_JUMP_LIMIT, USAGE_JUMP_RATE * max(0.0, float(gap_sec)) / 3600.0)
+    if delta > limit:
+        return f"一次掉 ¥{delta:.2f}，超过 ¥{limit:.2f} 的可信上限"
+    return ""
+
+
+def record_balance_usage(path, total, currency, granted=None, topped_up=None,
+                         key_id="", sample_ts=None):
+    """小鲸鱼记账：只把余额下降记成当日消耗，跨天归零归档。
+
+    币种变化、Key（账号）变化、赠额到期、异常跳变都只重置基准，不记成用量——
+    否则平台侧的余额变动会变成"我今天用了两百多"。
+
+    返回 {"today": 今日已用, "adjust": 今天没算进用量的余额变动,
+          "amount": 这一次的变动额, "reason": 这一次的变动原因（没有就是空串）,
+          "adjust_why": 今天最近一次变动的原因（给菜单说明用）}
+    """
+    now = (datetime.fromtimestamp(sample_ts) if sample_ts else datetime.now())
+    today = now.strftime("%Y-%m-%d")
+    prev = {}
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
-                data.update(json.load(f) or {})
+                prev = json.load(f) or {}
     except Exception:
-        pass
+        prev = {}
 
-    if data.get("date") != today:
-        hist = dict(data.get("history") or {})
-        if data.get("date") and data.get("todayUsage"):
-            hist[data["date"]] = round(float(data["todayUsage"]), 4)
+    prev_date = prev.get("date")
+    last = prev.get("lastBalance")
+    last_cur = prev.get("lastCurrency")
+    prev_key = (prev.get("lastKeyId") or "").strip()
+    today_usage = float(prev.get("todayUsage") or 0)
+    today_adjust = float(prev.get("todayAdjust") or 0)
+    hist = dict(prev.get("history") or {})
+    log = list(prev.get("adjustLog") or [])[-20:]
+    # 老账本没有 lastAdjustWhy 就从变动记录里补，菜单里那句说明才不会空着
+    last_why = prev.get("lastAdjustWhy") or (log[-1].get("why", "") if log else "")
+    last_at = prev.get("lastAdjustAt") or (log[-1].get("at", "") if log else "")
+    reason = ""
+    amount = 0.0
+
+    if prev_date != today:
+        # 跨天：把昨天的用量归档，今天的基准重新起
+        if prev_date and today_usage:
+            hist[prev_date] = round(today_usage, 4)
         hist = dict(sorted(hist.items())[-30:])
-        data = {"date": today, "lastBalance": total, "lastCurrency": currency,
-                "todayUsage": 0.0, "history": hist}
-    else:
-        last, last_cur = data.get("lastBalance"), data.get("lastCurrency")
-        if last is not None and last_cur == currency:
-            delta = float(last) - float(total)
-            if delta > 0:
-                data["todayUsage"] = round(float(data.get("todayUsage") or 0) + delta, 4)
-        data["lastBalance"] = total
-        data["lastCurrency"] = currency
+        today_usage, today_adjust, log, reason = 0.0, 0.0, [], ""
+        last_why, last_at = "", ""        # 新的一天：昨天那笔变动的原因不再挂着
+    elif last is not None and last_cur == currency and (not prev_key or not key_id or prev_key == key_id):
+        delta = float(last) - float(total)
+        if delta > 0:
+            # 采样间隔：文件没写时间就用文件修改时间兜底
+            try:
+                last_ts = prev.get("lastSampleAt")
+                prev_at = (datetime.fromisoformat(last_ts) if last_ts
+                           else datetime.fromtimestamp(os.path.getmtime(path)))
+            except Exception:
+                prev_at = now
+            why = balance_drop_reason(prev, delta, granted, (now - prev_at).total_seconds())
+            if why:
+                amount = delta
+                reason = why
+                last_why, last_at = why, now.isoformat(timespec="seconds")
+                today_adjust = round(today_adjust + delta, 4)
+                log.append({"at": now.isoformat(timespec="seconds"),
+                            "amount": round(delta, 4), "why": why})
+            else:
+                today_usage = round(today_usage + delta, 4)
 
-    data["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+    # 以老账本为基础再覆盖我们管的字段：手工校准之类额外写进去的字段不会被抹掉
+    data = dict(prev)
+    data.update({
+        "date": today,
+        "lastBalance": total,
+        "lastCurrency": currency,
+        "lastGranted": granted,
+        "lastToppedUp": topped_up,
+        "lastKeyId": key_id or prev_key,
+        "lastSampleAt": now.isoformat(timespec="seconds"),
+        "todayUsage": round(today_usage, 4),
+        "todayAdjust": round(today_adjust, 4),
+        "history": hist,
+        "adjustLog": log,
+        "lastAdjustWhy": last_why,
+        "lastAdjustAt": last_at,
+        "updatedAt": datetime.now().isoformat(timespec="seconds"),
+    })
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        # 先写临时文件再替换：中途出错也不会把账本写成半截（半截 JSON 会被当成空账本）
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
     except Exception:
         pass
-    return float(data.get("todayUsage") or 0)
+    return {"today": float(data["todayUsage"]), "adjust": float(data["todayAdjust"]),
+            "amount": amount, "reason": reason,
+            "adjust_why": last_why, "adjust_at": last_at}
+
+
+def calibrate_balance_usage(path, amount, why="手动校准"):
+    """按主人看到的平台数字校准「今日已用」，账本里留一笔 calibrateLog。
+
+    什么时候用：赠送额度到期、桌宠关着漏采了一段……这些情况下账本自己算不出当天真实用量，
+    平台用量页的「消费金额」才是准的。只改 todayUsage，不动 todayAdjust 和余额基准。
+    返回 {"today": 校准后的值, "was": 原来的值}。
+    """
+    amount = max(0.0, float(amount))
+    prev = {}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                prev = json.load(f) or {}
+    except Exception:
+        prev = {}
+
+    now = datetime.now().isoformat(timespec="seconds")
+    was = float(prev.get("todayUsage") or 0)
+    log = list(prev.get("calibrateLog") or [])[-20:]
+    log.append({"at": now, "from": round(was, 4), "to": round(amount, 4), "why": why})
+
+    data = dict(prev)
+    data.update({
+        "date": prev.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "todayUsage": round(amount, 4),
+        "calibrateLog": log,
+        "updatedAt": now,
+    })
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return {"today": round(amount, 4), "was": round(was, 4)}
 
 
 def load_json(path, default):
@@ -2352,6 +2514,7 @@ class PetWindow(QWidget):
             "skin_pick_dir": "",
             "balance_source": "DeepSeek",
             "other_keys": [],
+            "double_click": DOUBLE_CLICK_DEFAULT,     # 快速双击弹哪个窗口（余额/天气/在放什么/台词）
             "custom_process_lines": {},
             "default_line_overrides": {},
             "custom_lines": {},
@@ -2471,6 +2634,7 @@ class PetWindow(QWidget):
         self._peek_pending = False        # 双击要的那一眼，等余额回来再冒泡
         self._key_hint_shown = False      # "没配 Key，双击看不了余额"这句每次启动只提醒一次
         self._last_click_ms = -99999     # 快速双击判定
+        self._dc_hold_until = 0.0        # 双击之后这几秒不让自言自语插嘴（别盖住刚弹的那一眼）
         self._lyric_key = ""             # 当前歌「歌名|歌手」
         self._lyric_lines = []           # [(秒, 词)]
         self._lyric_words = {}           # {这句开始秒: [(字, 这个字的开始秒), ...]}（有逐字歌词时才有）
@@ -2998,6 +3162,9 @@ class PetWindow(QWidget):
                        "error": f"{name} 没有提供余额查询接口，看不到具体余额"}
             res["name"] = name
             res["silent"] = silent
+            # 账本要认"这是不是同一个账号"：只存 Key 指纹，不存 Key 本身
+            res["key_id"] = key_fingerprint(key)
+            res["ts"] = time.time()
             self._bal_queue.append(res)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -3019,12 +3186,27 @@ class PetWindow(QWidget):
         total, currency = float(res["total"]), res["currency"]
         name = res.get("name") or "DeepSeek"
         # 今日已用记账只对 DeepSeek 有意义（本地按余额差值记账）
-        today = record_balance_usage(USAGE_PATH, total, currency) if name == "DeepSeek" else 0.0
+        if name == "DeepSeek":
+            book = record_balance_usage(USAGE_PATH, total, currency,
+                                        granted=res.get("granted"),
+                                        topped_up=res.get("topped_up"),
+                                        key_id=res.get("key_id") or "",
+                                        sample_ts=res.get("ts"))
+        else:
+            book = {"today": 0.0, "adjust": 0.0, "amount": 0.0, "reason": ""}
         old = self.balance["total"] if self.balance else None
         self.balance = {"name": name, "total": total, "currency": currency,
-                        "today": today, "stale": False, "no_api": False}
+                        "today": book["today"], "adjust": book["adjust"],
+                        "adjust_reason": book.get("adjust_why") or book.get("reason") or "",
+                        "stale": False, "no_api": False}
         self.bal_error = ""
         self._start_roll(total)
+
+        if book.get("reason"):
+            # 余额掉了一大块但不是用量（赠额到期/接口抽风之类）：说清楚，别让主人以为自己乱花钱
+            symbol = currency_symbol(currency)
+            self.say(f"余额少了 {symbol}{book['amount']:.2f}，看着不像用掉的"
+                     f"（{book['reason']}），这次没算进今日已用", seconds=6.0, again=True)
 
         if getattr(self, "_peek_pending", False):
             # 双击要的那一眼：不管是不是在放歌，都把余额顶上来显示 5 秒
@@ -4592,12 +4774,18 @@ class PetWindow(QWidget):
                 # 剩下 30% 的机会拿来冒话，两句之间按主人在「语录频率」里选的间隔隔开
                 if self._music_playing():
                     return      # 放歌时不插嘴，把位置让给歌词
+                if self._secs() < getattr(self, "_dc_hold_until", 0.0):
+                    return      # 刚快速双击过：让它把选好的那一眼（余额/天气/台词）先说完
                 if self.t - self.last_speak_tick >= preset["cooldown"]:
                     self.last_speak_tick = self.t
                     if random.random() < 0.4:
                         self.say(random.choice(self.lines_for("INNER_LINES")), inner=True)
                     else:
-                        self.say(random.choice(self.lines_for("LINES")))
+                        words = self.lines_for("LINES")
+                        if not self._double_click_sees_balance():
+                            # 双击已经不归余额管了：别让它嘴上还挂着"双击我给你看余额"
+                            words = [w for w in words if w != DOUBLE_CLICK_HINT_LINE] or words
+                        self.say(random.choice(words))
 
     def _queue_say(self, text):
         """后台线程调用：只入队，由主线程 tick 统一弹出显示（线程安全）"""
@@ -4630,8 +4818,11 @@ class PetWindow(QWidget):
     def lines_customized(self, key):
         return bool((self.cfg.get("custom_lines") or {}).get(key))
 
-    def edit_lines_dialog(self):
-        """一个窗口里改所有台词：上面选类别，下面一行一句；可一键恢复默认。"""
+    def edit_lines_dialog(self, initial_key=None):
+        """一个窗口里改所有台词：上面选类别，下面一行一句；可一键恢复默认。
+
+        initial_key 用来直接停在某一类上（菜单里「快速双击 → 改写这几句…」用它）。
+        """
         from PySide6.QtWidgets import QPlainTextEdit
         dlg = QDialog(self)
         dlg.setWindowTitle("台词内容（可以自己写，也可以改写内置的）")
@@ -4659,6 +4850,10 @@ class PetWindow(QWidget):
         combo = QComboBox()
         for key, label in LINE_GROUPS:
             combo.addItem(label, key)
+        if initial_key:
+            _idx = combo.findData(initial_key)
+            if _idx >= 0:
+                combo.setCurrentIndex(_idx)
         row.addWidget(combo, 1)
         lay.addLayout(row)
         hint = QLabel("下面这些就是这一类的台词：一行一句（空行自动忽略）；"
@@ -4818,17 +5013,63 @@ class PetWindow(QWidget):
             self.say(random.choice(self.lines_for("REACT_LINES")))
 
     def _on_double_click(self):
-        """快速双击：瞄一眼余额（显示 5 秒）。
+        """快速双击：按一级菜单「快速双击」里选的那样冒一下（默认看 5 秒余额）。
 
-        没配 Key 的话这个功能**不启用** —— 还是原来的"换姿势"，只提醒一次怎么配。
+        可选的四种：看一眼余额 / 看一眼天气 / 看一眼在放什么 / 说一句我写的台词。
+        「看一眼余额」要配了 Key 才算数 —— 没配 Key 时**不会弹余额窗口**，
+        还是原来的"换姿势"，并且只在本次启动里提醒一次怎么配。
         """
+        choice = self._double_click_choice()
+        # 这几秒里先别自言自语（闲话会盖住刚弹出来的那一眼）；点它 / 拖它照旧有反应
+        self._dc_hold_until = self._secs() + DOUBLE_CLICK_HOLD_SEC.get(choice, 3.0)
+        if choice == "balance":
+            self._double_click_balance()
+            return
+        # 其它三种：先把动作做出来（蹦一下 / 换个姿势），结果回来再冒泡
+        self.action, self.action_t = random.choice(("sway", "stretch")), 1.0
+        self.jump_t = max(self.jump_t, 0.6)
+        if choice == "weather":
+            self._get_weather()          # 后台查，回来冒 5 秒（放歌时也一样）
+            return
+        if choice == "music":
+            self.check_music_now()
+            return
+        words = self.lines_for("DOUBLE_CLICK_LINES")
+        if words:
+            self.say(random.choice(words), seconds=4.0, again=True)
+
+    def _double_click_choice(self):
+        """快速双击这一项现在选的是哪个（老配置 / 手改坏了都退回默认）。"""
+        choice = self.cfg.get("double_click") or DOUBLE_CLICK_DEFAULT
+        return choice if choice in dict(DOUBLE_CLICK_CHOICES) else DOUBLE_CLICK_DEFAULT
+
+    def _double_click_effect_label(self):
+        """菜单里「快速双击=…」那句说明（跟着用户选的走）。"""
+        choice = self._double_click_choice()
+        if choice == "balance" and not self._double_click_sees_balance():
+            return "看余额（要先配 Key，现在双击只换姿势）"
+        return dict(DOUBLE_CLICK_CHOICES).get(choice, "")
+
+    def _double_click_sees_balance(self):
+        """双击现在是不是真的能看到余额（选了余额 + 配了 Key 才算）。"""
+        return self._double_click_choice() == "balance" and bool(self._current_source()[1])
+
+    def _double_click_menu_title(self):
+        """一级菜单里「快速双击」那一项的标题（带着现在选的是什么）。"""
+        if self._double_click_choice() == "balance" and not self._double_click_sees_balance():
+            return "快速双击（现在：还没配 Key，双击只换姿势）"
+        return "快速双击（现在：" + self._double_click_effect_label() + "）"
+
+    def _double_click_balance(self):
+        """双击要的那一眼余额：配了 Key 才给看（显示 5 秒）。"""
         name, key = self._current_source()
         if not key:
             self.action, self.action_t = random.choice(("sway", "stretch")), 1.0
             self.jump_t = max(self.jump_t, 0.6)
             if not self._key_hint_shown:
                 self._key_hint_shown = True
-                self.say(f"双击看余额要先填 {name} 的 Key：右键 →「余额 → 设置 Key」",
+                self.say(f"双击看余额要先填 {name} 的 Key：右键 →「余额 → 设置 Key」；"
+                         f"也可以右键 →「快速双击」换成别的",
                          seconds=4.0, again=True)
             return
         if self.balance is not None:
@@ -4965,8 +5206,28 @@ class PetWindow(QWidget):
         # 这三个是平时最常用的："看一眼余额 / 看一眼天气 / 看一眼在放什么"，
         # 从各自的子菜单里挪到一级菜单，单独一块，不用再一层层点进去。
         m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
+        # （原来这里还有一行灰色的「今天另有 ¥x 余额变动，没算进今日已用」；
+        #   主人 2026-09-13 看了一眼说"把这个灰色小字删了，奇奇怪怪的" → 去掉。
+        #   真发生这种变动时，气泡里照旧会解释一句"余额少了…看着不像用掉的"。）
         m.addAction("查看天气", self._get_weather)
         m.addAction("看一眼在放什么", self.check_music_now)
+        # 快速双击弹哪个窗口：也放在这块最常用的区域里（一级菜单点一下就能换）
+        dc_menu = m.addMenu(self._double_click_menu_title())
+        dc_picked = self._double_click_choice()
+        dc_has_key = bool(self._current_source()[1])
+        for dc_key, dc_label in DOUBLE_CLICK_CHOICES:
+            if dc_key == "balance" and not dc_has_key:
+                # 没配 Key：这一项不给选（双击也不会弹余额窗口）
+                dc_label += "（要先配 Key）"
+            a = dc_menu.addAction(dc_label)
+            a.setCheckable(True)
+            a.setChecked(dc_picked == dc_key and (dc_key != "balance" or dc_has_key))
+            a.setEnabled(dc_key != "balance" or dc_has_key)
+            a.triggered.connect(lambda _, k=dc_key: self.set_double_click(k))
+        dc_menu.addSeparator()
+        n_dc = len(self.cfg.get("custom_lines", {}).get("DOUBLE_CLICK_LINES") or [])
+        dc_menu.addAction("改写这几句…" + (f"（已改 {n_dc} 句）" if n_dc else ""),
+                          defer_dialog(lambda: self.edit_lines_dialog("DOUBLE_CLICK_LINES")))
         m.addSeparator()
 
         mode_menu = m.addMenu("模式")
@@ -5046,6 +5307,9 @@ class PetWindow(QWidget):
         bal_menu.addAction("添加其他 API Key…", self.add_other_key_dialog)
         if self.cfg.get("other_keys"):
             bal_menu.addAction("删除其他 API Key…", self.remove_other_key_dialog)
+        # 账本自己算不出当天真实用量时（赠送额度到期、桌宠关着漏采）用来对齐平台那个数
+        bal_menu.addAction("校准今日已用…（按平台用量页）",
+                           defer_dialog(self.calibrate_usage_dialog))
         bal_menu.addSeparator()
         baa = bal_menu.addAction("余额常显")
         baa.setCheckable(True)
@@ -5141,9 +5405,8 @@ class PetWindow(QWidget):
         music_menu.addAction(self._music_menu_label()).setEnabled(False)
         # （「看一眼在放什么」挪到一级菜单最上面那块"快速查看"里了）
         music_menu.addSeparator()
-        music_menu.addAction("单击=回嘴（放歌时报歌名）· 快速双击=看 5 秒余额"
-                             + ("（已启用）" if self._current_source()[1] else "（要先配 Key）")
-                             ).setEnabled(False)
+        music_menu.addAction("单击=回嘴（放歌时报歌名）· 快速双击="
+                             + self._double_click_effect_label()).setEnabled(False)
 
         # 流畅度：动画优先 / 省资源，自己选
         perf_menu = m.addMenu("流畅度")
@@ -5267,6 +5530,41 @@ class PetWindow(QWidget):
             self.refresh_balance(silent=False)
         elif ok and not key.strip():
             self.say("Key 不能为空")
+
+    def calibrate_usage_dialog(self):
+        """按 DeepSeek 开放平台用量页的数字校准「今日已用」。
+
+        余额差值记账遇到赠送额度到期 / 桌宠关着漏采就算不出真实用量，
+        这里让主人把平台那个数填进来对齐（账本会留一笔 calibrateLog）。
+        """
+        cur = float((self.balance or {}).get("today") or 0.0)
+        with self._ui_guard():
+            text, ok = QInputDialog.getText(
+                self,
+                "校准今日已用",
+                "输入 DeepSeek 开放平台 →「用量信息」页今天显示的消费金额（元）：\n"
+                f"（桌宠现在记的是 ¥{cur:.2f}；平台那个数只在你账号里看得到，我拿不到）",
+                QLineEdit.EchoMode.Normal,
+                f"{cur:.2f}",
+                Qt.WindowType.WindowStaysOnTopHint
+            )
+        if not ok:
+            return
+        raw = (text or "").strip().replace("¥", "").replace("￥", "").replace(",", "")
+        try:
+            amount = float(raw)
+        except ValueError:
+            self.say("这个数我没看懂，填个数字就行（例如 14.83）")
+            return
+        if amount < 0:
+            self.say("金额不能是负的呀")
+            return
+        res = calibrate_balance_usage(USAGE_PATH, amount, "菜单里按平台用量页手动校准")
+        if self.balance is not None:
+            self.balance["today"] = res["today"]
+        self.say(f"今日已用校准成 ¥{res['today']:.2f} 啦（原来记的是 ¥{res['was']:.2f}）",
+                 seconds=4.5, again=True)
+        self.show_balance_bubble(5.0)
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Context:
@@ -6395,6 +6693,21 @@ class PetWindow(QWidget):
         words = self.lines_for(f"FREQ_LINES_{name}")
         if words:
             self.say(random.choice(words), seconds=3.0, again=True)
+
+    def set_double_click(self, key):
+        """快速双击弹哪个窗口：余额 / 天气 / 在放什么 / 我写的台词。
+
+        余额这一项**配了 Key 才能选** —— 没配 Key 时直接选了也不给存（双击不会弹余额窗口）。
+        """
+        if key not in dict(DOUBLE_CLICK_CHOICES):
+            return
+        if key == "balance" and not self._current_source()[1]:
+            self.say("看余额要先配 Key：右键 →「余额 → 设置 Key」，配好再回来选这一项",
+                     seconds=4.0, again=True)
+            return
+        self.cfg["double_click"] = key
+        self.save_config()
+        self.say(f"好，以后快速双击 → {dict(DOUBLE_CLICK_CHOICES)[key]}", seconds=3.0, again=True)
 
     # ---------- 层级 / 透明度 ----------
     LAYER_LABELS = {"top": "置顶", "bottom": "置底（在壁纸之上）", "normal": "普通层"}
