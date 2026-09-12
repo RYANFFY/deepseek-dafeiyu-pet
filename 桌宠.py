@@ -217,12 +217,13 @@ MENU_HOVER_DELAY = 0.22       # 光标在带子菜单的项上停多久就替它
 MENU_HOVER_GRACE = 0.5        # 光标离开子菜单后，再等这么久才收（给手抖 / 斜着划过去留余地）
 MENU_DEBUG_LOG = os.path.join(USER_DIR, "menu-debug.log")   # 菜单排查用日志
 MENU_DEBUG = False            # 菜单排查日志（需要时改成 True，会写 menu-debug.log）
+MENU_DEBUG_RUNTIME = False    # 同上，但可以由菜单里的「记菜单日志」开关打开（存在 config.json）
 MENU_DEBUG_MOVE_MS = 120      # 鼠标移动最多每 120ms 记一条（免得日志爆掉）
 
 
 def menu_debug(text):
     """菜单相关的排查日志（只写文件，不打扰使用）。"""
-    if not MENU_DEBUG:
+    if not (MENU_DEBUG or MENU_DEBUG_RUNTIME):
         return
     try:
         with open(MENU_DEBUG_LOG, "a", encoding="utf-8") as f:
@@ -1617,11 +1618,21 @@ class PetWindow(QWidget):
             "custom_lines": {},
             "agent_name": "Codex",
             "agent_sessions_dir": "",
-            "codex_sessions_dir": CODEX_SESSIONS_DIR
+            "codex_sessions_dir": CODEX_SESSIONS_DIR,
+            "menu_debug": False
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
+        # 菜单排查日志可以像开关一样存在 config.json 里（菜单里那一项用的）
+        global MENU_DEBUG_RUNTIME
+        MENU_DEBUG_RUNTIME = bool(self.cfg.get("menu_debug", False))
+        if MENU_DEBUG_RUNTIME:
+            try:
+                with open(MENU_DEBUG_LOG, "w", encoding="utf-8") as f:
+                    f.write(f"=== 大肥鱼桌宠 菜单日志 {datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
+            except Exception:
+                pass
         self._cfg_snapshot = None
         
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -3432,6 +3443,10 @@ class PetWindow(QWidget):
         pa.setChecked(self.cfg["passthrough"])
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
+        md = m.addAction("记菜单日志（菜单出问题时打开）")
+        md.setCheckable(True)
+        md.setChecked(bool(self.cfg.get("menu_debug", False)))
+        md.triggered.connect(lambda on: self.set_menu_debug(on))
         aa = m.addAction("开机自启")
         aa.setCheckable(True)
         aa.setChecked(self.cfg["autostart"])
@@ -4157,6 +4172,22 @@ class PetWindow(QWidget):
             self._through_applied = False
             self._menu_click_through(False)
 
+    def set_menu_debug(self, on):
+        """菜单排查日志开关（菜单里那一项）：打开后菜单的动作、位置自愈都写进 menu-debug.log。"""
+        global MENU_DEBUG_RUNTIME
+        on = bool(on)
+        MENU_DEBUG_RUNTIME = on
+        self.cfg["menu_debug"] = on
+        if on:
+            try:
+                with open(MENU_DEBUG_LOG, "w", encoding="utf-8") as f:
+                    f.write(f"=== 大肥鱼桌宠 菜单日志 {datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
+            except Exception:
+                pass
+            self.say("菜单日志开着呢，出问题以后跟我说一声就行")
+        else:
+            self.say("菜单日志关啦")
+
     MENU_TRIGGER_MARGIN_X = 0       # 方案 1 已弃用（主人选方案 2）：不再放宽触发范围
     MENU_OVERLAP = 16               # v1.0.10 方案 2：子菜单和一级菜单重叠的像素
 
@@ -4250,10 +4281,25 @@ class PetWindow(QWidget):
             self._leave_at = 0.0
             self._hover_key = (id(menu), act.text())
             self._ensure_chain_open(menu)      # 上层被 Qt 收掉了就补回来
+            want = self._submenu_pos(menu, act, sub)
             if not sub.isVisible():
                 # 方案 2：弹出前就把位置算成"和一级重叠"，中间不会有跳一下
-                sub.popup(self._submenu_pos(menu, act, sub))
-                menu_debug(f"[兜底] 展开子菜单：{act.text()}")
+                sub.popup(want)
+                menu_debug(f"[兜底] 展开子菜单：{act.text()} @({want.x()},{want.y()}) "
+                           f"这一条={menu.actionGeometry(act)}")
+            else:
+                # 自愈：不管是谁把子菜单放歪了（Qt 自己摆的、弹出时尺寸还没算准、
+                # 或者被别的动作挪过），都挪回"贴住主人悬停的这一条"的位置。
+                # 主人截图里"二级菜单位置/重叠忽上忽下"就是用这一条兜住的。
+                try:
+                    cur = sub.pos()
+                except RuntimeError:
+                    return
+                dx, dy = abs(cur.x() - want.x()), abs(cur.y() - want.y())
+                if dx > 2 or dy > 2:
+                    sub.move(want)
+                    menu_debug(f"[兜底] 子菜单挪回该在的位置：{act.text()} "
+                               f"({cur.x()},{cur.y()}) → ({want.x()},{want.y()})")
             return
 
         # ② 光标已经在子菜单里 → 保持（喂一个位置给 Qt，免得它以为鼠标离开了）
