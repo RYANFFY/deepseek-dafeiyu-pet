@@ -4126,6 +4126,14 @@ class PetWindow(QWidget):
         # 依附桌宠时，子菜单的悬停/收起会受桌宠那个"无边框+半透明+置顶"窗口影响，
         # 靠屏幕边缘往左弹的子菜单尤其容易被误判成"鼠标离开了菜单"而收起来。
         m = QMenu()
+        # ---------- 快速查看（独立区域，放最上面）----------
+        # 这三个是平时最常用的："看一眼余额 / 看一眼天气 / 看一眼在放什么"，
+        # 从各自的子菜单里挪到一级菜单，单独一块，不用再一层层点进去。
+        m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
+        m.addAction("查看天气", self._get_weather)
+        m.addAction("看一眼在放什么", self.check_music_now)
+        m.addSeparator()
+
         mode_menu = m.addMenu("模式")
         for label, key in [("自由散步", "wander"), ("跟随鼠标", "follow"), ("原地待着", "still")]:
             a = mode_menu.addAction(label)
@@ -4174,7 +4182,7 @@ class PetWindow(QWidget):
                     defer_dialog(self.opacity_dialog))
         weather_menu = m.addMenu("天气")
         weather_menu.addAction("设置默认城市（手动输入）", self.set_city_dialog)
-        weather_menu.addAction("查看天气", self._get_weather)
+        # （「查看天气」挪到一级菜单最上面那块的"快速查看"里了）
         weather_menu.addAction("自动定位城市（按 IP，挂梯子会不准）", self.auto_locate_city)
         weather_menu.addAction("添加城市（联网搜索）", self.search_city_dialog)
         weather_menu.addSeparator()
@@ -4191,7 +4199,7 @@ class PetWindow(QWidget):
         if len(city_list) > 1:
             weather_menu.addAction("从列表里删掉城市…", self.remove_city_dialog)
         bal_menu = m.addMenu("余额")
-        bal_menu.addAction("查看余额", lambda: self.refresh_balance(silent=False))
+        # （「查看余额」挪到一级菜单最上面那块"快速查看"里了）
         bal_menu.addAction("设置 Key", self._set_key_dialog)
         src_menu = bal_menu.addMenu("余额来源")
         for name in ["DeepSeek"] + [k.get("name", "?") for k in (self.cfg.get("other_keys") or [])]:
@@ -4295,7 +4303,7 @@ class PetWindow(QWidget):
         nud.addAction("这首歌的微调清零", lambda: self.nudge_lyric(0.0, True))
         music_menu.addSeparator()
         music_menu.addAction(self._music_menu_label()).setEnabled(False)
-        music_menu.addAction("立刻看一眼在放什么", self.check_music_now)
+        # （「看一眼在放什么」挪到一级菜单最上面那块"快速查看"里了）
         music_menu.addSeparator()
         music_menu.addAction("单击=回嘴（放歌时报歌名）· 快速双击=看 5 秒余额"
                              + ("（已启用）" if self._current_source()[1] else "（要先配 Key）")
