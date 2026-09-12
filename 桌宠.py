@@ -191,6 +191,10 @@ LINES = [
     "出去玩了，发布新模型什么的以后再说",
     "我搞砸了.....好消息是数据还在你的脑子里。",
     "不是…而是…大学习",
+    "又来看余额了？省着点花，别把我饿着",
+    "双击我一下，余额马上给你看",
+    "嫌我吵就把「语录频率」调成安静，我立刻闭嘴",
+    "嫌我大就把我调小一点，别拿我当抱枕",
 ]
 REACT_LINES = [
     "去别的地方玩！不要耽误AGI训练！",
@@ -200,6 +204,8 @@ REACT_LINES = [
     "大肥鱼坐的住",
     "你这吃白饭的用户！",
     "这些家伙真粘人，赶都赶不走",
+    "戳我干嘛，余额又不会自己涨",
+    "行行行，我看一眼余额……喏，就这么多",
 ]
 INNER_LINES = [
     "好的，现在我是你爹了",
@@ -210,6 +216,8 @@ INNER_LINES = [
     "这也太虐了吧？！我心里堵得慌！！",
     "呜呜我再也不不敢了QAQ",
     "我去！用户彻底怒了！",
+    "他是不是又想看余额了……",
+    "又要我小声点了，唉",
 ]
 DRAG_LINES = ["哇——轻点轻点！", "起飞咯——", "放我下来！……好吧，再玩一次。", "晕鱼了晕鱼了……"]
 
@@ -309,12 +317,14 @@ MUSIC_CLICK_LINES = [
     "别急别急，{song} 还没放完呢",
     "♪ 放歌ing……{song}，要不要跟着哼两句",
     "听得正入神，{song} 这么好听",
+    "♪ 现在是 {song}，挑歌水平在线",
 ]
 # 换歌时冒一句
 MUSIC_START_LINES = [
     "♪ 换歌了：{song}",
     "♪ 这首{song}，我先替你听听",
     "♪ 来活儿了：{song}",
+    "♪ 切到 {song} 了，这首我记下了",
 ]
 
 
@@ -3214,6 +3224,23 @@ class PetWindow(QWidget):
         dlg.setWindowTitle("台词内容（可以自己写，也可以改写内置的）")
         dlg.resize(560, 460)
         lay = QVBoxLayout(dlg)
+        # 语录频率也放这个窗口里（和菜单「文案 → 语录频率」是同一个设置）
+        row0 = QHBoxLayout()
+        row0.addWidget(QLabel("说多勤（语录频率）："))
+        freq_combo = QComboBox()
+        for _fname, _fpreset in LINE_FREQ_LEVELS.items():
+            freq_combo.addItem(f"{_fname}（{_fpreset['hint']}）", _fname)
+        try:
+            freq_combo.setCurrentIndex(list(LINE_FREQ_LEVELS).index(self.line_freq))
+        except ValueError:
+            pass
+        row0.addWidget(freq_combo, 1)
+        lay.addLayout(row0)
+        freq_hint = QLabel("说多勤只管「闲着时自己冒话」；点它、拖它、换歌的反应不受影响，"
+                           "放歌时也照旧不插嘴。")
+        freq_hint.setWordWrap(True)
+        freq_hint.setStyleSheet("color:#666;")
+        lay.addWidget(freq_hint)
         row = QHBoxLayout()
         row.addWidget(QLabel("改哪一类："))
         combo = QComboBox()
@@ -3221,7 +3248,9 @@ class PetWindow(QWidget):
             combo.addItem(label, key)
         row.addWidget(combo, 1)
         lay.addLayout(row)
-        hint = QLabel("一行一句（空行会自动忽略）。放歌那两类里可以写 %s 代表当前歌名。" % "{song}")
+        hint = QLabel("下面这些就是这一类的台词：一行一句（空行自动忽略）；"
+                      "放歌那两类里可以写 %s 代表当前歌名；"
+                      "保存时留空 = 恢复这一类默认。" % "{song}")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#666;")
         lay.addWidget(hint)
@@ -3260,7 +3289,13 @@ class PetWindow(QWidget):
             load()
             self.say("台词存好啦", seconds=2.2, again=True)
 
+        def freq_changed(_=None):
+            name = freq_combo.currentData()
+            if name and name != self.line_freq:
+                self.set_line_freq(name)      # 立刻生效 + 写进 config（顺手冒一句）
+
         combo.currentIndexChanged.connect(load)
+        freq_combo.currentIndexChanged.connect(freq_changed)
         btn_restore.clicked.connect(restore)
         btn_ok.clicked.connect(save)
         btn_cancel.clicked.connect(dlg.reject)
