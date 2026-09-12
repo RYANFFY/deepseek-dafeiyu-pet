@@ -2340,7 +2340,11 @@ class PetWindow(QWidget):
         if self._lyric_anim_t > 0:
             self._lyric_anim_t = max(
                 0.0, self._lyric_anim_t - (LYRIC_ANIM_MS / 1000.0) / max(0.05, LYRIC_ANIM_SEC))
-        self.update()
+        rect = getattr(self, "_lyric_repaint_rect", None)
+        if rect is not None and not rect.isEmpty():
+            self.update(rect)           # 只重画气泡那一块
+        else:
+            self.update()
         bubble_moving = (abs(self._bub_target[0] - self._bub_w) > 0.6
                          or abs(self._bub_target[1] - self._bub_h) > 0.6)
         if self._lyric_anim_t <= 0 and not bubble_moving:
@@ -3263,15 +3267,25 @@ class PetWindow(QWidget):
         if not cur:
             # 还没找到歌词 / 用户关了歌词 → 就挂个「♪ 歌名」
             cur, nxt = self._song_label() or "在放歌", ""
-        rows, cur_lines, f_main, fm_m, n_head = self._lyric_rows(head, cur, nxt, max_w)
+        # 排版缓存：换句 / 换宽度 / 换字号才重算 —— 每帧算一次 wrap_text 要 ~1ms，100 帧就掉帧了
+        layout_key = (head, cur, nxt, max_w)
+        if getattr(self, "_lyric_layout_key", None) != layout_key:
+            self._lyric_layout_key = layout_key
+            self._lyric_layout_cache = self._lyric_rows(head, cur, nxt, max_w)
+        rows, cur_lines, f_main, fm_m, n_head = self._lyric_layout_cache
         real_lyric = bool(self._lyric_lines) and self._current_lyric_pair()[0] == cur
         # 换句时的过渡：新的一句淡入、旧的淡出并往上滑一点（不然"啪"一下太生硬）
         anim = max(0.0, min(1.0, getattr(self, "_lyric_anim_t", 0.0)))
         prev_text = getattr(self, "_lyric_prev", "")
         prev_rows = []
         if anim > 0 and prev_text and prev_text != cur:
-            prev_rows = [(line, f_main, QColor(38, 44, 66))
-                         for line in wrap_text(fm_m, prev_text, max_w)[:LYRIC_MAX_ROWS]]
+            prev_key = (prev_text, max_w)
+            if getattr(self, "_lyric_prev_key", None) != prev_key:
+                self._lyric_prev_key = prev_key
+                self._lyric_prev_cache = [
+                    (line, f_main, QColor(38, 44, 66))
+                    for line in wrap_text(fm_m, prev_text, max_w)[:LYRIC_MAX_ROWS]]
+            prev_rows = self._lyric_prev_cache
         widths = [QFontMetrics(font).horizontalAdvance(text) for text, font, _c in rows]
         if prev_rows:
             widths += [fm_m.horizontalAdvance(t) for t, _f, _c in prev_rows]
@@ -3294,6 +3308,9 @@ class PetWindow(QWidget):
         self._lyric_last_h = height
         bx = (self.width() - bw) / 2
         by = self._bubble_top(height)
+        # 记下气泡占的矩形：过渡动画刷新时只重画这一块，别把整个窗口（含桌宠）都重画，
+        # 不然 100 帧/秒会把合成器压住 —— 拖窗口就掉帧了（主人反馈的卡顿）。
+        self._lyric_repaint_rect = QRectF(bx - 6, by - 6, bw + 12, height + 20).toRect()
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 242))
         p.drawRoundedRect(QRectF(bx, by, bw, height), 14, 14)
@@ -5745,10 +5762,31 @@ class PetWindow(QWidget):
 
         有的窗口（例如 Codex 主窗口）本身也是置顶的，两个置顶窗口重叠时就按 z 序排，
         不主动提一下的话桌宠会被盖住。
+
+        但每次 SetWindowPos 都会让合成器重排一次 Z 序 —— 按住鼠标拖动窗口时做这个，
+        就会明显卡顿掉帧（主人反馈过）。所以这里加两道闸：
+        ① 正在按住鼠标（拖窗口 / 拖文件）时什么都不做；
+        ② 只有真的被另一个"置顶窗口"压住时才动，平时不白折腾。
         """
         if (not self.cfg.get("topmost", True) or not self.isVisible()
                 or self.ui_open):     # 菜单/对话框开着时别抢，免得盖住设置面板
             return
+        try:
+            if ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000:   # 左键按着 = 正在拖
+                return
+        except Exception:
+            pass
+        try:
+            GW_HWNDPREV, GWL_EXSTYLE, WS_EX_TOPMOST = 3, -20, 0x00000008
+            user32 = ctypes.windll.user32
+            user32.GetWindow.restype = ctypes.c_void_p
+            above = user32.GetWindow(ctypes.c_void_p(int(self.winId())), GW_HWNDPREV)
+            if above:
+                ex = user32.GetWindowLongPtrW(ctypes.c_void_p(above), GWL_EXSTYLE)
+                if not (int(ex) & WS_EX_TOPMOST):
+                    return               # 上面那个不是置顶窗口 → 我们本来就是最上面的，不用动
+        except Exception:
+            pass
         try:
             self.raise_()          # 先把窗口抬到同类窗口最前面
         except Exception:
