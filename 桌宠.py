@@ -164,6 +164,16 @@ BUBBLE_H = 112         # 气泡区高度（要放得下四行余额气泡：余�
 MARGIN = 4
 SIZE_LEVELS = {"迷你": 0.30, "特小": 0.42, "小": 0.55, "中": 0.7, "大": 0.9}
 MIN_WIN_W = 168        # 窗口最窄宽度：小档位也别把气泡挤成一条（气泡要放得下三四行字）
+
+# 语录（闲着时自己冒话）的触发频率档位
+# cooldown = 两句之间最少隔多少帧（20ms/帧）。"正常"就是原来的行为，其它档只动这个间隔。
+LINE_FREQ_LEVELS = {
+    "安静": {"cooldown": 1500, "hint": "约 30 秒一句"},
+    "正常": {"cooldown": 600, "hint": "约 12~17 秒一句"},
+    "话多": {"cooldown": 300, "hint": "约 7~8 秒一句"},
+    "话痨": {"cooldown": 150, "hint": "约 3~4 秒一句"},
+}
+LINE_FREQ_DEFAULT = "正常"
 SPEED = 380.0
 TICK = 20
 
@@ -1707,6 +1717,7 @@ class PetWindow(QWidget):
             "volume": 0.9,
             "show_peak": True,
             "peak_style": "默认",
+            "line_freq": LINE_FREQ_DEFAULT,
             "layer": "top",
             "opacity": 1.0,
             "process_alerts": True,
@@ -1795,6 +1806,8 @@ class PetWindow(QWidget):
         self.balance_always = bool(self.cfg.get("balance_always", False))
         self.show_peak = bool(self.cfg.get("show_peak", True))
         self.peak_style = self.cfg.get("peak_style", "默认")
+        self.line_freq = (self.cfg.get("line_freq")
+                          if self.cfg.get("line_freq") in LINE_FREQ_LEVELS else LINE_FREQ_DEFAULT)
         if self.peak_style not in PEAK_TEXT_STYLES:
             self.peak_style = "默认"
         self._peak_now = None
@@ -3142,8 +3155,10 @@ class PetWindow(QWidget):
             self._set_dir("down")
 
     def _maybe_idle_action(self):
-        # 闲着时的"小动作"概率。原来 0.01、以及说话冷却 1500 帧（约 30 秒）——
-        # 台词太不容易看到了，现在放宽成 0.03 + 冷却 600 帧（约 12 秒）
+        # 闲着时的"小动作"概率固定 0.03；发呆时说什么、说多勤由主人选的「语录频率」决定
+        # （安静 / 正常 / 话多 / 话痨，见 LINE_FREQ_LEVELS）
+        preset = LINE_FREQ_LEVELS.get(getattr(self, "line_freq", LINE_FREQ_DEFAULT),
+                                      LINE_FREQ_LEVELS[LINE_FREQ_DEFAULT])
         if random.random() < 0.03:
             pick = random.random()
             if pick < 0.35:
@@ -3153,10 +3168,10 @@ class PetWindow(QWidget):
             elif pick < 0.7:
                 self.action, self.action_t = "stretch", 1.0
             else:
-                # 剩下 30% 的机会拿来冒话（原来是 10%，台词太不容易看到了）
+                # 剩下 30% 的机会拿来冒话，两句之间按主人在「语录频率」里选的间隔隔开
                 if self._music_playing():
                     return      # 放歌时不插嘴，把位置让给歌词
-                if self.t - self.last_speak_tick >= 600:
+                if self.t - self.last_speak_tick >= preset["cooldown"]:
                     self.last_speak_tick = self.t
                     if random.random() < 0.4:
                         self.say(random.choice(self.lines_for("INNER_LINES")), inner=True)
@@ -3609,6 +3624,12 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(self.peak_style == style)
             a.triggered.connect(lambda _, s=style: self.set_peak_style(s))
+        freq_menu = text_menu.addMenu("语录频率" + f"（现在：{self.line_freq}）")
+        for name, preset in LINE_FREQ_LEVELS.items():
+            a = freq_menu.addAction(f"{name}（{preset['hint']}）")
+            a.setCheckable(True)
+            a.setChecked(self.line_freq == name)
+            a.triggered.connect(lambda _, n=name: self.set_line_freq(n))
         text_menu.addSeparator()
         # 台词内容：换了形象之后默认台词可能不搭，这里让用户自己写 / 改写内置
         n_custom = len(self.cfg.get("custom_lines") or {})
@@ -4881,6 +4902,19 @@ class PetWindow(QWidget):
         self.peak_style = style
         self.cfg["peak_style"] = style
         self.update()
+
+    def set_line_freq(self, name):
+        """语录频率：安静 / 正常 / 话多 / 话痨（管的是"闲着时自己冒话"的频率）。"""
+        if name not in LINE_FREQ_LEVELS:
+            return
+        self.line_freq = name
+        self.cfg["line_freq"] = name
+        self.last_speak_tick = self.t          # 让新档位马上生效，不用等旧冷却
+        tip = {"安静": "好，我尽量闭嘴",
+               "正常": "行，我按正常频率说",
+               "话多": "那我多跟你说两句",
+               "话痨": "嘿嘿，那我要开始碎碎念了"}.get(name, "好")
+        self.say(tip, seconds=3.0, again=True)
 
     # ---------- 层级 / 透明度 ----------
     LAYER_LABELS = {"top": "置顶", "bottom": "置底（在壁纸之上）", "normal": "普通层"}
