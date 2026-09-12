@@ -1200,6 +1200,10 @@ def read_media_session():
             "playing": str(status).upper() == "PLAYING",
             "position": float(line.position.total_seconds()),
             "duration": float(line.end_time.total_seconds()),
+            # 播放器到底报没报"时间轴"：网易云 position 和总时长恒为 0（实测），
+            # 这种就只能显示歌名，别硬猜进度、也别去抓歌词了
+            "has_timeline": (float(line.position.total_seconds()) > 0.0
+                             or float(line.end_time.total_seconds()) > 0.0),
             "at": time.time(),
         }
 
@@ -2048,6 +2052,7 @@ class PetWindow(QWidget):
         self._lyric_retry_at = 0.0       # 歌词没抓到时的重试时间
         self._music_pos_memo = {}        # 歌 → 上次放到哪（暂停/切走再回来接着走）
         self._music_gone_at = 0.0        # 媒体会话消失的时刻（网易云暂停可能整个会话都没了）
+        self._music_no_progress = False   # 这个播放器不报时间轴（网易云）→ 只显示歌名，不猜歌词
         self._lyric_nudge = 0.0          # 这首歌的歌词微调（秒，正数=歌词往前赶）
         self._lyric_nudges = {}          # 歌 → 微调值（每首歌记住自己的）
         self._lyric_shown = ""           # 现在气泡里显示的是哪一句
@@ -2400,12 +2405,7 @@ class PetWindow(QWidget):
             cached = self._lyric_cache.get(key) or {}
             if isinstance(cached, str):          # 兼容老格式（纯文本）
                 cached = {"v": 1, "text": cached}
-            text = cached.get("text") or ""
-            self._lyric_lines = parse_lrc(text) if text else []
-            self._lyric_words = parse_word_lyrics(text) if text else {}
-            stale = bool(text) and int(cached.get("v", 1)) < LYRIC_CACHE_VERSION
-            if (not text or stale) and self.music_lyrics and not self._lyric_fetching:
-                self._start_lyric_fetch(key, info)
+            self._setup_lyrics_for(key, info, cached)
             if info.get("playing") and info.get("title"):
                 self._announce_song()
         else:
@@ -2413,8 +2413,16 @@ class PetWindow(QWidget):
             # 就以播放器报的为准 —— 不然歌词不会跟着跳（主人反馈过这个问题）。
             pos = info.get("position")
             if (pos is not None and float(pos) > 0.5        # 只信"报了真实进度"的播放器
-                    and abs(float(pos) - self._music_played) > 2.5):
+                and abs(float(pos) - self._music_played) > 2.5):
                 self._music_played = max(0.0, float(pos))
+            # 同一首歌换了个播放器（比如网易云 → QQ音乐），时间轴能力可能变：
+            # 变了就按新播放器重新决定"显不显示歌词"
+            if (info.get("has_timeline") is False) != bool(
+                    getattr(self, "_music_no_progress", False)):
+                cached = self._lyric_cache.get(key) or {}
+                if isinstance(cached, str):
+                    cached = {"v": 1, "text": cached}
+                self._setup_lyrics_for(key, info, cached)
         # 放歌时看勤一点：网易云根本不报进度（实测 position 恒为 0），我们只能靠"什么时候
         # 开始放"起算，看得越勤误差越小
         want_ms = 800 if info.get("playing") else MUSIC_POLL_MS
@@ -2424,6 +2432,26 @@ class PetWindow(QWidget):
         except Exception:
             pass
         self.update()
+
+    def _setup_lyrics_for(self, key, info, cached):
+        """按"这个播放器报不报时间轴"决定这首歌显不显示歌词。
+
+        网易云实测 position / 总时长恒为 0（不报时间轴）→ 只显示"歌名 + 歌手"，
+        不抓歌词也不猜进度，一直保持到切歌为止；QQ音乐正常报，就照常显示歌词。
+        """
+        text = (cached or {}).get("text") or ""
+        if info.get("has_timeline") is False:
+            self._music_no_progress = True
+            self._lyric_lines = []
+            self._lyric_words = {}
+            menu_debug(f"[音乐] {info.get('app')} 不报时间轴 → 只显示歌名")
+            return
+        self._music_no_progress = False
+        self._lyric_lines = parse_lrc(text) if text else []
+        self._lyric_words = parse_word_lyrics(text) if text else {}
+        stale = bool(text) and int(cached.get("v", 1)) < LYRIC_CACHE_VERSION
+        if (not text or stale) and self.music_lyrics and not self._lyric_fetching:
+            self._start_lyric_fetch(key, info)
 
     def _announce_song(self):
         """换歌时冒一句（别连着刷）。"""
@@ -3260,8 +3288,10 @@ class PetWindow(QWidget):
         """歌词气泡：小字「应用 · 歌名」，大字当前这句，再淡一行下一句。"""
         info = self.now_playing or {}
         max_w = min(300, self.width() - 12) - 22
-        head = "♪ " + (f"{info.get('app', '')} · {info.get('title', '')}".strip(" ·")
-                       or "在放歌")
+        who = (info.get("artist") or "").strip()
+        title = (info.get("title") or "").strip()
+        head = "♪ " + (f"{info.get('app', '')} · {title}"
+                       + (f" —— {who}" if who else "")).strip(" ·") if title else "♪ 在放歌"
         # 对时：正数 = 文字延后（等一下声音）；不同输出设备（外放 / 蓝牙耳机）延迟不一样
         cur, nxt = self._current_lyric_pair()
         if not cur:
@@ -3401,6 +3431,7 @@ class PetWindow(QWidget):
         # 歌词没抓到就自己重试（原来要等切歌才会重抓，主人反馈过"歌词不显示"）
         if (self.music_on and self.music_lyrics and self._lyric_key
                 and not self._lyric_lines and not self._lyric_fetching
+                and not getattr(self, "_music_no_progress", False)
                 and time.time() >= self._lyric_retry_at):
             self._lyric_retry_at = time.time() + 15.0
             self._start_lyric_fetch(self._lyric_key, self.now_playing or {})
