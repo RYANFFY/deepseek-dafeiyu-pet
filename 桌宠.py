@@ -1209,6 +1209,24 @@ def read_media_session():
         return None
 
 
+def parse_mmss(text):
+    """把「1:35」「01:35.5」「95」这种写法转成秒；看不懂返回 None。"""
+    t = (text or "").strip().replace("：", ":")
+    if not t:
+        return None
+    try:
+        if ":" in t:
+            parts = [p for p in t.split(":") if p != ""]
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + float(parts[1])
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+            return None
+        return float(t)
+    except (TypeError, ValueError):
+        return None
+
+
 def split_music_title(title, app_name=""):
     """把「歌名 - 歌手 - QQ音乐」这类窗口标题拆成 (歌名, 歌手)。"""
     text = (title or "").strip()
@@ -2029,6 +2047,7 @@ class PetWindow(QWidget):
         self._lyric_cache = load_lyric_cache()
         self._lyric_retry_at = 0.0       # 歌词没抓到时的重试时间
         self._music_pos_memo = {}        # 歌 → 上次放到哪（暂停/切走再回来接着走）
+        self._music_gone_at = 0.0        # 媒体会话消失的时刻（网易云暂停可能整个会话都没了）
         self._lyric_nudge = 0.0          # 这首歌的歌词微调（秒，正数=歌词往前赶）
         self._lyric_nudges = {}          # 歌 → 微调值（每首歌记住自己的）
         self._lyric_shown = ""           # 现在气泡里显示的是哪一句
@@ -2245,8 +2264,10 @@ class PetWindow(QWidget):
         playing = bool(info.get("playing"))
         if pos is not None and float(pos) > 0.5:
             if not playing:
-                return max(0.0, float(pos))        # 暂停：就停在这个位置，别继续往前跑
+                return max(0.0, float(pos))        # 暂停：播放器报的就是当前位置，别往前跑
             return max(0.0, float(pos) + (time.time() - float(info.get("at") or time.time())))
+        # 报的是 0 / 垃圾值（网易云就是这样，连总时长都不给）：
+        # 只能靠我们自己累加的"这首歌放到哪"——**暂停时不清零**，切走再回来也接着走。
         return max(0.0, self._music_played)
 
     def _word_times_for(self, start_sec):
@@ -2334,9 +2355,9 @@ class PetWindow(QWidget):
         if info is None:
             if self.now_playing is not None:
                 self.now_playing = None
-                self._lyric_key = ""
-                self._lyric_lines = []
-                self._music_played = 0.0
+                # 注意：**别**清空歌词/进度。网易云一暂停就可能把整个媒体会话收掉，
+                # 清掉的话恢复播放时歌词会从头开始（主人反馈的"暂停和开启直接清零"就是这个）。
+                self._music_gone_at = time.time()
                 self.update()
             return
         # 换歌前先把"上一首放到哪"记下来（注意：要在覆盖 now_playing **之前**算，
@@ -2344,6 +2365,9 @@ class PetWindow(QWidget):
         old_key = self._lyric_key
         old_pos = self._music_position() if self.now_playing else 0.0
         self.now_playing = info
+        # 排查用（开了「记菜单日志」才写）：记下播放器到底报了什么，方便诊断歌词对不上的原因
+        menu_debug(f"[音乐] {info.get('app')} playing={info.get('playing')} "
+                   f"position={info.get('position')} title={info.get('title')!r}")
         title = (info.get("title") or "").strip()
         key = f"{title}|{info.get('artist', '')}"
         if not title and self._lyric_key:
@@ -2361,11 +2385,17 @@ class PetWindow(QWidget):
             self._lyric_key = key
             # 播放器不报进度时，用"记忆里的位置"接着走（暂停→放别的→切回来 不会从 0 开始）
             memo = self._music_pos_memo.get(key, 0.0)
+            gone = getattr(self, "_music_gone_at", 0.0)
+            if gone and time.time() - gone > 30.0:
+                memo = 0.0                      # 消失超过 30 秒：当成重新开始，别用老位置
+            self._music_gone_at = 0.0
             reported = info.get("position")
             pos_ok = reported is not None and float(reported) > 0.5
             self._music_played = max(0.0, float(reported)) if pos_ok else max(0.0, memo)
             self._lyric_nudge = float(self._lyric_nudges.get(key, 0.0))
             cached = self._lyric_cache.get(key) or {}
+            if isinstance(cached, str):          # 兼容老格式（纯文本）
+                cached = {"v": 1, "text": cached}
             text = cached.get("text") or ""
             self._lyric_lines = parse_lrc(text) if text else []
             self._lyric_words = parse_word_lyrics(text) if text else {}
@@ -4200,6 +4230,8 @@ class PetWindow(QWidget):
         nud.addAction("歌词太快，往后压 0.5 秒", lambda: self.nudge_lyric(-0.5))
         nud.addAction("歌词太快，往后压 2 秒", lambda: self.nudge_lyric(-2.0))
         nud.addSeparator()
+        nud.addAction("按播放器显示的时间对齐…（最准）",
+                      defer_dialog(self.align_lyric_dialog))
         nud.addAction("这首歌的微调清零", lambda: self.nudge_lyric(0.0, True))
         music_menu.addSeparator()
         music_menu.addAction(self._music_menu_label()).setEnabled(False)
@@ -5615,6 +5647,34 @@ class PetWindow(QWidget):
         if abs(n) < 1e-6:
             return ""
         return f"（现在{'往前赶' if n > 0 else '往后压'} {abs(n):.1f} 秒）"
+
+    def align_lyric_dialog(self):
+        """按播放器上显示的时间对一次表（网易云不报进度，这是最准的手动办法）。"""
+        cur = self._music_position()
+        tip = (f"输入播放器上现在显示的进度（例如 1:35）。\n"
+               f"桌宠现在算的是 {int(cur // 60)}:{int(cur % 60):02d}，"
+               f"填对了歌词立刻就对齐（这首歌会记住这个位置）。")
+        with self._ui_guard():
+            text, ok = QInputDialog.getText(
+                self, "按播放器的时间对齐歌词", tip, QLineEdit.EchoMode.Normal, "",
+                Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not (text or "").strip():
+            return
+        secs = parse_mmss(text)
+        if secs is None:
+            self.say("这个时间没看懂，写成 1:35 这样就行", seconds=3.2, again=True)
+            return
+        self.set_lyric_anchor(secs)
+
+    def set_lyric_anchor(self, seconds):
+        """把"这首歌现在放到第几秒"设成指定值（网易云不给进度时的手动对表）。"""
+        self._music_played = max(0.0, float(seconds))
+        self._music_tick_at = time.time()
+        if self._lyric_key:
+            self._music_pos_memo[self._lyric_key] = self._music_played
+        self.update()
+        self.say(f"好，按 {int(self._music_played // 60)}:"
+                 f"{int(self._music_played % 60):02d} 对齐啦", seconds=3.2, again=True)
 
     def nudge_lyric(self, delta, absolute=False):
         """把歌词整体往前赶 / 往后压几秒（只影响这一首歌，按歌记住）。"""
