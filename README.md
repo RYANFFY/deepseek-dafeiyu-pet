@@ -202,6 +202,23 @@ pyinstaller --noconfirm --onefile --windowed --name 大肥鱼桌宠 --add-data "
 产物在 `dist/大肥鱼桌宠.exe`，对方双击即用，无需安装 Python。
 （杀毒软件可能对 PyInstaller 产物误报，加信任即可。）
 
+### 打包成 Windows 安装包（中文安装向导，可自选安装位置）
+
+仓库里带了 Inno Setup 6 的脚本 `installer.iss`：
+
+```bash
+"F:\Codex\tools\innosetup\ISCC.exe" "/DMyAppVersion=1.0.13" installer.iss
+```
+
+产物在 `dist\大肥鱼桌宠-安装版-v1.0.13.exe`：双击是**中文向导**，中间那一步**能自己选安装位置**
+（默认装到当前用户目录，不弹 UAC），自动建桌面/开始菜单快捷方式，**装完安装包本身就能删**，
+卸载走「设置 → 应用」。发版时用的脚本会把它的附件名固定成 `dafeiyu-pet-setup.exe` 再上传
+（中文文件名传到 GitHub 会变乱码，所以上传前复制一份英文名的）。
+
+> 一次性准备：`winget install JRSoftware.InnoSetup`，或者把 Inno Setup 解到 `F:\Codex\tools\innosetup`
+> （便携安装：`innosetup-x.y.z.exe /PORTABLE=1 /DIR=F:\Codex\tools\innosetup`），
+> 简体中文语言文件放 `F:\Codex\tools\innosetup-lang\ChineseSimplified.isl`。
+
 小提示：如果你自己打包后启动报 `DLL load failed while importing QtCore`，是因为
 PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）也打进了包，和 Qt 期望的
 系统 ICU 版本冲突；`桌宠.spec` 里已经加了过滤，直接用它打包就不会踩这个坑。
