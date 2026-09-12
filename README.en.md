@@ -33,7 +33,13 @@ with the balance-widget features ported from
 **Pet**
 
 - Three-view walking: side view for left/right (auto mirrored), back view when walking up, front view when walking down
-- Three modes: free roam / follow the mouse / stay in place
+- Three modes: free roam / follow the mouse / stay in place.
+  In "stay in place" the pet keeps its front view by default (it no longer turns to glance at the
+  cursor, so a custom front image stays on screen); dragging still flips it the same way as before
+  — drag left and it faces left, release and it turns back to the front. If you want it to **follow
+  the cursor** (cursor on the right → turns right, on the left → turns left, right next to it →
+  faces you — it only turns, never moves, and never shows its back), turn on
+  "原地待着时也跟着鼠标转" in the Mode submenu (off by default)
 - Drag it around (it leans toward the drag direction and says something when you let go)
 - Single click: hop + talk back + refresh the balance
 - Tray icon, always-on-top, click-through mode, start with Windows, settings persisted in `config.json`

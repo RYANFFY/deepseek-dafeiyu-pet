@@ -176,6 +176,8 @@ LINE_FREQ_LEVELS = {
 LINE_FREQ_DEFAULT = "正常"
 SPEED = 380.0
 TICK = 20
+# 「原地待着时也跟着鼠标转」的"鼠标贴身上"半径：鼠标在这个圈里就当正面（不左右转）
+STILL_FACE_NEAR = 70
 
 LINES = [
     "梁白开，更适合国人的大硬鲸模型",
@@ -1941,7 +1943,8 @@ class PetWindow(QWidget):
             "agent_sessions_dir": "",
             "codex_sessions_dir": CODEX_SESSIONS_DIR,
             "menu_debug": False,
-            "custom_sounds": {}
+            "custom_sounds": {},
+            "still_face_cursor": False
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
@@ -1988,6 +1991,8 @@ class PetWindow(QWidget):
         self.mode = self.cfg["mode"] if self.cfg["mode"] in ("wander", "follow", "still") else "wander"
         self.dir = "down"
         self.facing = 1
+        # 「原地待着」时要不要跟着鼠标转（只管朝向、不挪窝；默认不要）
+        self.still_face_cursor = bool(self.cfg.get("still_face_cursor", False))
         self.target = None
         self.rest_until = 0
         self.cur_speed = 0.0
@@ -3421,6 +3426,28 @@ class PetWindow(QWidget):
         if facing is not None and facing != self.facing:
             self.facing = facing
 
+    def _face_travel(self, dx, dy, ratio=2):
+        """按"这一步往哪走"给朝向（dx/dy 是窗口中心 → 目标点的位移）。
+
+        明显横向（横向位移是纵向的 ratio 倍以上）→ 侧面（自动镜像）；
+        其余只要往上走 → 背影（等于往屏幕里走、背对着你）；往下走 → 正面。
+
+        以前这里是"只要横向超过 4px 就侧面，只有几乎笔直向上才给背影"，而散步的随机
+        目标几乎不可能笔直向上，于是背影再也没出现过（主人反馈"我这么久没见过背面"）。
+        阈值取 2 倍（不是对半分）是因为屏幕是宽屏：横向位移天然比纵向大一截，
+        真按 |dx|>=|dy| 分的话背影只占 1/7 左右（实机 90 秒一次都没出现）。
+        现在宽屏上大约 45% 侧面、25% 背影、30% 正面。
+
+        ratio 只给"走路"用；跟着鼠标转头用的是 1（见 `_face_cursor`）——鼠标是看着走的，
+        45 度就该算侧面，不该按宽屏那套偏袒横向。
+        """
+        if abs(dx) >= ratio * abs(dy):
+            self._set_dir("left" if dx < 0 else "right", 1 if dx < 0 else -1)
+        elif dy < 0:
+            self._set_dir("up")
+        else:
+            self._set_dir("down")
+
     # ---------- 逻辑 ----------
     def tick(self):
         self.t += 1
@@ -3569,8 +3596,9 @@ class PetWindow(QWidget):
                 self.target = (random.randint(int(geo.left() + half_w), int(geo.right() - half_w)),
                                random.randint(int(geo.top() + half_h), int(geo.bottom() - half_h)))
         else:
-            if self.t % 250 == 0:
-                self._look_at_cursor()
+            # 原地待着：一直维持正面形象，不再转头看鼠标、也不会背过身
+            # （拖动过程中的朝向逻辑照旧走 mouseMoveEvent，不受这里影响）
+            self._still_face_front()
             self._maybe_idle_action()
             self.update()
             return
@@ -3603,14 +3631,7 @@ class PetWindow(QWidget):
                 mx = max(geo.left(), min(geo.right() - self.width() + 1, int(nx - self.width() / 2)))
                 my = max(geo.top(), min(geo.bottom() - self.height() + 1, int(ny - self.height() / 2)))
                 self.move(mx, my)
-                # 只要横向有明显位移就走侧面（避免"背过身去不转回来"）；
-                # 只有几乎笔直向上才给背影，其余默认正面
-                if abs(dx) > 4:
-                    self._set_dir("left" if dx < 0 else "right", 1 if dx < 0 else -1)
-                elif dy < -4:
-                    self._set_dir("up")
-                else:
-                    self._set_dir("down")
+                self._face_travel(dx, dy)
             if random.random() < 0.002 and self.jump_t == 0:
                 self.jump_t = 0.5
         target_speed = SPEED if self.target is not None else 0.0
@@ -3729,16 +3750,43 @@ class PetWindow(QWidget):
         self._codex_tokens = {}
         self.say("日志目录换好了，我从现在开始盯")
 
-    def _look_at_cursor(self):
-        """原地待着的时候偶尔转头看向鼠标，显得机灵点。"""
+    def _face_cursor(self):
+        """跟着鼠标转（只转头、不挪窝）。规则是主人定的：
+
+          - 鼠标在**右边** → 往右转（侧面 + 镜像）
+          - 鼠标在**左边** → 往左转（侧面）
+          - 鼠标在**身上/附近**（STILL_FACE_NEAR 这个圈里）→ 正对着你
+          - **没有背影**：鼠标跑到上方也只是正面，绝不背过身去
+
+        「原地待着」默认不做这个动作（固定正面），只有挂件形象 + 菜单里那条开关打开时才会。
+        """
         if self.dragging or self.target is not None:
             return
         cursor = self.cursor().pos()
         dx = cursor.x() - (self.x() + self.width() / 2)
-        if abs(dx) > 30:
+        dy = cursor.y() - (self.y() + self.height() / 2)
+        if dx * dx + dy * dy <= STILL_FACE_NEAR * STILL_FACE_NEAR:
+            self._set_dir("down", 1)                 # 贴身上：正对
+        elif abs(dx) >= abs(dy):                     # 偏左右：按左右转
             self._set_dir("left" if dx < 0 else "right", 1 if dx < 0 else -1)
-        else:
-            self._set_dir("down")
+        else:                                        # 偏上下：正对（不背过身）
+            self._set_dir("down", 1)
+
+    def _still_face_front(self):
+        """「原地待着」模式的朝向：默认一直维持正面（三维外观给正面，挂件也不左右翻面）。
+
+        只影响"静止待着"时；拖动过程中的朝向照旧（mouseMoveEvent 里该翻就翻，
+        松手回正面），所以拖起来的感觉和以前一样。
+
+        例外：菜单里打开了「原地待着时也跟着鼠标转」的话，**当前形象**（大肥鱼/挂件都一样）
+        就实时盯着鼠标 —— `_face_cursor`：鼠标在右往右转、在左往左转、贴身上/附近就正对着你，
+        **不会背过身**。
+        """
+        if self.still_face_cursor:
+            self._face_cursor()
+            return
+        if self.dir != "down" or self.facing != 1:
+            self._set_dir("down", 1)
 
     def _maybe_idle_action(self):
         # 闲着时的"小动作"概率固定 0.03；发呆时说什么、说多勤由主人选的「语录频率」决定
@@ -4140,6 +4188,12 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(self.mode == key)
             a.triggered.connect(lambda _, k=key: self.set_mode(k))
+        mode_menu.addSeparator()
+        # 「原地待着」默认固定正面；想让桌宠实时盯着鼠标（只转头、不挪窝）就打开这条
+        a = mode_menu.addAction("原地待着时也跟着鼠标转")
+        a.setCheckable(True)
+        a.setChecked(self.still_face_cursor)
+        a.triggered.connect(self.set_still_face_cursor)
         size_menu = m.addMenu("大小")
         for label, mult in SIZE_LEVELS.items():
             a = size_menu.addAction(label)
@@ -5519,6 +5573,15 @@ class PetWindow(QWidget):
         self.mode = mode
         self.target = None
         self.cfg["mode"] = mode
+        if mode == "still":
+            self._still_face_front()   # 切到「原地待着」立刻站正，不用等下一帧
+        self.update()
+
+    def set_still_face_cursor(self, on):
+        """「原地待着时也跟着鼠标转」开关（当前形象都生效：大肥鱼会转侧面，挂件会左右翻）。"""
+        self.still_face_cursor = bool(on)
+        self.cfg["still_face_cursor"] = bool(on)
+        self.update()
 
     def set_balance_always(self, on):
         self.balance_always = bool(on)
