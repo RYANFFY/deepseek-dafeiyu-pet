@@ -66,6 +66,9 @@
   但**不再作为 Release 附件上传**（GitHub Release 只放 `dafeiyu-pet-setup.exe` 和 `dafeiyu-pet.exe`）；
   发版说明里那条 zip 下载项也去掉了。另外给脚本加了 `-ZipOnly -Version X.Y.Z`，
   没发版也能单独给某个版本做一份本地 zip。
+- **微信 zip 里就两样**（主人要求「就是把 windows 安装版和教程打包就可以，其他不需要」）：
+  **绿色版 exe（`大肥鱼桌宠-vX.Y.Z.exe`）+ `使用说明.txt`（教程）**，不放安装包、不放源码；
+  回复里给主人的 zip 位置改成**可以直接点的 Markdown 链接**（主人要求「之后都给我一个可以直接点的链接」）。
 
 ## v1.0.15
 

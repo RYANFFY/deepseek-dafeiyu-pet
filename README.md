@@ -298,13 +298,14 @@ PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）�
    ```
    版本号按现有最高版本 +1（桌面上的「发布到GitHub.bat」会自动算好，不用手动记）；
    内容没变就别重发，版本号保持连续、不跳号。
-3. **微信版 zip 只做在本地**（`…\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`，安装包 + 使用说明，不含源码），
+3. **微信版 zip 只做在本地**（`…\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`，
+   **里面就两样：绿色版 exe（`大肥鱼桌宠-vX.Y.Z.exe`）+ 使用说明.txt（教程）**，不放安装包、不放源码），
    **不传到 GitHub**：Release 里只放 `dafeiyu-pet-setup.exe` 和 `dafeiyu-pet.exe`。
    单独补一份本地 zip：`powershell -File F:\Codex\work\publish-pet.ps1 -ZipOnly -Version 1.0.16`
 
 > 平时只管跟 Codex 说一句「推送」：它会跑 `F:\Codex\work\publish-pet.ps1`
 > （提交 → 推送 → 打包 → 发新版），Release 里放绿色版 + 安装包，
-> 微信 zip 留在 `outputs\` 本地并把文件名写进回复。
+> 微信 zip 留在 `outputs\` 本地，回复里用**可以直接点的链接**给出（里面只有绿色版 + 教程）。
 > 桌面上那个「发布到GitHub.bat」也是同一个脚本，但它遇到"没有代码改动"会整段跳过（连 Release 都不发），
 > 需要补发一版时给它加 `-Force`。
 

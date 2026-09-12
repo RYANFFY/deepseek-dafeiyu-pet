@@ -84,8 +84,13 @@ pyinstaller --noconfirm --clean 桌宠.spec
 3. **Release 里只放** `dafeiyu-pet.exe`（绿色版）+ `dafeiyu-pet-setup.exe`（中文安装包，能选安装位置）。
 4. **微信 zip 不上传**，只做在本地（主人要求「在本地给我」）：
    `F:\Codex\2026-09-11\deepseek-harness-dsh-ai-harness-deepseek\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`
-   —— **回复里要把这个文件名 + 完整路径写给主人**（和以前一样）。
-   只想补做 zip：`publish-pet.ps1 -ZipOnly -Version X.Y.Z`
+   - **zip 里就两样**（主人 2026-09-13 要求：「就是把 windows 安装版和教程打包就可以，其他不需要」）：
+     `大肥鱼桌宠/大肥鱼桌宠-vX.Y.Z.exe`（绿色版，双击即用）+ `大肥鱼桌宠/使用说明.txt`（教程）。
+     **不放安装包、不放源码、不放别的东西**（`publish-pet.ps1` 里 `New-WechatZip` 已经这么做了）。
+   - **回复里要给能直接点的链接**（主人 2026-09-13 要求「之后都给我一个可以直接点的链接」）：
+     写成 Markdown 链接，别用 `代码块`/纯文本把路径括起来：
+     `[大肥鱼桌宠-vX.Y.Z-微信版.zip](F:/Codex/2026-09-11/deepseek-harness-dsh-ai-harness-deepseek/outputs/大肥鱼桌宠-vX.Y.Z-微信版.zip)`
+   - 只想补做 zip：`publish-pet.ps1 -ZipOnly -Version X.Y.Z`
 5. 版本号 = 现有最高版本 + 1（脚本自己从 Release 列表算），保持连续、不跳号。
 6. 打包用 `桌宠.spec`（别手写 PyInstaller 参数），安装包用
    `F:\Codex\tools\innosetup\ISCC.exe /DMyAppVersion=X.Y.Z installer.iss`。
