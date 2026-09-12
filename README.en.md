@@ -64,7 +64,18 @@ with the balance-widget features ported from
 **Appearance**
 
 - Switch anytime between 大肥鱼 (three-view sprite) and 小鲸鱼挂件 (the widget's cut-out art)
-- Bring your own art: pick a picture for the widget skin, or set each of the three views (front / side / back) separately
+- Bring your own art: **two separate libraries** — the three-view skin (front / side / back, uploaded as
+  **one set of three pictures**: an incomplete set cannot be saved) and the widget skin (a single picture).
+  Uploading now lives in **我的形象库… (My skin library)** — the 形象 submenu is just four entries:
+  switch to 大肥鱼 / switch to the widget / open the library / restore both to the built-in art.
+  Every upload gets **a name you choose**; that window also switches between the two libraries, previews
+  the three-view skins with the **front** picture, and does rename / replace a picture / remove from
+  library / apply. A small **这套恢复默认** button in that window puts just that one library back to the
+  built-in art (the other library and everything in the libraries stay). An unfinished three-picture
+  upload is remembered, so you can continue it later
+- ⚠ Don't delete or move the source images you uploaded: the pet stores the **path** of your original file
+  (it does not copy it). If a file goes missing, the menu and the library will flag it and you can use
+  "重新定位…" (re-point) or upload it again
 
 **Window**
 
@@ -88,7 +99,9 @@ with the balance-widget features ported from
 
 - 吸附: snap to edges / flip when snapped left　文案: peak-off-peak display and its three wording styles
 - 层级: always-on-top / bottom-most / normal　透明度: 100% → 20%
-- 形象: switch skins, and replace any of the three views or the cut-out with your own picture
+- 形象 (four entries only): 大肥鱼（三视图）/ 小鲸鱼挂件（单张）switch the skin in one click,
+  我的形象库… holds two named libraries of everything you uploaded (pick one to apply, upload a new
+  three-view set / widget picture, replace a picture, rename, remove), 全部恢复默认形象 restores both
 
 ## Requirements
 

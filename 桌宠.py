@@ -9,6 +9,8 @@
 音乐联动：放 QQ音乐 / 网易云 时读 Windows 媒体会话，把当前歌词挂在气泡里
 """
 import ctypes
+import contextlib
+import hashlib
 import json
 import math
 import os
@@ -625,6 +627,8 @@ WIDGET_SKIN_FILE = "small-whale.png"
 SPRITE_VIEWS = {"front": "正面", "side": "侧面", "back": "背面"}
 VIEW_LABELS = {"front": "正面（朝屏幕下）", "side": "侧面（左右走）",
                "back": "背面（朝屏幕上）", "widget": "小鲸鱼挂件"}
+# 短名字：菜单 / 对话框 / 冒泡里用得着（VIEW_LABELS 太长）
+VIEW_SHORT = {"front": "正面", "side": "侧面", "back": "背面", "widget": "挂件"}
 
 # 打开的某些应用时冒泡吐槽（进程名小写）
 PROCESS_LINES = {
@@ -840,6 +844,415 @@ class AppScanDialog(QDialog):
         self.tip.setText(f"已清掉 {exe} 的自定义文字")
         self._mark_item(self.listw.currentItem())
         self._refresh_buttons()
+
+
+SKIN_KIND_LABELS = {"pet": "三维形象", "widget": "挂件形象"}
+# 三维形象的三个槽位（挂件只有一个）
+PET_SLOTS = ("front", "side", "back")
+
+
+class SkinEditDialog(QDialog):
+    """上传 / 编辑一个形象：三维的挑三张，挂件的挑一张。
+
+    规矩是主人定的：**三维形象要把正面 / 侧面 / 背面三张照片都挑齐了才算一个形象**
+    （少一张不给保存、也不会收录）；名字在这个窗口里起，
+    「原图别删、别挪」的提醒也写在这个窗口里。
+    """
+
+    SLOTS = {"pet": PET_SLOTS, "widget": ("widget",)}
+
+    def __init__(self, owner, kind, entry=None, prefill=None):
+        super().__init__(None)
+        self.owner = owner
+        self.kind = kind if kind in self.SLOTS else "widget"
+        self.entry = dict(entry) if entry else None
+        src = self.entry or prefill or {}
+        self.slots = {}
+        for view in self.SLOTS[self.kind]:
+            self.slots[view] = str(src.get("path" if view == "widget" else view) or "")
+        self.result_data = None
+        self.setWindowTitle(("编辑" if self.entry else "上传") + SKIN_KIND_LABELS[self.kind])
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.resize(580, 340 if self.kind == "pet" else 250)
+
+        lay = QVBoxLayout(self)
+        tip = QLabel(
+            "三维形象要 正面 / 侧面 / 背面 三张都挑齐了才会收录成一个形象"
+            "（先挑哪张都行，点「保存」才算数）。"
+            if self.kind == "pet" else
+            "挂件形象就一张图（PNG 这类带透明背景的最好看）。")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("名字："))
+        self.name_edit = QLineEdit(str(src.get("name") or ""))
+        self.name_edit.setPlaceholderText("给这个形象起个名字（挑完图会自动填文件名）")
+        name_row.addWidget(self.name_edit, 1)
+        lay.addLayout(name_row)
+
+        self.slot_widgets = {}
+        for view in self.SLOTS[self.kind]:
+            line = QHBoxLayout()
+            cap = QLabel(VIEW_LABELS.get(view, view))
+            cap.setFixedWidth(150)
+            line.addWidget(cap)
+            shot = QLabel("（还没选）")
+            shot.setFixedSize(76, 76)
+            shot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            shot.setStyleSheet("border:1px solid #ccc; color:#888;")
+            line.addWidget(shot)
+            path_lb = QLabel("")
+            path_lb.setWordWrap(True)
+            path_lb.setStyleSheet("color:#666;")
+            line.addWidget(path_lb, 1)
+            pick = QPushButton("选图片…")
+            pick.clicked.connect(lambda _=False, vv=view: self._pick(vv))
+            line.addWidget(pick)
+            lay.addLayout(line)
+            self.slot_widgets[view] = (shot, path_lb)
+
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+        warn = QLabel(
+            "⚠ 记住两点（桌宠记的是原图在硬盘上的位置，不会复制走）：\n"
+            "　· 别把源文件删掉；\n"
+            "　· 别改它的路径 —— 改名、挪文件夹、换盘都会让桌宠找不到。\n"
+            "真找不到时，「我的形象库…」里点「换图…」重新指一张就行。")
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color:#a15c00;")
+        lay.addWidget(warn)
+
+        btns = QHBoxLayout()
+        self.save_btn = QPushButton("保存")
+        cancel_btn = QPushButton("取消")
+        btns.addStretch(1)
+        btns.addWidget(self.save_btn)
+        btns.addWidget(cancel_btn)
+        lay.addLayout(btns)
+
+        self.save_btn.clicked.connect(self._save)
+        cancel_btn.clicked.connect(self.reject)
+        self.name_edit.textChanged.connect(lambda *_: self._refresh())
+        self._refresh()
+
+    def _pick(self, view):
+        path, _ok = QFileDialog.getOpenFileName(
+            self, f"选{VIEW_LABELS.get(view, view)}那张图", self.owner._skin_pick_dir(),
+            "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif)",
+            options=QFileDialog.Option.DontUseNativeDialog)
+        if not path:
+            return
+        if QPixmap(path).isNull():
+            self.owner.say("这张图读不了，换一张试试")
+            return
+        self.slots[view] = path
+        self.owner.cfg["skin_pick_dir"] = os.path.dirname(path)
+        if not self.name_edit.text().strip():
+            self.name_edit.setText(os.path.splitext(os.path.basename(path))[0] or "我的形象")
+        self._refresh()
+
+    def missing(self):
+        """还差哪几张（没选 / 文件不在了）。"""
+        return [v for v in self.SLOTS[self.kind]
+                if not self.slots.get(v) or not os.path.exists(self.slots.get(v))]
+
+    def _refresh(self):
+        need = self.missing()
+        for view, (shot, path_lb) in self.slot_widgets.items():
+            path = self.slots.get(view) or ""
+            if path and os.path.exists(path):
+                pix = QPixmap(path)
+                shot.setText("（读不了）" if pix.isNull() else "")
+                shot.setPixmap(QPixmap() if pix.isNull() else pix.scaled(
+                    76, 76, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+                path_lb.setText(f"{os.path.basename(path)}\n{os.path.dirname(path)}")
+            else:
+                shot.setPixmap(QPixmap())
+                shot.setText("（还没选）" if not path else "（文件不在了）")
+                path_lb.setText("还没挑图" if not path else f"{os.path.basename(path)}\n找不到了")
+        if need:
+            tail = "（三张齐了才能保存）" if self.kind == "pet" else ""
+            self.status.setText("还差：" + "、".join(VIEW_SHORT[v] for v in need) + tail)
+            self.status.setStyleSheet("color:#a15c00;")
+        elif not self.name_edit.text().strip():
+            self.status.setText("图齐了，再起个名字就能保存")
+            self.status.setStyleSheet("color:#a15c00;")
+        else:
+            self.status.setText("齐了，可以保存 ✓")
+            self.status.setStyleSheet("color:#2e7d32;")
+        self.save_btn.setEnabled(not need and bool(self.name_edit.text().strip()))
+
+    def _save(self):
+        name = self.name_edit.text().strip()[:24]
+        if self.missing() or not name:
+            self._refresh()
+            return
+        self.result_data = {"name": name, "paths": dict(self.slots)}
+        self.accept()
+
+
+class SkinLibraryDialog(QDialog):
+    """我的形象库：两本分开 —— 三维形象（三视图）/ 挂件形象（单张），上面切换。
+
+    三维形象 = 正面 / 侧面 / 背面三张图（**列表和预览默认显示正面那张**），三张齐了才算一个形象；
+    挂件形象 = 一张 cut-out。上传、换图、改名、从库里删掉全在这个窗口里（主人要求：两个库 + 上传整合到一起）。
+    桌宠只记原图在硬盘上的路径、不复制文件：别删原图、也别挪位置。
+    """
+
+    def __init__(self, owner, kind="pet"):
+        super().__init__(None)
+        self.owner = owner
+        self.kind = kind if kind in ("pet", "widget") else "pet"
+        self.setWindowTitle("我的形象库")
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.resize(720, 520)
+
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("看哪一本："))
+        self.kind_box = QComboBox()
+        self.kind_box.addItem("三维形象（三视图）", "pet")
+        self.kind_box.addItem("挂件形象（单张）", "widget")
+        self.kind_box.setCurrentIndex(0 if self.kind == "pet" else 1)
+        self.kind_box.currentIndexChanged.connect(self._kind_changed)
+        top.addWidget(self.kind_box, 1)
+        lay.addLayout(top)
+        self.tip = QLabel()
+        self.tip.setWordWrap(True)
+        lay.addWidget(self.tip)
+
+        body = QHBoxLayout()
+        self.listw = QListWidget()
+        self.listw.setIconSize(QSize(56, 56))
+        self.listw.setMinimumWidth(260)
+        body.addWidget(self.listw, 1)
+
+        right = QVBoxLayout()
+        self.preview = QLabel("（选一张看看）")
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumSize(230, 165)
+        self.preview.setStyleSheet("border:1px solid #ccc; color:#888;")
+        right.addWidget(self.preview, 1)
+        # 三维形象：三张小图并排（正面 / 侧面 / 背面），一眼看出哪张缺
+        self.slot_box = QWidget()
+        slot_row = QHBoxLayout(self.slot_box)
+        slot_row.setContentsMargins(0, 0, 0, 0)
+        self.slot_shots = {}
+        for view in PET_SLOTS:
+            cell = QVBoxLayout()
+            shot = QLabel("（缺）")
+            shot.setFixedSize(76, 76)
+            shot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            shot.setStyleSheet("border:1px solid #ccc; color:#888;")
+            cap = QLabel(VIEW_SHORT[view])
+            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cap.setStyleSheet("color:#666;")
+            cell.addWidget(shot)
+            cell.addWidget(cap)
+            self.slot_shots[view] = shot
+            slot_row.addLayout(cell)
+        right.addWidget(self.slot_box)
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet("color:#666;")
+        right.addWidget(self.info)
+
+        row1 = QHBoxLayout()
+        self.use_btn = QPushButton("用这个形象")
+        row1.addWidget(self.use_btn)
+        row1.addStretch(1)
+        # 只把"这一本"正用着的自定义形象退回自带的（库里的条目都留着，随时能再用）
+        self.restore_btn = QPushButton("这套恢复默认")
+        row1.addWidget(self.restore_btn)
+        right.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self.edit_btn = QPushButton("换图…")
+        self.rename_btn = QPushButton("改名…")
+        self.del_btn = QPushButton("从库里删掉")
+        for b in (self.edit_btn, self.rename_btn, self.del_btn):
+            row2.addWidget(b)
+        right.addLayout(row2)
+        body.addLayout(right, 1)
+        lay.addLayout(body, 1)
+
+        bottom = QHBoxLayout()
+        self.add_btn = QPushButton("上传新形象…")
+        close_btn = QPushButton("关闭")
+        bottom.addWidget(self.add_btn)
+        bottom.addStretch(1)
+        bottom.addWidget(close_btn)
+        lay.addLayout(bottom)
+
+        self.add_btn.clicked.connect(self._upload)
+        self.use_btn.clicked.connect(self._double_clicked)
+        self.restore_btn.clicked.connect(self._restore)
+        self.edit_btn.clicked.connect(self._edit)
+        self.rename_btn.clicked.connect(self._rename)
+        self.del_btn.clicked.connect(self._remove)
+        close_btn.clicked.connect(self.accept)
+        self.listw.currentItemChanged.connect(lambda *_: self._show_detail())
+        self.listw.itemDoubleClicked.connect(self._double_clicked)
+        self._refresh()
+
+    # ---------- 列表 ----------
+    def _kind_changed(self, _index=None):
+        self.kind = self.kind_box.currentData() or "pet"
+        self._refresh()
+
+    def _refresh(self):
+        """重新读一遍这一本形象库（换本 / 改名 / 换图 / 删掉之后都走这儿）。"""
+        self.slot_box.setVisible(self.kind == "pet")
+        self.kind_box.blockSignals(True)
+        self.kind_box.setItemText(0, f"三维形象（三视图）·  {len(self.owner.skin_library('pet'))} 个")
+        self.kind_box.setItemText(
+            1, f"挂件形象（单张）·  {len(self.owner.skin_library('widget'))} 个")
+        self.kind_box.blockSignals(False)
+        keep = self._current_id()
+        self.listw.blockSignals(True)
+        self.listw.clear()
+        for ent in self.owner.skin_library(self.kind):
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, ent["id"])
+            self._decorate(item, ent)
+            self.listw.addItem(item)
+        self.listw.blockSignals(False)
+        row = 0
+        for i in range(self.listw.count()):
+            if self.listw.item(i).data(Qt.ItemDataRole.UserRole) == keep:
+                row = i
+                break
+        if self.listw.count():
+            self.listw.setCurrentRow(row)
+        self._show_detail()
+
+    def _decorate(self, item, ent):
+        badges = []
+        if self.owner.skin_in_use(self.kind, ent["id"]):
+            badges.append("正在用")
+        missing = self.owner.skin_missing_views(self.kind, ent)
+        if missing:
+            badges.append("⚠ " + "、".join(VIEW_SHORT[v] for v in missing) + "那张找不到了")
+        item.setText(ent["name"] + ("　" + "　".join(badges) if badges else ""))
+        thumb = self.owner.skin_thumb_path(self.kind, ent)     # 三维默认拿正面那张当图标
+        pix = QPixmap(thumb) if thumb else QPixmap()
+        if not pix.isNull():
+            item.setIcon(QIcon(pix.scaled(56, 56, Qt.AspectRatioMode.KeepAspectRatio,
+                                          Qt.TransformationMode.SmoothTransformation)))
+        if item.icon().isNull():
+            item.setIcon(QFileIconProvider().icon(QFileIconProvider.IconType.File))
+
+    def _current_id(self):
+        item = self.listw.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def _current_entry(self):
+        sid = self._current_id()
+        return self.owner.skin_entry(self.kind, sid) if sid else None
+
+    def _show_detail(self):
+        ent = self._current_entry()
+        if ent is None:
+            self.tip.setText(
+                ("这本还空着。点下面的「上传新形象…」把正面 / 侧面 / 背面三张图都挑齐，"
+                 "起个名字就收录成一个三维形象（列表和预览显示的是正面那张）。")
+                if self.kind == "pet" else
+                "这本还空着。点下面的「上传新形象…」挑一张图、起个名字就行"
+                "（PNG 这类带透明背景的最好看）。")
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("（这本还没有形象）")
+            self.info.setText("")
+            for shot in self.slot_shots.values():
+                shot.setPixmap(QPixmap())
+                shot.setText("（缺）")
+            self._enable(False)
+            return
+        missing = self.owner.skin_missing_views(self.kind, ent)
+        self.tip.setText(
+            ("三张图齐了才算一个三维形象；下面显示的是正面那张，点「用这个形象」整套换上。\n"
+             if self.kind == "pet" else "挑一个，点「用这个形象」就换上了。\n")
+            + "桌宠只记【原图在硬盘上的位置】、不复制文件：别删它、也别挪地方；"
+              "真挪了就点「换图…」重新指过去；只想退回自带的，点「这套恢复默认」（库里的还留着）。")
+        made = ent["added"] or "（早期上传的，没记时间）"
+        info = [f"名字：{ent['name']}", f"收进库的时间：{made}",
+                "正在用：这本的当前形象" if self.owner.skin_in_use(self.kind, ent["id"])
+                else "现在还没用上"]
+        for view in (PET_SLOTS if self.kind == "pet" else ("widget",)):
+            path = self.owner.skin_view_path(self.kind, ent, view)
+            if view in missing:                 # 找不到的才把完整路径摊出来（方便照着找）
+                info.append(f"⚠ {VIEW_SHORT[view]}：{path}\n　　（这个位置已经没有文件了）")
+            else:
+                info.append(f"{VIEW_SHORT[view]}：{os.path.basename(path)}")
+        self.info.setText("\n".join(info))
+
+        for view in PET_SLOTS:                      # 三张小图：缺哪张一眼看出来
+            path = ent.get(view) or ""
+            shot = self.slot_shots[view]
+            pix = QPixmap(path) if (path and os.path.exists(path)) else QPixmap()
+            shot.setText("" if not pix.isNull() else ("（缺）" if not path else "（不在了）"))
+            shot.setPixmap(QPixmap() if pix.isNull() else pix.scaled(
+                76, 76, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+        main = self.owner.skin_thumb_path(self.kind, ent)   # 三维 = 正面那张
+        pix = QPixmap(main) if main else QPixmap()
+        if pix.isNull():
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("（文件找不到了\n点「换图…」重新指一张）")
+        else:
+            self.preview.setText("")
+            self.preview.setPixmap(pix.scaled(250, 170, Qt.AspectRatioMode.KeepAspectRatio,
+                                              Qt.TransformationMode.SmoothTransformation))
+        self._enable(True, not missing)
+
+    def _enable(self, has_entry, exists=False):
+        self.use_btn.setEnabled(bool(has_entry and exists))
+        self.edit_btn.setEnabled(bool(has_entry))
+        self.rename_btn.setEnabled(bool(has_entry))
+        self.del_btn.setEnabled(bool(has_entry))
+        # 「这套恢复默认」只看"这一本现在是不是自定义的"，跟选中哪条无关
+        in_use = bool(self.owner._current_skin_ref(self.kind))
+        self.restore_btn.setEnabled(in_use)
+        self.restore_btn.setToolTip(
+            "把这一本正用着的自定义形象退回自带的（库里的条目都留着，随时能再挑回来）"
+            if in_use else "这一本现在用的就是自带的形象")
+
+    # ---------- 按钮 ----------
+    def _restore(self):
+        """只把这一本（三维 / 挂件）恢复成自带形象，不动另一本、也不动库。"""
+        self.owner.clear_custom_skin(self.kind)
+        self._refresh()
+
+    def _apply(self):
+        ent = self._current_entry()
+        if ent is None:
+            return
+        if self.owner.apply_skin(self.kind, ent["id"], parent=self):
+            self._refresh()
+
+    def _double_clicked(self, _item):
+        self._apply()
+
+    def _upload(self):
+        if self.owner.upload_skin(self.kind, parent=self) is not None:
+            self._refresh()
+
+    def _edit(self):
+        ent = self._current_entry()
+        if ent is not None and self.owner.edit_skin(self.kind, ent["id"], parent=self) is not None:
+            self._refresh()
+
+    def _rename(self):
+        ent = self._current_entry()
+        if ent is not None and self.owner.rename_skin(self.kind, ent["id"], parent=self):
+            self._refresh()
+
+    def _remove(self):
+        ent = self._current_entry()
+        if ent is not None and self.owner.remove_skin(self.kind, ent["id"], parent=self):
+            self._refresh()
 
 
 def is_peak(ts=None):
@@ -1934,6 +2347,9 @@ class PetWindow(QWidget):
             "music_lyrics": True,
             "perf_mode": True,
             "custom_skins": {},
+            "skin_library": {"pet": [], "widget": []},   # 两本分开：三维形象 / 挂件形象
+            "skin_draft": {},                             # 三维形象没挑完的三张图
+            "skin_pick_dir": "",
             "balance_source": "DeepSeek",
             "other_keys": [],
             "custom_process_lines": {},
@@ -1976,6 +2392,7 @@ class PetWindow(QWidget):
         # 精灵加载（三视图 + 挂件，每一张都可以被用户自定义图片替换）
         self.sprites = {}
         self.custom_skin_ok = {}
+        self._migrate_skin_library()      # 老配置里直接存的图片路径 → 搬进「我的形象库」
         self._rebuild_sprites()
         self.icon = QIcon(os.path.join(SPRITE_DIR, "icon.png"))
 
@@ -2223,6 +2640,20 @@ class PetWindow(QWidget):
             # 开机就是穿透状态的话，顺手提醒一下怎么解除
             QTimer.singleShot(2500, lambda: self.say(
                 "我还开着鼠标穿透呢：右键托盘图标 → 鼠标穿透，或双击托盘图标就能解除"))
+
+        # 自定义形象的原图被删 / 被挪走了：启动时提醒一次（菜单和形象库里也会标出来）
+        gone = []
+        pet_now = self.pet_skin_entry()
+        if pet_now:
+            missing_pet = self.skin_missing_views("pet", pet_now)
+            if missing_pet:
+                gone.append("三维形象的" + "、".join(VIEW_SHORT[v] for v in missing_pet) + "那张")
+        if self.custom_skin_missing("widget"):
+            gone.append("挂件形象的那张")
+        if gone:
+            QTimer.singleShot(3400, lambda: self.say(
+                f"{'、'.join(gone)}图找不到了（被删或者挪走了）：右键 → 形象 → 我的形象库…",
+                seconds=5.0))
 
         # 进程联动：打开某些应用时冒个泡
         self.proc_timer = QTimer(self)
@@ -2954,11 +3385,261 @@ class PetWindow(QWidget):
             self._click_player.volume = self.volume
         self._restore_sound_volume()
 
-    # ---------- 形象加载 ----------
+    # ---------- 形象加载 / 我的形象库（两本：三维形象 / 挂件形象）----------
+    @staticmethod
+    def _new_skin_id(*parts):
+        """形象编号：按原图路径算，同一个文件永远同一个号（老配置迁移时也用这个）。"""
+        key = "|".join(str(p) for p in parts if p)
+        return "sk" + hashlib.md5(key.encode("utf-8", "ignore")).hexdigest()[:10]
+
+    def skin_library(self, kind=None):
+        """我的形象库，存在 config.json → skin_library，**两本分开**：
+
+        {"pet": [三维形象…], "widget": [挂件形象…]}
+
+        三维形象 = {"id","name","front","side","back","added"}（正面/侧面/背面三张齐了才算一条）；
+        挂件形象 = {"id","name","path","added"}。存的都是**原图在硬盘上的位置**，
+        桌宠只记路径、不搬文件 —— 所以原图不能删、不能挪（挪了就在库里标"文件找不到了"）。
+        kind 给 "pet" / "widget" 就只返回那一本；不给就两本一起返回。
+        """
+        raw = self.cfg.get("skin_library")
+        raw = raw if isinstance(raw, dict) else {}
+        out = {}
+        for name, keys in (("pet", PET_SLOTS), ("widget", ("path",))):
+            out[name], seen = [], set()
+            for item in (raw.get(name) or []):
+                if not isinstance(item, dict):
+                    continue
+                paths = [(k, str(item.get(k) or "").strip()) for k in keys]
+                if not any(p for _k, p in paths):
+                    continue
+                sid = str(item.get("id") or "").strip() or self._new_skin_id(
+                    *[p for _k, p in paths])
+                if sid in seen:                      # 同一个号只留一条
+                    continue
+                seen.add(sid)
+                ent = {"id": sid, "name": str(item.get("name") or "").strip(),
+                       "added": str(item.get("added") or "").strip()}
+                for key, path in paths:
+                    ent[key] = path
+                if not ent["name"]:                  # 老数据没名字就用文件名顶上
+                    ent["name"] = (os.path.splitext(
+                        os.path.basename(ent[keys[0]] or ""))[0] or "我的形象")
+                out[name].append(ent)
+        return out.get(kind) if kind in out else out
+
+    def _save_skin_library(self, kind, entries):
+        lib = self.cfg.get("skin_library")
+        lib = dict(lib) if isinstance(lib, dict) else {}
+        lib[kind] = [dict(it) for it in entries]
+        self.cfg["skin_library"] = lib
+        self.save_config()
+
+    def skin_entry(self, kind, ref):
+        """按编号（或老配置里直接存的图片路径）找出库里的这一条。"""
+        ref = str(ref or "").strip()
+        if not ref:
+            return None
+        for it in self.skin_library(kind):
+            if it["id"] == ref:
+                return it
+        if kind == "widget" and (os.path.isabs(ref) or os.sep in ref or "/" in ref):
+            return {"id": self._new_skin_id(ref), "added": "",
+                    "name": os.path.splitext(os.path.basename(ref))[0] or "我的形象",
+                    "path": ref}
+        return None
+
+    def _current_skin_ref(self, kind):
+        """现在登记用的是哪一条（三维 / 挂件各自的编号）。"""
+        return str((self.cfg.get("custom_skins") or {}).get(kind) or "").strip()
+
+    def pet_skin_entry(self):
+        """现在用的三维形象（没自定义过就是 None）。"""
+        return self.skin_entry("pet", self._current_skin_ref("pet"))
+
+    def widget_skin_entry(self):
+        """现在用的挂件形象（没自定义过就是 None）。"""
+        return self.skin_entry("widget", self._current_skin_ref("widget"))
+
+    def skin_view_path(self, kind, ent, view):
+        """这条形象里某个视图的原图路径（三维是 front/side/back，挂件是 widget）。"""
+        if not ent:
+            return ""
+        return str(ent.get("path" if view == "widget" else view) or "")
+
     def _custom_path(self, view):
-        """该视图用户自定义的图片路径（不存在就返回空）。"""
-        path = (self.cfg.get("custom_skins") or {}).get(view) or ""
+        """该视图用户自定义的图片路径（没登记 / 文件不在了就返回空）。"""
+        kind = "widget" if view == "widget" else "pet"
+        ent = self.widget_skin_entry() if kind == "widget" else self.pet_skin_entry()
+        path = self.skin_view_path(kind, ent, view)
         return path if path and os.path.exists(path) else ""
+
+    def skin_missing_views(self, kind, ent):
+        """这条形象里哪几张图现在找不到了（被删 / 改名 / 挪走）。"""
+        keys = PET_SLOTS if kind == "pet" else ("widget",)
+        return [v for v in keys
+                if not self.skin_view_path(kind, ent, v)
+                or not os.path.exists(self.skin_view_path(kind, ent, v))]
+
+    def custom_skin_missing(self, view):
+        """这个视图现在登记的那张图是不是找不到了。"""
+        kind = "widget" if view == "widget" else "pet"
+        ent = self.widget_skin_entry() if kind == "widget" else self.pet_skin_entry()
+        return bool(ent) and view in self.skin_missing_views(kind, ent)
+
+    def skin_in_use(self, kind, sid):
+        """这条形象是不是"现在正用着"的那条。"""
+        return bool(sid) and self._current_skin_ref(kind) == str(sid).strip()
+
+    def skin_thumb_path(self, kind, ent):
+        """列表 / 预览拿哪张当门面：三维默认**正面**那张（正面缺了才顺延），挂件就是它自己。"""
+        if not ent:
+            return ""
+        keys = PET_SLOTS if kind == "pet" else ("widget",)
+        first = ""
+        for view in keys:
+            path = self.skin_view_path(kind, ent, view)
+            if not path:
+                continue
+            first = first or path
+            if os.path.exists(path):
+                return path
+        return first
+
+    def _make_skin(self, kind, name, **paths):
+        """拼一条形象（三维：front/side/back；挂件：path），编号按路径算。"""
+        keys = PET_SLOTS if kind == "pet" else ("path",)
+        ent = {"id": self._new_skin_id(*[paths.get(k, "") for k in keys]),
+               "name": (name or "").strip()[:24] or "我的形象",
+               "added": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        for key in keys:
+            ent[key] = str(paths.get(key) or "")
+        return ent
+
+    def add_pet_skin(self, name, front, side, back):
+        """收一个三维形象（三张齐了才收录；同样的三张图再收一次 = 只换名字）。"""
+        ent = self._make_skin("pet", name, front=front, side=side, back=back)
+        lib = [it for it in self.skin_library("pet") if it["id"] != ent["id"]]
+        lib.append(ent)
+        self._save_skin_library("pet", lib)
+        return ent
+
+    def add_widget_skin(self, name, path):
+        """收一个挂件形象（单张图）。"""
+        ent = self._make_skin("widget", name, path=path)
+        lib = [it for it in self.skin_library("widget") if it["id"] != ent["id"]]
+        lib.append(ent)
+        self._save_skin_library("widget", lib)
+        return ent
+
+    def update_skin(self, kind, sid, name, **paths):
+        """改名字 / 换图：**编号不变**，所以已经用着它的地方不用重挑。"""
+        keys = PET_SLOTS if kind == "pet" else ("path",)
+        ent = {"id": str(sid), "name": (name or "").strip()[:24] or "我的形象", "added": ""}
+        for key in keys:
+            ent[key] = str(paths.get(key) or "")
+        for old in self.skin_library(kind):
+            if old["id"] == sid:
+                ent["added"] = old["added"]
+        lib = [it for it in self.skin_library(kind) if it["id"] != sid] + [ent]
+        self._save_skin_library(kind, lib)
+        return ent
+
+    def _refresh_skins(self):
+        """换完图 / 换完形象：重新加载精灵、按当前档位缩放、写回配置。"""
+        self._rebuild_sprites()
+        self.set_size(self.cfg.get("size", 0.7))
+        self.save_config()
+
+    def _migrate_skin_library(self):
+        """老配置升级：以前是"一个视图一张图"，现在分成三维 / 挂件两本库。
+
+        - 挂在挂件上的那张 → 挂件形象库；
+        - 正面 / 侧面 / 背面**三张都有** → 收成一个三维形象（名字取正面那张的名字）；
+        - 只挑过一两张 → 记成"还没挑完的三维形象"（skin_draft），下次点上传接着挑，
+          不硬凑一个形象出来（主人要求：三张齐了才算一个形象）；
+        - 老库里没被任何视图用过的图 → 兜底放进挂件库（单张语义最稳妥）。
+        """
+        raw = self.cfg.get("skin_library")
+        if isinstance(raw, dict):                    # 已经是新格式：只补齐缺的那本
+            fixed = dict(raw)
+            for kind in ("pet", "widget"):
+                if not isinstance(fixed.get(kind), list):
+                    fixed[kind] = []
+            if fixed != raw:
+                self.cfg["skin_library"] = fixed
+                self.save_config()
+            return
+        old = []
+        for item in (raw if isinstance(raw, list) else []):
+            if isinstance(item, dict) and str(item.get("path") or "").strip():
+                path = str(item["path"]).strip()
+                old.append((str(item.get("id") or "").strip() or self._new_skin_id(path),
+                            str(item.get("name") or "").strip(), path))
+        by_id = {i: (n, p) for i, n, p in old}
+        by_path = {os.path.normcase(p): (i, n, p) for i, n, p in old}
+        skins = dict(self.cfg.get("custom_skins") or {})
+
+        def resolve(ref):
+            """老登记值（库编号 或 图片路径）→ (名字, 路径)。"""
+            ref = str(ref or "").strip()
+            if not ref:
+                return None
+            if ref in by_id:
+                return by_id[ref][0], by_id[ref][1]
+            if os.path.isabs(ref) or os.sep in ref or "/" in ref:
+                hit = by_path.get(os.path.normcase(ref))
+                if hit:
+                    return hit[1], hit[2]
+                return os.path.splitext(os.path.basename(ref))[0], ref
+            return None
+
+        pet_paths, widget_paths = {}, {}
+        for view in tuple(PET_SLOTS) + ("widget",):
+            got = resolve(skins.get(view))
+            if got:
+                (widget_paths if view == "widget" else pet_paths)[view] = got
+        pet_lib, widget_lib = [], []
+        for _view, (name, path) in widget_paths.items():
+            widget_lib.append(self._make_skin("widget", name, path=path))
+        pet_ent = None
+        if len(pet_paths) == len(PET_SLOTS):         # 三张齐了才算一个三维形象
+            pet_ent = self._make_skin(
+                "pet", pet_paths.get("front", ("", ""))[0] or "我的三维形象",
+                **{v: pet_paths[v][1] for v in PET_SLOTS})
+            pet_lib.append(pet_ent)
+        elif pet_paths:                              # 没齐：存成"还没挑完"
+            draft = {"name": pet_paths.get("front", ("", ""))[0]}
+            draft.update({v: pet_paths[v][1] for v in pet_paths})
+            self.cfg["skin_draft"] = draft
+        used = {os.path.normcase(p) for _n, p in pet_paths.values()}
+        used |= {os.path.normcase(it["path"]) for it in widget_lib}
+        for _sid, name, path in old:                 # 老库里没人用的图 → 挂件库兜底
+            if os.path.normcase(path) not in used:
+                used.add(os.path.normcase(path))
+                widget_lib.append(self._make_skin("widget", name, path=path))
+        new_skins = {}
+        if pet_ent:
+            new_skins["pet"] = pet_ent["id"]
+        if widget_lib:
+            new_skins["widget"] = widget_lib[0]["id"]
+        self.cfg["skin_library"] = {"pet": pet_lib, "widget": widget_lib}
+        self.cfg["custom_skins"] = new_skins
+        self.save_config()
+
+    def _dialog_guard(self, parent=None):
+        """进窗口时让桌宠站住不动；父窗口已经是我们的对话框时不用再套一层。"""
+        return self._ui_guard() if parent is None else contextlib.nullcontext()
+
+    def _warn(self, parent, title, text):
+        """警告窗口（QMessageBox 的静态方法不认"置顶"标志，只能自己搭一个）。"""
+        box = QMessageBox(parent or self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        with self._dialog_guard(parent):
+            box.exec()
 
     def _has_sprite(self, key):
         return any(k[0] == key for k in self.sprites)
@@ -2990,42 +3671,147 @@ class PetWindow(QWidget):
 
     def _rebuild_sprites(self):
         """重新加载各尺寸精灵（换了自定义图片后调用）。"""
-        sprite_key = {"front": "正面", "side": "侧面", "back": "背面", "widget": "挂件"}
         self.sprites = {}
         for _label, mult in SIZE_LEVELS.items():
             h = int(340 * mult)
-            for view, key in sprite_key.items():
+            for view, key in VIEW_SHORT.items():
                 pix = self._load_view_pixmap(view, h)
                 if pix is not None and not pix.isNull():
                     self.sprites[(key, h)] = pix
         self.widget_skin_ok = self._has_sprite("挂件")
 
-    def pick_custom_skin(self, view):
-        """让用户挑一张图片当作某个视图的形象。"""
-        label = VIEW_LABELS.get(view, view)
-        with self._ui_guard():
-            path, _ok = QFileDialog.getOpenFileName(
-                self, f"选择{label}的图片", os.path.expanduser("~"),
-                "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif)",
-                options=QFileDialog.Option.DontUseNativeDialog)
-        if not path:
-            return
-        if QPixmap(path).isNull():
-            self.say("这张图读不了，换一张试试")
-            return
-        skins = dict(self.cfg.get("custom_skins") or {})
-        skins[view] = path
-        self.cfg["custom_skins"] = skins
-        self._rebuild_sprites()
-        self.set_size(self.cfg.get("size", 0.7))
-        self.save_config()
-        self.say(f"{label}换成你自己的图啦")
+    def _skin_pick_dir(self):
+        """上次挑图的那个文件夹（没有就用"图片"文件夹）。"""
+        start = str(self.cfg.get("skin_pick_dir") or "")
+        if start and os.path.isdir(start):
+            return start
+        pics = os.path.join(os.path.expanduser("~"), "Pictures")
+        return pics if os.path.isdir(pics) else os.path.expanduser("~")
 
-    def clear_custom_skin(self, view=None):
-        """恢复默认形象（只清某一个视图，或全清）。"""
+    def upload_skin(self, kind, parent=None):
+        """上传一个新形象：三维挑三张（齐了才收录）、挂件挑一张。"""
+        prefill = self.cfg.get("skin_draft") if kind == "pet" else None
+        if not isinstance(prefill, dict):
+            prefill = None
+        return self._skin_edit(kind, None, prefill, parent)
+
+    def edit_skin(self, kind, sid, parent=None):
+        """改一个已经收录的形象（换其中几张图 / 改回原来那张）。"""
+        ent = self.skin_entry(kind, sid)
+        return self._skin_edit(kind, ent, None, parent) if ent else None
+
+    def _skin_edit(self, kind, entry, prefill=None, parent=None):
+        """上传 / 编辑窗口的公共路子：挑图 → 起名字 → 收录或更新 → 换上。"""
+        dlg = SkinEditDialog(self, kind, entry=entry, prefill=prefill)
+        with self._dialog_guard(parent):
+            ok = dlg.exec()
+        if not ok or not dlg.result_data:
+            if kind == "pet" and entry is None:
+                # 半途取消：已经挑好的几张记下来，下次点上传接着挑（不白挑）
+                picked = {v: p for v, p in dlg.slots.items() if p}
+                if picked:
+                    self.cfg["skin_draft"] = dict(picked, name=dlg.name_edit.text().strip())
+                else:
+                    self.cfg.pop("skin_draft", None)
+                self.save_config()
+            return None
+        res = dlg.result_data
+        paths = res["paths"]
+        if kind == "pet":
+            ent = (self.update_skin("pet", entry["id"], res["name"], **paths) if entry
+                   else self.add_pet_skin(res["name"], paths["front"], paths["side"], paths["back"]))
+        else:
+            ent = (self.update_skin("widget", entry["id"], res["name"], path=paths["widget"])
+                   if entry else self.add_widget_skin(res["name"], paths["widget"]))
+        self.cfg.pop("skin_draft", None)
+        if entry is None or self.skin_in_use(kind, ent["id"]):
+            self.apply_skin(kind, ent["id"], parent=parent, fresh=entry is None)
+        else:
+            self._refresh_skins()
+        return ent
+
+    def apply_skin(self, kind, sid, parent=None, fresh=False):
+        """换上一个形象：三维整套换上（顺手切到「大肥鱼」），挂件切到「小鲸鱼挂件」。"""
+        ent = self.skin_entry(kind, sid)
+        if not ent:
+            return False
+        missing = self.skin_missing_views(kind, ent)
+        if missing:
+            self._warn(parent, "这张图找不到了" if len(missing) == 1 else "这几张图找不到了",
+                       f"「{ent['name']}」的" + "、".join(VIEW_SHORT[v] for v in missing)
+                       + "那张图在硬盘上找不到了：\n"
+                       + "\n".join(self.skin_view_path(kind, ent, v) for v in missing)
+                       + "\n\n多半是被删掉、改名、或者挪到别的文件夹了。\n"
+                       "把文件放回原来的位置就行；也可以在「形象 → 我的形象库…」里点"
+                       "「换图…」重新指一张。")
+            return False
         skins = dict(self.cfg.get("custom_skins") or {})
-        if view:
-            skins.pop(view, None)
+        skins[kind] = ent["id"]
+        self.cfg["custom_skins"] = skins
+        self._refresh_skins()
+        tail = "（别删原图哦）" if fresh else ""
+        if kind == "pet":
+            self.set_skin(SKIN_PET)
+            self.say(f"三维形象「{ent['name']}」整套换上啦{tail}")
+        else:
+            self.set_skin(SKIN_WIDGET)
+            self.say(f"挂件形象「{ent['name']}」换上啦{tail}")
+        return True
+
+    def skin_library_dialog(self, kind=None):
+        """「我的形象库…」：三维 / 挂件两本库 + 上传 / 换图 / 改名 / 删掉，全在这一个窗口里。"""
+        if kind not in ("pet", "widget"):
+            kind = "widget" if self.skin == SKIN_WIDGET else "pet"   # 默认先看你正用着的那本
+        with self._ui_guard():
+            SkinLibraryDialog(self, kind).exec()
+
+    def rename_skin(self, kind, sid, parent=None):
+        """给库里的一条改名字（编号不变，正在用它的一点不受影响）。"""
+        ent = self.skin_entry(kind, sid)
+        if not ent:
+            return False
+        with self._dialog_guard(parent):
+            name, ok = QInputDialog.getText(
+                parent or self, "给形象改个名字", f"「{ent['name']}」改成什么？",
+                QLineEdit.EchoMode.Normal, ent["name"],
+                Qt.WindowType.WindowStaysOnTopHint)
+        name = (name or "").strip()[:24]
+        if not ok or not name or name == ent["name"]:
+            return False
+        keys = PET_SLOTS if kind == "pet" else ("path",)
+        self.update_skin(kind, sid, name, **{k: ent[k] for k in keys})
+        self.say(f"改好啦，以后叫「{name}」")
+        return True
+
+    def remove_skin(self, kind, sid, parent=None):
+        """从库里删掉一条（正用着它就退回自带形象；硬盘上的原图不动）。"""
+        ent = self.skin_entry(kind, sid)
+        if not ent:
+            return False
+        used = self.skin_in_use(kind, sid)
+        tip = f"把「{ent['name']}」从{SKIN_KIND_LABELS[kind]}库里删掉？"
+        if used:
+            tip += "\n\n它现在正用着 —— 删了会退回自带形象。"
+        tip += "\n\n只删库里这条记录，硬盘上那几张原图我不动。"
+        with self._dialog_guard(parent):
+            ok = QMessageBox.question(parent or self, "删掉这个形象", tip,
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ok != QMessageBox.StandardButton.Yes:
+            return False
+        self._save_skin_library(kind, [it for it in self.skin_library(kind) if it["id"] != sid])
+        if used:
+            skins = dict(self.cfg.get("custom_skins") or {})
+            skins.pop(kind, None)
+            self.cfg["custom_skins"] = skins
+            self._refresh_skins()
+        self.say(f"「{ent['name']}」从{SKIN_KIND_LABELS[kind]}库里删掉了（原图我没动）")
+        return True
+
+    def clear_custom_skin(self, kind=None):
+        """恢复自带形象（kind：pet=三维 / widget=挂件；不给就两个都恢复）。库里的都留着。"""
+        skins = dict(self.cfg.get("custom_skins") or {})
+        if kind in ("pet", "widget"):
+            skins.pop(kind, None)
         else:
             skins = {}
         self.cfg["custom_skins"] = skins
@@ -3035,7 +3821,8 @@ class PetWindow(QWidget):
             self.cfg["skin"] = SKIN_PET
         self.set_size(self.cfg.get("size", 0.7))
         self.save_config()
-        self.say("已恢复自带形象")
+        self.say(f"{SKIN_KIND_LABELS[kind]}恢复成自带的啦（库里的还留着）"
+                 if kind in SKIN_KIND_LABELS else "已恢复自带形象（上传过的还在「我的形象库」里）")
 
     def set_skin(self, name):
         """切换形象：大肥鱼（三视图）/ 小鲸鱼挂件（单张）。"""
@@ -4201,29 +4988,24 @@ class PetWindow(QWidget):
             a.setChecked(abs(self.cur_h - 340 * mult) < 2)
             a.triggered.connect(lambda _, v=mult: self.set_size(v))
         skin_menu = m.addMenu("形象")
-        pet_menu = skin_menu.addMenu(f"{SKIN_PET}（三视图）")
-        a = pet_menu.addAction("用这个形象")
+        # v1.0.16：二级菜单就四条 —— 切三维 / 切挂件 / 形象库 / 全部恢复默认。
+        # （原来那两套三级菜单去掉了：上传、换图、单套恢复都收进形象库窗口里，留着是重复）
+        a = skin_menu.addAction(f"{SKIN_PET}（三视图）")
         a.setCheckable(True)
         a.setChecked(self.skin == SKIN_PET)
         a.triggered.connect(lambda _, n=SKIN_PET: self.set_skin(n))
-        pet_menu.addSeparator()
-        for view in ("front", "side", "back"):
-            custom = self._custom_path(view)
-            label = VIEW_LABELS[view] + ("（已自定义）" if custom else "")
-            act = pet_menu.addAction("换成我的图片：" + label)
-            act.triggered.connect(lambda _, v=view: self.pick_custom_skin(v))
-        if any(self._custom_path(v) for v in ("front", "side", "back")):
-            pet_menu.addAction("恢复默认三视图", lambda: self.clear_custom_skin(None))
-        whale_menu = skin_menu.addMenu(f"{SKIN_WIDGET}（单张）")
-        a = whale_menu.addAction("用这个形象")
+        a = skin_menu.addAction(f"{SKIN_WIDGET}（单张）")
         a.setCheckable(True)
         a.setChecked(self.skin == SKIN_WIDGET)
         a.triggered.connect(lambda _, n=SKIN_WIDGET: self.set_skin(n))
-        whale_menu.addSeparator()
-        whale_menu.addAction("换成我的图片：小鲸鱼挂件", lambda: self.pick_custom_skin("widget"))
-        if self._custom_path("widget"):
-            whale_menu.addAction("恢复默认小鲸鱼", lambda: self.clear_custom_skin("widget"))
         skin_menu.addSeparator()
+        # 形象库：三维 / 挂件两本分开，上传·换图·改名·删掉·挑回来用都在这个窗口里
+        n_pet = len(self.skin_library("pet"))
+        n_wid = len(self.skin_library("widget"))
+        skin_menu.addAction(
+            (f"我的形象库…（三维 {n_pet} 个 · 挂件 {n_wid} 个）" if (n_pet or n_wid)
+             else "我的形象库…（还没上传过）"),
+            defer_dialog(self.skin_library_dialog))
         skin_menu.addAction("全部恢复默认形象", lambda: self.clear_custom_skin(None))
         layer_menu = m.addMenu("层级")
         for key, label in self.LAYER_LABELS.items():
