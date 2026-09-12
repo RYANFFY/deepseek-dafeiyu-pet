@@ -120,6 +120,16 @@ class MenuClickBridge(QAbstractNativeEventFilter):
             else:
                 menu_debug(info)
         if msg.message not in (self.DOWN, self.UP) or not self.pet.ui_open:
+            # v1.0.11：菜单窗口收到的鼠标移动，Qt 自己不去处理（这台机器上 Qt 弹出菜单
+            # 收不到输入）→ 菜单里"光标停在哪一条"的高亮就不动，快速上下滑看着就是"卡住"。
+            # 这里把原生的每一帧移动直接喂给对应那层菜单，高亮就能跟着手走。
+            if msg.message == 0x0200 and self.pet.ui_open:
+                try:
+                    m = self.pet._menu_by_hwnd(msg.hWnd)
+                    if m is not None:
+                        self.pet._highlight_menu_item(m, QCursor.pos())
+                except Exception:
+                    pass
             return False, 0
         menu = self.pet.submenu_under_cursor()
         if menu is None:
@@ -3850,6 +3860,39 @@ class PetWindow(QWidget):
         pos = QCursor.pos()
         self._send_move_point(menu, pos)
 
+    def _menu_by_hwnd(self, hwnd):
+        """按窗口句柄找到这是哪一层菜单（找不到返回 None）。"""
+        root = getattr(self, "_menu_keepalive", None)
+        if root is None:
+            return None
+        for m in self._all_menus(root):
+            try:
+                if int(m.winId()) == hwnd:
+                    return m
+            except RuntimeError:
+                continue
+        return None
+
+    def _highlight_menu_item(self, menu, pos=None):
+        """把"光标下这一条"设成菜单的选中项（也就是高亮那一行）。
+
+        这台机器上 Qt 的弹出菜单收不到真正的鼠标移动，Qt 自己就不会更新高亮 ——
+        表现就是"快速上下移动时选择卡住"。这里由我们按光标位置点一下。
+        """
+        try:
+            if not menu.isVisible():
+                return
+        except RuntimeError:
+            return
+        act = self._menu_action_at(menu, pos or QCursor.pos(), self.MENU_TRIGGER_MARGIN_X)
+        if act is None:
+            return
+        try:
+            if menu.activeAction() is not act:
+                menu.setActiveAction(act)
+        except RuntimeError:
+            pass
+
     def _send_move_point(self, menu, pos):
         """把某个坐标的鼠标移动塞给指定菜单。"""
         """往某一层菜单里塞一个指定位置（全局坐标）的鼠标移动。"""
@@ -4530,6 +4573,9 @@ class PetWindow(QWidget):
         now = time.time()
         # 光标所在的菜单（含已经展开的子菜单）＋它下面的那一条
         menu = self._deepest_menu_at_cursor() or root
+        # 让"光标停在哪一条"的高亮跟着手走：这台机器上 Qt 的弹出菜单收不到鼠标移动，
+        # 高亮全靠我们喂（不然快速上下滑的时候高亮会停在老地方，看着就像卡住）。
+        self._highlight_menu_item(menu, pos)
         act = self._menu_action_at(menu, pos, self.MENU_TRIGGER_MARGIN_X)
 
         # ① 光标压在某一条带子菜单的项上（这条的任意位置都算）→ 用它的子菜单
@@ -4549,6 +4595,10 @@ class PetWindow(QWidget):
             self._keep = (menu, act)
             self._leave_at = 0.0
             self._hover_key = (id(menu), act.text())
+            try:
+                menu.setActiveAction(act)      # 这一条显成"选中"（高亮跟着手）
+            except RuntimeError:
+                pass
             self._ensure_chain_open(menu)      # 上层被 Qt 收掉了就补回来
             want = self._submenu_pos(menu, act, sub)
             if not sub.isVisible():
@@ -4582,6 +4632,18 @@ class PetWindow(QWidget):
                 sub = holder.menu()
             except RuntimeError:
                 sub = None
+            # v1.0.11：光标如果已经落到"同一个菜单里的另一条"上，就当成换条处理。
+            # 不然下面那套"把被 Qt 收掉的子菜单顶回来"会把高亮又拽回旧的那一条 ——
+            # 主人看到的就是"从「添加我的音效…」往旁边移，选中老是卡在「音效选择」上"。
+            other = self._menu_action_at(parent, pos, self.MENU_TRIGGER_MARGIN_X)
+            if other is not None and other is not holder:
+                self._close_submenu(sub)
+                if sub is not None:
+                    self._resub.pop(sub, None)
+                self._keep = (parent, other) if other.menu() is not None else None
+                self._leave_at = 0.0
+                self._highlight_menu_item(parent, pos)
+                return
             if sub is not None:
                 try:
                     if sub.isVisible() and sub.rect().contains(sub.mapFromGlobal(pos)):
