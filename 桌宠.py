@@ -323,6 +323,17 @@ def menu_debug_throttled(text, ms=None):
         return
     _menu_debug_last["t"] = now
     menu_debug(text)
+
+
+def defer_dialog(fn):
+    """菜单项要弹窗口时用它包一层：**等菜单收完再弹**。
+
+    实测：直接在菜单项回调里 `exec()`，偶尔会被菜单自己的关闭动作一起带走
+    （窗口一闪就没了 / 干脆没出现）。隔一个事件循环再弹就稳了。
+    """
+    def wrapper(*_args, **_kwargs):
+        QTimer.singleShot(0, fn)
+    return wrapper
 LYRIC_CACHE_PATH = os.path.join(USER_DIR, "lyrics_cache.json")
 LYRIC_CACHE_MAX = 300         # 歌词缓存最多留多少首
 
@@ -3610,15 +3621,9 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(self.layer == key)
             a.triggered.connect(lambda _, k=key: self.set_layer(k))
-        opa_menu = m.addMenu("透明度")
-        opa_action = QWidgetAction(opa_menu)
-        opa_slider = QSlider(Qt.Orientation.Horizontal)
-        opa_slider.setRange(20, 100)
-        opa_slider.setValue(int(self.opacity * 100))
-        opa_slider.setFixedWidth(130)
-        opa_slider.valueChanged.connect(lambda v: self.set_opacity(v / 100.0))
-        opa_action.setDefaultWidget(opa_slider)
-        opa_menu.addAction(opa_action)
+        # 透明度：改成"点开小窗口拖滑块"——菜单里内嵌滑块在这台机器上拖不动（弹出子菜单收不到鼠标）
+        m.addAction(f"透明度…（现在 {int(self.opacity * 100)}%）",
+                    defer_dialog(self.opacity_dialog))
         weather_menu = m.addMenu("天气")
         weather_menu.addAction("设置默认城市（手动输入）", self.set_city_dialog)
         weather_menu.addAction("查看天气", self._get_weather)
@@ -3689,7 +3694,7 @@ class PetWindow(QWidget):
         n_custom = len(self.cfg.get("custom_lines") or {})
         text_menu.addAction(
             "台词内容…（自己写 / 改写内置）" + (f"（已改 {n_custom} 类）" if n_custom else ""),
-            self.edit_lines_dialog)
+            defer_dialog(self.edit_lines_dialog))
 
         # 每轮消耗：自己的子菜单，Agent 名称/日志目录可配（不是每个人都用 Codex）
         turn_menu = bal_menu.addMenu("每轮消耗统计")
@@ -3756,18 +3761,14 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(self.sound_set == name)
             a.triggered.connect(lambda _, n=name: self.set_sound_set(n))
-        snd_menu.addAction("添加我的音效…（自己挑 wav）", self.add_custom_sound_dialog)
+        snd_menu.addAction("添加我的音效…（自己挑 wav）",
+                           defer_dialog(self.add_custom_sound_dialog))
         if getattr(self, "_custom_sounds", None):
-            snd_menu.addAction("删掉我加的音效…", self.remove_custom_sound_dialog)
-        vol_menu = snd_menu.addMenu("音量")
-        vol_action = QWidgetAction(vol_menu)
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(0, 100)
-        slider.setValue(int(self.volume * 100))
-        slider.setFixedWidth(130)
-        slider.valueChanged.connect(lambda v: self.set_volume(v / 100.0))
-        vol_action.setDefaultWidget(slider)
-        vol_menu.addAction(vol_action)
+            snd_menu.addAction("删掉我加的音效…",
+                               defer_dialog(self.remove_custom_sound_dialog))
+        # 音量：同样改成小窗口里拖滑块（菜单内嵌滑块在这台机器上拖不动）
+        snd_menu.addAction(f"音量…（现在 {int(self.volume * 100)}%）",
+                           defer_dialog(self.volume_dialog))
         snd_menu.addSeparator()
         snd_menu.addAction("试听音效", self.preview_sounds)
         m.addSeparator()
@@ -4137,7 +4138,16 @@ class PetWindow(QWidget):
                 sub = act.menu()
                 sub.popup(self._submenu_pos(menu, act, sub))     # 同样按"和本级重叠"放
                 return
-            act.trigger()
+            # 先关菜单、下一拍再执行这一项：如果这一项要弹窗口（音量/透明度/加音效…），
+            # 直接在原生消息回调里 exec() 会被菜单的关闭动作吃掉（窗口一闪就没）。
+            root0 = getattr(self, "_menu_keepalive", None)
+            if root0 is not None:
+                try:
+                    root0.close()
+                except Exception:
+                    pass
+            QTimer.singleShot(0, act.trigger)
+            return
         except Exception:
             return
         root = getattr(self, "_menu_keepalive", None)
@@ -5003,6 +5013,65 @@ class PetWindow(QWidget):
         self.opacity = value
         self.cfg["opacity"] = value
         self.setWindowOpacity(value)
+
+    # ---------- 音量 / 透明度的小窗口（菜单里内嵌滑块在这台机器上拖不动，改成弹窗） ----------
+    def _slider_dialog(self, title, tip_text, lo, hi, value, on_change, extra=None):
+        """一个带滑块的小窗口：**拖动立刻生效**。
+
+        为什么不用菜单里内嵌的滑块：这台机器上 Qt 的弹出子菜单收不到鼠标消息，
+        嵌在里面的滑块拖不动（主人反馈"透明度和音效音量无法调整"就是这个原因）。
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dlg.setMinimumWidth(380)
+        lay = QVBoxLayout(dlg)
+        tip = QLabel(tip_text)
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        row = QHBoxLayout()
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(lo, hi)
+        slider.setValue(value)
+        slider.setMinimumWidth(240)
+        row.addWidget(slider, 1)
+        num = QLabel(f"{value}%")
+        num.setFixedWidth(52)
+        row.addWidget(num)
+        lay.addLayout(row)
+        btns = QHBoxLayout()
+        if extra:
+            b = QPushButton(extra[0])
+            b.clicked.connect(extra[1])
+            btns.addWidget(b)
+        btns.addStretch(1)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.accept)
+        btns.addWidget(close_btn)
+        lay.addLayout(btns)
+
+        def changed(v):
+            num.setText(f"{v}%")
+            on_change(v / 100.0)
+
+        slider.valueChanged.connect(changed)
+        with self._ui_guard():
+            dlg.exec()
+
+    def volume_dialog(self):
+        """音效音量：拖动立刻生效，顺手能试听一声。"""
+        self._slider_dialog(
+            "音效音量",
+            f"拖动滑块调点击音效的音量（现在 {int(self.volume * 100)}%），拖的时候立刻生效。",
+            0, 100, int(round(self.volume * 100)), self.set_volume,
+            extra=("试听一声", self.preview_sounds))
+
+    def opacity_dialog(self):
+        """桌宠透明度：拖动立刻生效（20% 是下限，再低就看不见了）。"""
+        self._slider_dialog(
+            "桌宠透明度",
+            f"拖动滑块调桌宠整体透明度（20% ~ 100%，现在 {int(self.opacity * 100)}%）。",
+            20, 100, int(round(self.opacity * 100)), self.set_opacity)
 
     def set_process_alerts(self, on):
         self.process_alerts = bool(on)
