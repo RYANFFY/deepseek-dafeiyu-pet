@@ -162,7 +162,8 @@ CONFIG_PATH = os.path.join(USER_DIR, "config.json")
 
 BUBBLE_H = 112         # 气泡区高度（要放得下四行余额气泡：余额 / 金额 / 今日已用 / 峰谷）
 MARGIN = 4
-SIZE_LEVELS = {"小": 0.55, "中": 0.7, "大": 0.9}
+SIZE_LEVELS = {"迷你": 0.30, "特小": 0.42, "小": 0.55, "中": 0.7, "大": 0.9}
+MIN_WIN_W = 168        # 窗口最窄宽度：小档位也别把气泡挤成一条（气泡要放得下三四行字）
 SPEED = 380.0
 TICK = 20
 
@@ -1763,9 +1764,7 @@ class PetWindow(QWidget):
             self.skin = SKIN_PET
 
         self.cur_h = int(340 * self.cfg["size"])
-        self.win_mx = int(self.cur_h * 0.062) + 6
-        self.win_w = max(p.width() for k, p in self.sprites.items() if k[1] == self.cur_h) + self.win_mx * 2
-        self.setFixedSize(self.win_w, self.cur_h + BUBBLE_H + MARGIN * 2 + 10)
+        self._apply_window_size()
 
         # 状态
         self.mode = self.cfg["mode"] if self.cfg["mode"] in ("wander", "follow", "still") else "wander"
@@ -2573,10 +2572,7 @@ class PetWindow(QWidget):
         self.cfg["skin"] = name
         self.prev_key = None
         self.cross_t = 0.0
-        self.win_mx = int(self.cur_h * 0.062) + 6
-        self.win_w = max(p.width() for k, p in self.sprites.items()
-                         if k[1] == self.cur_h) + self.win_mx * 2
-        self.setFixedSize(self.win_w, self.cur_h + BUBBLE_H + MARGIN * 2 + 10)
+        self._apply_window_size()
         self._settle()
         self.update()
 
@@ -4984,14 +4980,26 @@ class PetWindow(QWidget):
         self.cfg["turn_cost_on"] = bool(on)
 
     def set_size(self, mult):
-        self.cur_h = int(340 * mult)
         self.cfg["size"] = mult
         self.cross_t = 0.0
         self.prev_key = None
-        self.win_mx = int(self.cur_h * 0.062) + 6
-        self.win_w = max(p.width() for k, p in self.sprites.items() if k[1] == self.cur_h) + self.win_mx * 2
-        self.setFixedSize(self.win_w, self.cur_h + BUBBLE_H + MARGIN * 2 + 10)
+        self.cur_h = int(340 * mult)
+        self._apply_window_size()
         self.snap_into_screen()
+
+    def _apply_window_size(self):
+        """按当前档位摆好窗口：精灵宽度 + 两边留白，但不小于 MIN_WIN_W（气泡要放得下字）。
+
+        为什么要有个最窄宽度：新加的「迷你 / 特小」两档精灵很窄（几十像素），
+        如果窗口跟着一起变窄，余额气泡就会被挤成一列竖着的字。
+        """
+        try:
+            spec_w = max(p.width() for k, p in self.sprites.items() if k[1] == self.cur_h)
+        except ValueError:
+            spec_w = 0
+        self.win_mx = int(self.cur_h * 0.062) + 6
+        self.win_w = max(spec_w + self.win_mx * 2, MIN_WIN_W)
+        self.setFixedSize(self.win_w, self.cur_h + BUBBLE_H + MARGIN * 2 + 10)
 
     def snap_into_screen(self):
         geo = (self.screen() or QApplication.primaryScreen()).availableGeometry()
