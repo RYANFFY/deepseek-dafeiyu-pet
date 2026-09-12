@@ -289,6 +289,12 @@ MUSIC_APPS = {
 }
 MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
 
+# 播放器给的信息可能不全（网易云实测会缺歌名/歌手）：缺了就用这几个占位，
+# 命名风格保持一致（"无题" / "未知歌手" / "未知应用"）
+TITLE_PLACEHOLDER = "无题"
+ARTIST_PLACEHOLDER = "未知歌手"
+APP_PLACEHOLDER = "未知应用"
+
 # 歌词对时：正数 = 文字延后（等等声音），负数 = 文字提前。不同输出设备延迟不一样：
 # 笔记本外放几乎没延迟，蓝牙耳机/音箱能差 0.3~1 秒，所以做成可选项。
 LYRIC_OFFSET_LEVELS = [
@@ -2248,11 +2254,14 @@ class PetWindow(QWidget):
 
     def _song_label(self, info=None):
         info = info if info is not None else (self.now_playing or {})
-        title = (info.get("title") or "").strip()
-        artist = (info.get("artist") or "").strip()
-        if title and artist:
-            return f"《{title}》——{artist}"
-        return f"《{title}》" if title else "这首歌"
+        # 播放器给的信息可能不全（网易云实测会缺）：缺什么就用占位，命名风格保持一致
+        title = (info.get("title") or "").strip() or TITLE_PLACEHOLDER
+        artist = (info.get("artist") or "").strip() or ARTIST_PLACEHOLDER
+        return f"《{title}》——{artist}"
+
+    @staticmethod
+    def _app_label(info=None):
+        return ((info or {}).get("app") or "").strip() or APP_PLACEHOLDER
 
     def _music_playing(self):
         info = self.now_playing
@@ -3243,7 +3252,9 @@ class PetWindow(QWidget):
             return "text"
         if self.now_playing and now < self._bal_peek_until and self.balance is not None:
             return "balance"
-        if self._music_playing() and (not self.music_lyrics or self._lyric_lines):
+        # 放歌期间一直显示这一块：有歌词就显示歌词，没有（或网易云不报进度）就显示「♪ 应用 · 歌名」
+        # —— 主人要求"歌名信息要持续一整首歌"。
+        if self._music_playing():
             return "lyric"
         if self.balance is not None and (self.balance_always or now < self.bal_until):
             return "balance"
@@ -3277,8 +3288,8 @@ class PetWindow(QWidget):
             rows = [(line, f_main, QColor(38, 44, 66)) for line in keep]
             return rows, keep, f_main, fm_m, 0
         cur_lines = cur_lines[:LYRIC_MAX_ROWS]
-        nxt_lines = (wrap_text(QFontMetrics(f_small), nxt, max_w)[:1]
-                     if nxt and total == 1 else [])
+        # 下一句一直显示（主人要求：不要因为这一句长就不显示下一句）
+        nxt_lines = wrap_text(QFontMetrics(f_small), nxt, max_w)[:1] if nxt else []
         rows = ([(head_lines[0], f_small, QColor(140, 148, 168))]
                 + [(line, f_main, QColor(38, 44, 66)) for line in cur_lines]
                 + [(line, f_small, QColor(158, 158, 172)) for line in nxt_lines])
@@ -3290,13 +3301,14 @@ class PetWindow(QWidget):
         max_w = min(300, self.width() - 12) - 22
         who = (info.get("artist") or "").strip()
         title = (info.get("title") or "").strip()
-        head = "♪ " + (f"{info.get('app', '')} · {title}"
-                       + (f" —— {who}" if who else "")).strip(" ·") if title else "♪ 在放歌"
+        # 播放器给的信息可能不全（网易云实测会缺）：缺了就用占位，命名风格保持一致
+        head = "♪ " + (f"{self._app_label()} · {title or TITLE_PLACEHOLDER}"
+                       + f" —— {who or ARTIST_PLACEHOLDER}")
         # 对时：正数 = 文字延后（等一下声音）；不同输出设备（外放 / 蓝牙耳机）延迟不一样
         cur, nxt = self._current_lyric_pair()
         if not cur:
             # 还没找到歌词 / 用户关了歌词 → 就挂个「♪ 歌名」
-            cur, nxt = self._song_label() or "在放歌", ""
+            cur, nxt = self._song_label(), ""
         # 排版缓存：换句 / 换宽度 / 换字号才重算 —— 每帧算一次 wrap_text 要 ~1ms，100 帧就掉帧了
         layout_key = (head, cur, nxt, max_w)
         if getattr(self, "_lyric_layout_key", None) != layout_key:
