@@ -303,7 +303,7 @@ LYRIC_OFFSET_DEFAULT = 0.2      # 默认让文字稍微等一下（实测文字�
 LYRIC_ANIM_SEC = 0.15           # 歌词换句时的过渡动画时长（秒）
 LYRIC_ANIM_MS = 10              # 过渡期间用 100 帧/秒重绘（主时钟在休闲模式只有 25 帧，不够顺）
 BUBBLE_ANIM_SEC = 0.15          # 气泡自己变大/变小也用同样长的过渡（跟着 100 帧/秒的计时器走）
-LYRIC_KARAOKE_ON = True         # "唱到哪高亮到哪"
+LYRIC_KARAOKE_ON = False        # 逐字高亮（"唱到哪变蓝到哪"）：主人说不要，先关掉（网易云多数歌也没逐字数据）
 LYRIC_KARAOKE_COLOR = (72, 104, 240)   # 已唱到的那部分的颜色（DeepSeek 蓝）
 LYRIC_MAX_ROWS = 4              # 当前这句最多折几行（再多就先把字号缩一档）
 LYRIC_MIN_PT = 7                # 折行还是超了时，字号最小缩到几磅（只有"迷你档 + 超长英文句"才会用到）
@@ -2029,6 +2029,8 @@ class PetWindow(QWidget):
         self._lyric_cache = load_lyric_cache()
         self._lyric_retry_at = 0.0       # 歌词没抓到时的重试时间
         self._music_pos_memo = {}        # 歌 → 上次放到哪（暂停/切走再回来接着走）
+        self._lyric_nudge = 0.0          # 这首歌的歌词微调（秒，正数=歌词往前赶）
+        self._lyric_nudges = {}          # 歌 → 微调值（每首歌记住自己的）
         self._lyric_shown = ""           # 现在气泡里显示的是哪一句
         self._lyric_prev = ""            # 上一句（换句动画用）
         self._lyric_anim_t = 0.0         # 换句动画进度（1 → 0）
@@ -2259,15 +2261,24 @@ class PetWindow(QWidget):
 
     def _current_lyric_pair(self):
         """按"当前进度 - 对时偏移"算出该显示的（这一句, 下一句）。"""
-        pos = self._music_position() - float(getattr(self, "lyric_offset", 0.0))
-        return lyric_pair(self._lyric_lines, max(0.0, pos))
+        return lyric_pair(self._lyric_lines, self._lyric_position())
+
+    def _lyric_position(self):
+        """算歌词用的时间：播放进度 − 对时偏移 ＋ 这首歌的微调（网易云不报进度时靠它手动对）。
+
+        正数微调 = 歌词往前赶（显示更靠后的那句）；负数 = 往后压。
+        """
+        pos = (self._music_position()
+               - float(getattr(self, "lyric_offset", 0.0))
+               + float(getattr(self, "_lyric_nudge", 0.0)))
+        return max(0.0, pos)
 
     def _lyric_progress(self):
         """当前这一句唱到几成了（0~1），用来做"唱到哪、字就变到哪"。"""
         lines = self._lyric_lines
         if not lines:
             return 0.0
-        pos = max(0.0, self._music_position() - float(getattr(self, "lyric_offset", 0.0)))
+        pos = self._lyric_position()
         idx = lyric_index(lines, pos)
         start = lines[idx][0]
         end = lines[idx + 1][0] if idx + 1 < len(lines) else start + 4.0
@@ -2283,7 +2294,7 @@ class PetWindow(QWidget):
         total = max(0, len(text))
         if total == 0:
             return 0.0
-        pos = max(0.0, self._music_position() - float(getattr(self, "lyric_offset", 0.0)))
+        pos = self._lyric_position()
         words = self._word_times_for(start_sec)
         if words:
             return max(0.0, min(float(total), sung_chars(words, pos) / max(1, len(words)) * total))
@@ -2343,6 +2354,7 @@ class PetWindow(QWidget):
         if key != self._lyric_key:
             if old_key:                             # 记下上一首放到哪（回来时不用从头开始）
                 self._music_pos_memo[old_key] = old_pos
+                self._lyric_nudges[old_key] = float(getattr(self, "_lyric_nudge", 0.0))
                 if len(self._music_pos_memo) > 30:  # 别无限涨
                     for k in list(self._music_pos_memo)[:-20]:
                         self._music_pos_memo.pop(k, None)
@@ -2352,6 +2364,7 @@ class PetWindow(QWidget):
             reported = info.get("position")
             pos_ok = reported is not None and float(reported) > 0.5
             self._music_played = max(0.0, float(reported)) if pos_ok else max(0.0, memo)
+            self._lyric_nudge = float(self._lyric_nudges.get(key, 0.0))
             cached = self._lyric_cache.get(key) or {}
             text = cached.get("text") or ""
             self._lyric_lines = parse_lrc(text) if text else []
@@ -2368,6 +2381,14 @@ class PetWindow(QWidget):
             if (pos is not None and float(pos) > 0.5        # 只信"报了真实进度"的播放器
                     and abs(float(pos) - self._music_played) > 2.5):
                 self._music_played = max(0.0, float(pos))
+        # 放歌时看勤一点：网易云根本不报进度（实测 position 恒为 0），我们只能靠"什么时候
+        # 开始放"起算，看得越勤误差越小
+        want_ms = 800 if info.get("playing") else MUSIC_POLL_MS
+        try:
+            if self.music_timer.interval() != want_ms:
+                self.music_timer.start(want_ms)
+        except Exception:
+            pass
         self.update()
 
     def _announce_song(self):
@@ -3265,9 +3286,8 @@ class PetWindow(QWidget):
             ty += anim * 8
         # "唱到哪、字就变到哪"：当前这句按进度给已唱到的部分换颜色
         if LYRIC_KARAOKE_ON and real_lyric:
-            line_start = self._lyric_lines[lyric_index(
-                self._lyric_lines,
-                max(0.0, self._music_position() - float(getattr(self, "lyric_offset", 0.0))))][0]
+            line_start = self._lyric_lines[lyric_index(self._lyric_lines,
+                                                       self._lyric_position())][0]
             sung_total = self._lyric_sung_total("".join(cur_lines), line_start)
             sung = self._karaoke_split(cur_lines, sung_total)
         else:
@@ -4173,6 +4193,14 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(abs(self.lyric_offset - off) < 1e-6)
             a.triggered.connect(lambda _, o=off: self.set_lyric_offset(o))
+        # 网易云不报播放进度，中途才开始看（或拖过进度条）就只能手动对一次；按歌记住
+        nud = music_menu.addMenu("这首歌对不上？微调" + self._lyric_nudge_label())
+        nud.addAction("歌词太慢，往前赶 0.5 秒", lambda: self.nudge_lyric(0.5))
+        nud.addAction("歌词太慢，往前赶 2 秒", lambda: self.nudge_lyric(2.0))
+        nud.addAction("歌词太快，往后压 0.5 秒", lambda: self.nudge_lyric(-0.5))
+        nud.addAction("歌词太快，往后压 2 秒", lambda: self.nudge_lyric(-2.0))
+        nud.addSeparator()
+        nud.addAction("这首歌的微调清零", lambda: self.nudge_lyric(0.0, True))
         music_menu.addSeparator()
         music_menu.addAction(self._music_menu_label()).setEnabled(False)
         music_menu.addAction("立刻看一眼在放什么", self.check_music_now)
@@ -5580,6 +5608,29 @@ class PetWindow(QWidget):
             f"歌词{'延后' if offset > 0 else '提前'} {abs(offset):.1f} 秒")
         self.say(tip + "（觉得还对不上就再调一档）", seconds=3.2, again=True)
         self.update()
+
+    # ---------- 这首歌的歌词微调（网易云不报播放进度，中途才开始看就只能手动对一次） ----------
+    def _lyric_nudge_label(self):
+        n = float(getattr(self, "_lyric_nudge", 0.0))
+        if abs(n) < 1e-6:
+            return ""
+        return f"（现在{'往前赶' if n > 0 else '往后压'} {abs(n):.1f} 秒）"
+
+    def nudge_lyric(self, delta, absolute=False):
+        """把歌词整体往前赶 / 往后压几秒（只影响这一首歌，按歌记住）。"""
+        try:
+            delta = float(delta)
+        except (TypeError, ValueError):
+            return
+        base = delta if absolute else float(getattr(self, "_lyric_nudge", 0.0)) + delta
+        self._lyric_nudge = max(-20.0, min(20.0, base))
+        if self._lyric_key:
+            self._lyric_nudges[self._lyric_key] = self._lyric_nudge
+        self.update()
+        n = self._lyric_nudge
+        tip = "这首歌的歌词微调清零了" if abs(n) < 1e-6 else (
+            f"歌词{'往前赶' if n > 0 else '往后压'}了 {abs(n):.1f} 秒")
+        self.say(tip + "（对上了就不用再动）", seconds=3.2, again=True)
 
     def set_snap(self, on):
         self.snap_on = bool(on)
