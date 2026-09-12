@@ -4029,6 +4029,29 @@ class PetWindow(QWidget):
         self._sync_overlay_state()
         self._menu_hover_watch()
         self._prune_branches()
+        self._close_orphan_submenus()
+
+    def _close_orphan_submenus(self):
+        """根菜单已经关了，却还有子菜单挂在屏幕上 → 收掉。
+
+        实测：Qt 偶尔不跟着把子菜单一起收（`root.close()` 之后二级菜单还在），
+        而这个残留弹窗会把**下一次右键**挡掉（右键没反应，菜单弹不出来）。
+        """
+        root = getattr(self, "_menu_keepalive", None)
+        if root is None:
+            return
+        try:
+            if root.isVisible():
+                return              # 这棵树还开着，别动
+        except RuntimeError:
+            return
+        for sub in self._all_menus(root)[1:]:
+            try:
+                if sub.isVisible():
+                    sub.close()
+                    menu_debug("[兜底] 收掉残留的子菜单")
+            except RuntimeError:
+                continue
 
     def _adopt_visible_menu(self):
         """把"屏幕上真正在显示的那棵菜单树"接到手里。
@@ -4038,15 +4061,30 @@ class PetWindow(QWidget):
         就跟屏幕上的对不上 —— 悬停兜底、收子菜单、点击摆渡会全部落空（表现就是
         "托盘里的二三级菜单还是老毛病"）。这里每 120ms 认一次，认错了就换过来。
         """
+        root = getattr(self, "_menu_keepalive", None)
+        if root is not None:
+            try:
+                if root.isVisible():
+                    return          # 我们记着的那棵就在屏幕上 → 不用认
+            except RuntimeError:
+                pass
         try:
-            shown = [w for w in QApplication.topLevelWidgets()
-                     if isinstance(w, QMenu) and w.isVisible()]
+            all_menus = [w for w in QApplication.topLevelWidgets() if isinstance(w, QMenu)]
         except RuntimeError:
             return
+        shown = []
+        for m in all_menus:
+            try:
+                if m.isVisible():
+                    shown.append(m)
+            except RuntimeError:
+                continue
         if not shown:
             return
+        # 父关系要在**所有**菜单里找（包括已经关掉的上一层）：否则"上一层关了、子菜单还挂着"
+        # 的时候，会把那个孤儿子菜单当成一棵树的根接管过来。
         inner = set()
-        for m in shown:
+        for m in all_menus:
             try:
                 for a in m.actions():
                     child = a.menu()
@@ -4058,8 +4096,8 @@ class PetWindow(QWidget):
         if not roots:
             return
         popup = QApplication.activePopupWidget()      # 抓着鼠标的那个 = 当前这一支的根
-        top = popup if popup in roots else roots[-1]
-        if getattr(self, "_menu_keepalive", None) is top:
+        top = popup if popup in roots else roots[0]   # 都没有就按"最先建出来的"（根先于子菜单建）
+        if root is top:
             return
         self._menu_keepalive = top
         if top not in self._menu_pool:
