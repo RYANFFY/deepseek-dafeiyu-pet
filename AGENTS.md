@@ -81,12 +81,16 @@ pyinstaller --noconfirm --clean 桌宠.spec
    powershell -NoProfile -ExecutionPolicy Bypass -File F:\Codex\work\publish-pet.ps1 `
      -Message "feat: 中文说明" [-Force]
    ```
-3. **Release 里只放** `dafeiyu-pet.exe`（绿色版）+ `dafeiyu-pet-setup.exe`（中文安装包，能选安装位置）。
+3. **Release 里只放** `dafeiyu-pet-setup.exe`（Windows 中文安装包，能选安装位置）——
+   主人 2026-09-13 要求「GitHub 里 exe 文件就给 windows 安装版就可以了，有这个版本的就只留这个，
+   没有的不用变更」：**绿色版不再上传**（v1.0.12 及更早本来就只有绿色版，保持原样没动）；
+   真没编出安装包时才兜底发绿色版。
 4. **微信 zip 不上传**，只做在本地（主人要求「在本地给我」）：
    `F:\Codex\2026-09-11\deepseek-harness-dsh-ai-harness-deepseek\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`
-   - **zip 里就两样**（主人 2026-09-13 要求：「就是把 windows 安装版和教程打包就可以，其他不需要」）：
-     `大肥鱼桌宠/大肥鱼桌宠-vX.Y.Z.exe`（绿色版，双击即用）+ `大肥鱼桌宠/使用说明.txt`（教程）。
-     **不放安装包、不放源码、不放别的东西**（`publish-pet.ps1` 里 `New-WechatZip` 已经这么做了）。
+   - **zip 里就两样**（主人 2026-09-13 要求：「就是把 windows 安装版和教程打包就可以，其他不需要」；
+     后来又批注「对换回安装版，之后的也都是只保留安装版」）：
+     `大肥鱼桌宠/大肥鱼桌宠-安装版-vX.Y.Z.exe`（Windows 安装版）+ `大肥鱼桌宠/使用说明.txt`（教程，
+     按"先装再用"写）。**不放绿色版、不放源码、不放别的东西**（`publish-pet.ps1` 里 `New-WechatZip` 已经这么做了）。
    - **回复里要给能直接点的链接**（主人 2026-09-13 要求「之后都给我一个可以直接点的链接」）：
      写成 Markdown 链接，别用 `代码块`/纯文本把路径括起来：
      `[大肥鱼桌宠-vX.Y.Z-微信版.zip](F:/Codex/2026-09-11/deepseek-harness-dsh-ai-harness-deepseek/outputs/大肥鱼桌宠-vX.Y.Z-微信版.zip)`

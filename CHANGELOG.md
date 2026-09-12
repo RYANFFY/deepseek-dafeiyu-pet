@@ -63,12 +63,22 @@
   （`test_new_features.py` 里形象那一节跟着改成"两本库 + 三张齐才收录"的写法。）
 - **发版流程：微信版 zip 改成只留在本地**（主人要求「微信的 zip 文件不要推送到 github 上了，在本地给我」）：
   `F:\Codex\work\publish-pet.ps1` 照旧在 `outputs\` 里做 `大肥鱼桌宠-vX.Y.Z-微信版.zip`，
-  但**不再作为 Release 附件上传**（GitHub Release 只放 `dafeiyu-pet-setup.exe` 和 `dafeiyu-pet.exe`）；
+  但**不再作为 Release 附件上传**；
   发版说明里那条 zip 下载项也去掉了。另外给脚本加了 `-ZipOnly -Version X.Y.Z`，
   没发版也能单独给某个版本做一份本地 zip。
 - **微信 zip 里就两样**（主人要求「就是把 windows 安装版和教程打包就可以，其他不需要」）：
-  **绿色版 exe（`大肥鱼桌宠-vX.Y.Z.exe`）+ `使用说明.txt`（教程）**，不放安装包、不放源码；
+  **Windows 安装版 exe（`大肥鱼桌宠-安装版-vX.Y.Z.exe`）+ `使用说明.txt`（教程，按"先装再用"重写）**，
+  不放源码、不放别的东西；
   回复里给主人的 zip 位置改成**可以直接点的 Markdown 链接**（主人要求「之后都给我一个可以直接点的链接」）。
+- **GitHub 上只留 Windows 安装版**（主人要求「查一下 GitHub 里 exe 文件就给 windows 安装版就可以了，
+  有这个版本的就只留这个，没有的不用变更」）：
+  - v1.0.13 / v1.0.14 / v1.0.15 / v1.0.16 四个 Release **删掉了 `dafeiyu-pet.exe`（绿色版）**，
+    只留 `dafeiyu-pet-setup.exe`（安装版），发版说明里对应的那行也删了；
+  - v1.0.12 及更早**本来就没有安装包**（只有绿色版）→ 按要求**原样不动**；
+  - 以后发版也只传安装版：`publish-pet.ps1` 里 Release 附件改成只放 `dafeiyu-pet-setup.exe`
+    （真没编出安装包时才兜底发绿色版，并会明确警告）；
+  - README / README.en.md 顶部那个"下载最新版"的按钮链接跟着从 `dafeiyu-pet.exe`
+    换成 `dafeiyu-pet-setup.exe`（不然点进去 404），文案也按"安装版"改写了。
 
 ## v1.0.15
 

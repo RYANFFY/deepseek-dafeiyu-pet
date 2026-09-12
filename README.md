@@ -11,14 +11,16 @@ English | [中文](README.md) → [README.en.md](README.en.md)
 [![最新版本](https://img.shields.io/github/v/release/RYANFFY/deepseek-dafeiyu-pet?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest)
 [![下载量](https://img.shields.io/github/downloads/RYANFFY/deepseek-dafeiyu-pet/total?label=%E4%B8%8B%E8%BD%BD%E9%87%8F)](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases)
 
-### 👉 [**点这里下载最新版 exe**](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
+### 👉 [**点这里下载最新版（Windows 安装版）**](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest/download/dafeiyu-pet-setup.exe)
 
-约 60MB 单文件，**双击就能用，不需要安装 Python**。（这个链接永远指向最新版，可以直接收藏）
+约 73MB 的中文安装包：**双击一路「下一步」就行，中间那一步能自己选装在哪儿**
+（默认装在当前用户目录，不弹管理员提示），装完桌面和开始菜单就有它；
+**安装包本身可以直接删掉**。（这个链接永远指向最新版，可以直接收藏）
 
-- 首次运行 Windows 可能提示"未知发布者"（exe 没做代码签名）→ 点「更多信息」→「仍要运行」即可
+- 首次运行 Windows 可能提示"未知发布者"（没做代码签名）→ 点「更多信息」→「仍要运行」即可
 - 想看历史版本 / 更新说明：[Releases 页面](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases) ｜ [CHANGELOG](CHANGELOG.md)
 - 打包版的设置写在 `%APPDATA%\大肥鱼桌宠\`（不会往桌面丢文件）
-- 用完想卸载：删掉 exe + 上面那个配置目录就行
+- 用完想卸载：去「设置 → 应用」里点卸载；想连配置一起清掉，再删上面那个配置目录
 
 DeepSeek V4 Pro 二创形象「鲸鱼娘 · 大肥鱼」的透明桌面宠物（Windows 独立桌面版）。
 
@@ -262,6 +264,7 @@ pyinstaller --noconfirm --onefile --windowed --name 大肥鱼桌宠 --add-data "
 
 产物在 `dist/大肥鱼桌宠.exe`，对方双击即用，无需安装 Python。
 （杀毒软件可能对 PyInstaller 产物误报，加信任即可。）
+**注意：发布到 GitHub 的是下面那个中文安装包；绿色版只在本地留一份，不再上传。**
 
 ### 打包成 Windows 安装包（中文安装向导，可自选安装位置）
 
@@ -299,13 +302,15 @@ PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）�
    版本号按现有最高版本 +1（桌面上的「发布到GitHub.bat」会自动算好，不用手动记）；
    内容没变就别重发，版本号保持连续、不跳号。
 3. **微信版 zip 只做在本地**（`…\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`，
-   **里面就两样：绿色版 exe（`大肥鱼桌宠-vX.Y.Z.exe`）+ 使用说明.txt（教程）**，不放安装包、不放源码），
-   **不传到 GitHub**：Release 里只放 `dafeiyu-pet-setup.exe` 和 `dafeiyu-pet.exe`。
+   **里面就两样：Windows 安装版 exe（`大肥鱼桌宠-安装版-vX.Y.Z.exe`）+ 使用说明.txt（教程）**，
+   不放源码、不放别的东西），**不传到 GitHub**。
+   **GitHub Release 里也只放 `dafeiyu-pet-setup.exe`（安装版）**，绿色版不再上传
+   （v1.0.12 及更早的老版本里只有绿色版，保持原样没动）。
    单独补一份本地 zip：`powershell -File F:\Codex\work\publish-pet.ps1 -ZipOnly -Version 1.0.16`
 
 > 平时只管跟 Codex 说一句「推送」：它会跑 `F:\Codex\work\publish-pet.ps1`
-> （提交 → 推送 → 打包 → 发新版），Release 里放绿色版 + 安装包，
-> 微信 zip 留在 `outputs\` 本地，回复里用**可以直接点的链接**给出（里面只有绿色版 + 教程）。
+> （提交 → 推送 → 打包 → 发新版），Release 里只放安装版，
+> 微信 zip 留在 `outputs\` 本地，回复里用**可以直接点的链接**给出（里面只有安装版 + 教程）。
 > 桌面上那个「发布到GitHub.bat」也是同一个脚本，但它遇到"没有代码改动"会整段跳过（连 Release 都不发），
 > 需要补发一版时给它加 `-Force`。
 

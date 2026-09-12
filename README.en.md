@@ -10,9 +10,10 @@
 
 [![latest release](https://img.shields.io/github/v/release/RYANFFY/deepseek-dafeiyu-pet?label=latest)](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest)
 
-### 👉 [**Download the latest exe**](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest/download/dafeiyu-pet.exe)
+### 👉 [**Download the latest Windows installer**](https://github.com/RYANFFY/deepseek-dafeiyu-pet/releases/latest/download/dafeiyu-pet-setup.exe)
 
-Single file, ~60MB, just double-click — no Python required.
+A ~73MB Chinese installer: double-click and click Next a few times — you can pick the install folder,
+shortcuts are created for you, and the installer itself can be deleted afterwards.
 
 - Windows may warn about an unknown publisher (the exe is not code-signed): click "More info" → "Run anyway"
 - Packaged build keeps its settings in `%APPDATA%\大肥鱼桌宠\`
