@@ -221,6 +221,19 @@ INNER_LINES = [
 ]
 DRAG_LINES = ["哇——轻点轻点！", "起飞咯——", "放我下来！……好吧，再玩一次。", "晕鱼了晕鱼了……"]
 
+# 切成某一档「语录频率」时冒的话（每档都能在「台词内容…」里自己改写）
+FREQ_LINES = {
+    "安静": ["行行行，我闭麦了，省点电给模型训练",
+             "安静模式——别以为我睡了，我盯着余额呢"],
+    "正常": ["那就按平时的频率唠，你烦了别赖我",
+             "正常发挥中，偶尔冒个泡不算打扰吧"],
+    "话多": ["话多的开关被你按了，你自找的",
+             "行，那我多唠两句，反正你也没别的娱乐"],
+    "话痨": ["碎碎念模式启动，接下来求你别嫌吵",
+             "嘿嘿，我的嘴从现在开始停不下来了"],
+}
+FREQ_LINE_KEYS = {f"FREQ_LINES_{level}": level for level in FREQ_LINES}
+
 # 可以让用户自己改写的台词分组（键 → 给人看的名字）
 LINE_GROUPS = [
     ("LINES", "日常台词（闲着的时候）"),
@@ -229,6 +242,10 @@ LINE_GROUPS = [
     ("DRAG_LINES", "拖拽它的时候"),
     ("MUSIC_CLICK_LINES", "放歌时点它（可用 {song} 代表《歌名》——歌手）"),
     ("MUSIC_START_LINES", "换歌的时候（同上）"),
+    ("FREQ_LINES_安静", "说多勤·安静（切到这一档时说的）"),
+    ("FREQ_LINES_正常", "说多勤·正常（切到这一档时说的）"),
+    ("FREQ_LINES_话多", "说多勤·话多（切到这一档时说的）"),
+    ("FREQ_LINES_话痨", "说多勤·话痨（切到这一档时说的）"),
 ]
 
 
@@ -3196,6 +3213,8 @@ class PetWindow(QWidget):
     def lines_for(self, key):
         """取某一类台词：用户改过就用用户那套，否则用内置默认。"""
         default = globals().get(key) or []
+        if not default and key in FREQ_LINE_KEYS:
+            default = FREQ_LINES[FREQ_LINE_KEYS[key]]      # 说多勤那四档的话
         custom = (self.cfg.get("custom_lines") or {}).get(key)
         if isinstance(custom, list):
             words = [str(t).strip() for t in custom if str(t).strip()]
@@ -4945,11 +4964,10 @@ class PetWindow(QWidget):
         self.line_freq = name
         self.cfg["line_freq"] = name
         self.last_speak_tick = self.t          # 让新档位马上生效，不用等旧冷却
-        tip = {"安静": "好，我尽量闭嘴",
-               "正常": "行，我按正常频率说",
-               "话多": "那我多跟你说两句",
-               "话痨": "嘿嘿，那我要开始碎碎念了"}.get(name, "好")
-        self.say(tip, seconds=3.0, again=True)
+        # 切档时说的这句话本身也能在「台词内容…」里改写（LINE_GROUPS 里那四条）
+        words = self.lines_for(f"FREQ_LINES_{name}")
+        if words:
+            self.say(random.choice(words), seconds=3.0, again=True)
 
     # ---------- 层级 / 透明度 ----------
     LAYER_LABELS = {"top": "置顶", "bottom": "置底（在壁纸之上）", "normal": "普通层"}
