@@ -223,6 +223,16 @@ SOUND_POOL = 3          # 每种音效同时可播的实例数（连点不互相
 # 点击音：把原「按压 + 松手」两条 wav 拼成一条，点一次就放完整一段
 CLICK_CLIP_FILES = {"小黄鸭": "click-duck.wav", "音效1": "click-fx1.wav"}
 
+# 用户自己加的音效（放在用户目录里，不跟程序混在一起）
+SOUND_USER_DIR = os.path.join(USER_DIR, "sounds")
+SOUND_IDEAL = (0.15, 0.60)      # 点击音最适合的时长区间（秒）
+SOUND_KEEP_MAX = 0.60           # 太长的帮他裁到这个长度
+# 给主人看的建议（加音效时会弹出来）
+SOUND_TIP = ("点击音最适合 0.15 ~ 0.60 秒：\n"
+             "· 太短（不到 0.15 秒）容易听不清，只剩一下咔哒\n"
+             "· 太长（超过 0.60 秒）连点时会叠成一团、听着拖\n"
+             "· 最稳的是 0.2 ~ 0.4 秒，干脆利落")
+
 
 # ===== 音乐联动（QQ音乐 / 网易云音乐）=====
 # 这两个软件都会把"现在在放什么"登记到 Windows 的媒体会话里（SMTC），
@@ -315,6 +325,64 @@ def wav_seconds(path):
             return w.getnframes() / float(w.getframerate() or 1)
     except Exception:
         return 0.0
+
+
+def make_click_wav(src, dest, max_seconds=None, rate=44100):
+    """把主人挑的 wav 转成"点击音"要的格式：单声道 / 16 位 / 44100Hz（可选裁短）。
+
+    为什么要转：常开音频流那个播放器只吃"单声道 16 位 44100"的 wav，
+    主人随便挑的文件多半是 48kHz 立体声，不转的话要么没声、要么开头被吞。
+    返回 (时长秒, 过程说明)；出错就抛异常，由调用方给主人提示。
+    """
+    with wave.open(src, "rb") as w:
+        channels, width = w.getnchannels(), w.getsampwidth()
+        src_rate, frames = w.getframerate(), w.getnframes()
+        data = w.readframes(frames)
+    note = []
+    try:
+        import audioop
+    except Exception:
+        audioop = None
+    if audioop is not None:
+        if width != 2:
+            data = audioop.lin2lin(data, width, 2)
+            width = 2
+            note.append("位深转 16 位")
+        if channels == 2:
+            data = audioop.tomono(data, 2, 0.5, 0.5)
+            channels = 1
+            note.append("立体声合单声道")
+        if src_rate != rate:
+            data, _ = audioop.ratecv(data, 2, 1, src_rate, rate, None)
+            note.append(f"{src_rate}Hz → {rate}Hz")
+    else:                       # 没有 audioop（以后 Python 可能删掉它）时的兜底
+        if width != 2:
+            raise ValueError("这个 wav 不是 16 位的，请先转成 16 位 wav")
+        if channels == 2:
+            samples = array("h")
+            samples.frombytes(data)
+            mono = array("h", b"\x00\x00" * (len(samples) // 2))
+            for i in range(0, len(samples) - 1, 2):
+                mono[i // 2] = (samples[i] + samples[i + 1]) // 2
+            data = mono.tobytes()
+            channels = 1
+            note.append("立体声合单声道")
+        if src_rate != rate:
+            raise ValueError(f"这个 wav 是 {src_rate}Hz 的，请先转成 {rate}Hz")
+    if max_seconds:
+        cap = int(rate * float(max_seconds)) * 2 * max(1, channels)
+        if len(data) > cap:
+            data = data[:cap]
+            note.append(f"裁到 {float(max_seconds):.2f} 秒")
+    folder = os.path.dirname(dest)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with wave.open(dest, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(data)
+    return (len(data) // 2) / float(rate), "、".join(note)
 
 
 def pick_click_clips():
@@ -1642,7 +1710,8 @@ class PetWindow(QWidget):
             "agent_name": "Codex",
             "agent_sessions_dir": "",
             "codex_sessions_dir": CODEX_SESSIONS_DIR,
-            "menu_debug": False
+            "menu_debug": False,
+            "custom_sounds": {}
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
@@ -1795,6 +1864,12 @@ class PetWindow(QWidget):
         self._sound_idx = {}
         self._pending_sounds = []
         self._click_clips = pick_click_clips()
+        # 主人自己加的音效（文件放在用户目录的 sounds/ 下，路径记在 config.json 里）
+        self._custom_sounds = {}
+        for _s_name, _s_path in (self.cfg.get("custom_sounds") or {}).items():
+            if _s_path and os.path.exists(_s_path):
+                self._custom_sounds[_s_name] = _s_path
+                self._click_clips[_s_name] = _s_path
         # 常开音频流（首选）：设备一直是醒的，点下去立刻出声、开头不会被吞
         self._click_player = None
         if AUDIO_AVAILABLE:
@@ -2249,11 +2324,137 @@ class PetWindow(QWidget):
         self.cfg["sound_on"] = bool(on)
 
     def set_sound_set(self, name):
-        if name not in SOUND_SETS:
+        if name not in self._sound_names():
             return
         self.sound_set = name
         self.cfg["sound_set"] = name
         self.play_click()          # 换音效顺手试听一声
+
+    # ---------- 自己加音效 ----------
+    def _sound_names(self):
+        """可选音效名单：内置两套 + 主人自己加的（自己加的排在后面）。"""
+        extra = [n for n in getattr(self, "_custom_sounds", {}) if n not in SOUND_SETS]
+        return list(SOUND_SETS) + extra
+
+    def _register_sound(self, name, path):
+        """把一个已经转好格式的 wav 注册成可选音效（立刻生效，不用重启）。"""
+        if not hasattr(self, "_custom_sounds"):
+            self._custom_sounds = {}
+        self._click_clips[name] = path
+        self._custom_sounds[name] = path
+        self.cfg.setdefault("custom_sounds", {})[name] = path
+        if self._click_player is not None:
+            try:
+                self._click_player.load_clip(name, path)
+            except Exception:
+                pass
+        if AUDIO_AVAILABLE:
+            try:
+                url = QUrl.fromLocalFile(path)
+                pool = []
+                for _ in range(SOUND_POOL):
+                    eff = QSoundEffect(self)
+                    eff.setSource(url)
+                    eff.setVolume(self.volume)
+                    pool.append(eff)
+                self._sounds[name] = pool
+            except Exception:
+                pass
+        self.save_config()
+
+    def _add_sound_from_path(self, src, name=None, max_seconds=None):
+        """把主人的音频转格式、存进 sounds/、注册成音效。返回 (名字, 真实秒数, 处理说明)。"""
+        base = (name or os.path.splitext(os.path.basename(src))[0] or "我的音效").strip()[:16]
+        base = base or "我的音效"
+        if base in SOUND_SETS:                 # 别和内置的重名
+            base += "（我的）"
+        dest = os.path.join(SOUND_USER_DIR, base + ".wav")
+        secs, note = make_click_wav(src, dest, max_seconds=max_seconds)
+        self._register_sound(base, dest)
+        return base, secs, note
+
+    def add_custom_sound_dialog(self):
+        """挑一个自己的音频当点击音：会自动转成"单声道 44.1k"，太长还会问你要不要裁。"""
+        with self._ui_guard():
+            path, _ = QFileDialog.getOpenFileName(
+                self, "挑一个音效文件（wav）", "", "WAV 音频 (*.wav);;所有文件 (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".wav"):
+            with self._ui_guard():
+                QMessageBox.information(
+                    self, "要 wav 格式",
+                    "点击音现在只吃 wav 格式。\n\n" + SOUND_TIP +
+                    "\n\n可以先用任意工具把它转成 WAV（16 位最好）再选一次。")
+            return
+        secs = wav_seconds(path)
+        keep = None
+        if secs and secs > SOUND_IDEAL[1] + 0.2:
+            with self._ui_guard():
+                btn = QMessageBox.question(
+                    self, "这个有点长",
+                    f"这个音效 {secs:.2f} 秒。\n\n{SOUND_TIP}\n\n"
+                    f"要我帮你裁到 {SOUND_KEEP_MAX:.2f} 秒吗（只保留开头）？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel)
+            if btn == QMessageBox.StandardButton.Cancel:
+                return
+            if btn == QMessageBox.StandardButton.Yes:
+                keep = SOUND_KEEP_MAX
+        elif secs and secs < SOUND_IDEAL[0]:
+            with self._ui_guard():
+                ok = QMessageBox.question(
+                    self, "这个有点短",
+                    f"这个音效只有 {secs:.2f} 秒，可能听不清。\n\n{SOUND_TIP}\n\n还是要用吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ok != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            name, real, note = self._add_sound_from_path(path, max_seconds=keep)
+        except Exception as exc:
+            with self._ui_guard():
+                QMessageBox.warning(
+                    self, "这个文件我处理不了",
+                    f"{exc}\n\n{SOUND_TIP}\n\n建议先转成 WAV（16 位、44100Hz）再试。")
+            return
+        self.set_sound_set(name)               # 切过去，顺手试听一声
+        fit = "正好在建议区间里" if SOUND_IDEAL[0] <= real <= SOUND_IDEAL[1] else "不在建议区间里，觉得别扭就再换一个"
+        self.say(f"换上「{name}」啦：{real:.2f} 秒，{fit}" + (f"（{note}）" if note else ""))
+
+    def remove_custom_sound_dialog(self):
+        """删掉自己加的音效（内置两套动不了）。"""
+        names = list(getattr(self, "_custom_sounds", {}))
+        if not names:
+            self.say("你还没加过自己的音效呢")
+            return
+        with self._ui_guard():
+            pick, ok = QInputDialog.getItem(
+                self, "删掉我加的音效", "选一个删掉（内置的动不了）：", names, 0, False,
+                Qt.WindowType.WindowStaysOnTopHint)
+        if not ok or not pick:
+            return
+        self._remove_sound(pick)
+        self.say(f"「{pick}」删掉了")
+        self.play_click()
+
+    def _remove_sound(self, pick):
+        """真正把某个自定义音效删掉（对话框和测试都走这里）。"""
+        path = self._custom_sounds.pop(pick, None)
+        self._click_clips.pop(pick, None)
+        self._sounds.pop(pick, None)
+        try:
+            (self.cfg.get("custom_sounds") or {}).pop(pick, None)
+        except Exception:
+            pass
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        if self.sound_set == pick:
+            self.sound_set = "小黄鸭"
+            self.cfg["sound_set"] = "小黄鸭"
+        self.save_config()
 
     def set_volume(self, vol):
         self.volume = max(0.0, min(1.0, float(vol)))
@@ -3442,11 +3643,16 @@ class PetWindow(QWidget):
         so.setChecked(self.sound_on)
         so.triggered.connect(self.set_sound)
         pick_menu = snd_menu.addMenu("音效选择")
-        for name in SOUND_SETS:
+        for idx, name in enumerate(self._sound_names()):
+            if idx == len(SOUND_SETS):
+                pick_menu.addSeparator()        # 下面开始是主人自己加的
             a = pick_menu.addAction(name)
             a.setCheckable(True)
             a.setChecked(self.sound_set == name)
             a.triggered.connect(lambda _, n=name: self.set_sound_set(n))
+        snd_menu.addAction("添加我的音效…（自己挑 wav）", self.add_custom_sound_dialog)
+        if getattr(self, "_custom_sounds", None):
+            snd_menu.addAction("删掉我加的音效…", self.remove_custom_sound_dialog)
         vol_menu = snd_menu.addMenu("音量")
         vol_action = QWidgetAction(vol_menu)
         slider = QSlider(Qt.Orientation.Horizontal)
@@ -4252,7 +4458,7 @@ class PetWindow(QWidget):
             self.say("菜单日志关啦")
 
     MENU_TRIGGER_MARGIN_X = 0       # 方案 1 已弃用（主人选方案 2）：不再放宽触发范围
-    MENU_OVERLAP = 12               # v1.0.10 方案 2：子菜单和上一级菜单重叠的像素（主人觉得 16 太多，减 25%）
+    MENU_OVERLAP = 9                # v1.0.10 方案 2：子菜单和上一级菜单重叠的像素（16 → 12 → 9，两次各减 25%）
 
     def _menu_action_at(self, menu, pos, margin_x=0):
         """按（可横向放宽的）矩形找光标下那一项；纵向不放宽，免得串到相邻条目上。"""
