@@ -1592,6 +1592,181 @@ def list_process_names():
     return {name for name, _path in running_processes()}
 
 
+# ---------- 百宝箱：内存回收 ----------
+# 只做"温和回收"：对能碰到的进程调 EmptyWorkingSet，把它已经用不着的那部分工作集还给系统。
+# 不提权 —— 普通用户身份就能做（桌宠安装包默认就是这个不弹 UAC 的身份）。
+# 实测（本机 62.5 GB，探针 F:\Codex\work\probe_mem_optimize.py）：
+#   311 个进程里 141 个能碰到（都是同一个用户的），工作集 12.2 GB → 0.29 GB，整轮 150 ~ 850 ms；
+#   剩下 170 个（系统 / 提权进程）连句柄都打不开 —— 那部分要管理员，本功能不做。
+# 注意：收出来的页并没有消失，只是从"进程工作集"挪进了"备用列表"，程序再用到时是软缺页。
+MEM_TRIM_MIN_MB = 20        # 比这还小的进程不动（收了也省不下什么）
+MEM_TRIM_SKIP_EXE = {       # 系统关键进程：动了没收益，还可能让服务顿一下
+    "system", "idle", "registry", "memory compression", "secure system",
+    "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe",
+    "lsass.exe", "dwm.exe", "fontdrvhost.exe", "audiodg.exe",
+}
+
+
+def human_mb(nbytes):
+    """字节 → 「512 MB」/「1.4 GB」这种好念的字样。"""
+    mb = max(0.0, float(nbytes or 0)) / (1024 * 1024)
+    return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
+
+
+def system_memory():
+    """(总内存, 可用内存)，单位字节；读不到就返回 (0, 0)。"""
+    class _MemStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    try:
+        kernel32 = ctypes.WinDLL("kernel32.dll")
+        st = _MemStatus()
+        st.dwLength = ctypes.sizeof(st)
+        if kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return int(st.ullTotalPhys), int(st.ullAvailPhys)
+    except Exception:
+        pass
+    return 0, 0
+
+
+def trim_working_sets(skip_pids=(), skip_exes=(), min_bytes=None):
+    """温和回收：把能碰到的进程的工作集收一遍。
+
+    skip_pids / skip_exes 里的不动（自己和前台程序由调用方传进来）。
+    返回字典：trimmed / skipped_small / skipped_named / denied / failed 各种计数，
+              freed（这次一共腾出多少字节，按工作集前后差值算），
+              avail_before / avail_after（系统可用内存，给气泡里那句话用）、elapsed_ms。
+    出错时带 error 字段。只读查询 + 一次回收调用，不碰任何配置。
+    """
+    from ctypes import wintypes
+
+    class _PMC(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                    ("PrivateUsage", ctypes.c_size_t)]
+
+    floor = MEM_TRIM_MIN_MB * 1024 * 1024 if min_bytes is None else int(min_bytes)
+    out = {"trimmed": 0, "skipped_small": 0, "skipped_named": 0, "denied": 0,
+           "failed": 0, "freed": 0, "avail_before": 0, "avail_after": 0,
+           "elapsed_ms": 0}
+    t0 = time.perf_counter()
+    try:
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi.dll", use_last_error=True)
+        # 原型必须声明：不声明的话，64 位下返回的句柄会被当成 32 位截断
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                       wintypes.LPWSTR,
+                                                       ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        psapi.EnumProcesses.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+                                        ctypes.POINTER(wintypes.DWORD)]
+        psapi.EnumProcesses.restype = wintypes.BOOL
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PMC),
+                                              wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        psapi.EmptyWorkingSet.argtypes = [wintypes.HANDLE]
+        psapi.EmptyWorkingSet.restype = wintypes.BOOL
+    except Exception as exc:
+        out["error"] = str(exc)
+        return out
+
+    out["avail_before"] = system_memory()[1]
+    skip_pids = {int(p) for p in skip_pids}
+    skip_exes = {str(x).strip().lower() for x in skip_exes if str(x).strip()}
+    skip_exes |= MEM_TRIM_SKIP_EXE
+
+    def _open(access, pid):
+        return kernel32.OpenProcess(access, False, int(pid))
+
+    def _ws(handle):
+        pmc = _PMC()
+        pmc.cb = ctypes.sizeof(pmc)
+        if psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), ctypes.sizeof(pmc)):
+            return int(pmc.WorkingSetSize)
+        return 0
+
+    def _exe_of(handle):
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(len(buf))
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return buf.value.rsplit("\\", 1)[-1].lower()
+        return ""
+
+    arr = (wintypes.DWORD * 4096)()
+    needed = wintypes.DWORD()
+    if not psapi.EnumProcesses(ctypes.byref(arr), ctypes.sizeof(arr), ctypes.byref(needed)):
+        out["error"] = "枚举进程失败"
+        return out
+
+    targets = []                     # [(pid, 回收前的工作集)]
+    for i in range(needed.value // ctypes.sizeof(wintypes.DWORD)):
+        pid = int(arr[i])
+        if not pid or pid in (0, 4) or pid in skip_pids:
+            continue
+        handle = _open(0x0410, pid)              # QUERY_INFORMATION | VM_READ
+        if not handle:
+            out["denied"] += 1                   # 系统 / 提权进程：普通身份碰不到
+            continue
+        try:
+            name = _exe_of(handle)
+            if name in skip_exes:
+                out["skipped_named"] += 1
+                continue
+            ws = _ws(handle)
+        finally:
+            kernel32.CloseHandle(handle)
+        if ws < floor:
+            out["skipped_small"] += 1
+            continue
+        targets.append((pid, ws))
+
+    for pid, _before in targets:
+        handle = _open(0x0500, pid)              # QUERY_INFORMATION | SET_QUOTA
+        if not handle:
+            out["failed"] += 1
+            continue
+        try:
+            if psapi.EmptyWorkingSet(handle):
+                out["trimmed"] += 1
+            else:
+                out["failed"] += 1
+        finally:
+            kernel32.CloseHandle(handle)
+
+    if out["trimmed"]:
+        time.sleep(0.2)                          # 等内存管理器把账记完再量（实测 0.2 秒够）
+    for pid, ws_before in targets:
+        handle = _open(0x0410, pid)
+        if not handle:
+            continue
+        try:
+            ws_after = _ws(handle)
+        finally:
+            kernel32.CloseHandle(handle)
+        if ws_after:
+            out["freed"] += max(0, ws_before - ws_after)
+    out["avail_after"] = system_memory()[1]
+    out["elapsed_ms"] = (time.perf_counter() - t0) * 1000
+    return out
+
+
 def process_exe_by_pid(pid):
     """pid → 进程可执行文件名（小写）；拿不到返回空串。"""
     try:
@@ -2529,7 +2704,8 @@ class PetWindow(QWidget):
             "codex_sessions_dir": CODEX_SESSIONS_DIR,
             "menu_debug": False,
             "custom_sounds": {},
-            "still_face_cursor": False
+            "still_face_cursor": False,
+            "mem_skip_foreground": True     # 百宝箱·回收内存：不动前台程序（防卡顿）
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
@@ -2759,6 +2935,9 @@ class PetWindow(QWidget):
         self._city_queue = []         # 自动定位结果
         self._city_pick_queue = []    # 城市搜索候选
         self._app_queue = []          # 扫描到的本机应用列表
+        self._mem_queue = []          # 内存回收结果（后台线程 → 主线程）
+        self._mem_trimming = False    # 正在回收：连着点就只提醒一句
+        self._mem_last = None         # (程序数, 腾出字节)：菜单里那行"上次…"
 
         # 每轮 Codex 对话消耗（读 Codex 会话日志的 token 用量）
         self.agent_name = (self.cfg.get("agent_name") or "Codex").strip() or "Codex"
@@ -4584,6 +4763,8 @@ class PetWindow(QWidget):
                 self._apply_city(dict(items)[pick])
         if self._app_queue:
             self._pick_app_dialog(self._app_queue.pop(0))
+        if self._mem_queue:
+            self._mem_trim_done(self._mem_queue.pop(0))
 
         if self.jump_t > 0:
             self.jump_t = max(0.0, self.jump_t - 0.06)
@@ -5500,6 +5681,20 @@ class PetWindow(QWidget):
         perf_menu.addSeparator()
         perf_menu.addAction("开设置菜单时：性能=动画照跑，休闲=降到约 5 帧").setEnabled(False)
 
+        # 百宝箱：以后别的小工具都往这儿放（现在只有内存回收）
+        box_menu = m.addMenu("百宝箱")
+        box_menu.addAction("回收内存", self.mem_trim_now)
+        mfg = box_menu.addAction("回收时不动前台程序（防卡顿）")
+        mfg.setCheckable(True)
+        mfg.setChecked(bool(self.cfg.get("mem_skip_foreground", True)))
+        mfg.triggered.connect(self.set_mem_skip_foreground)
+        box_menu.addSeparator()
+        if self._mem_last:
+            box_menu.addAction(
+                f"上次：{self._mem_last[0]} 个程序腾出 {human_mb(self._mem_last[1])}"
+            ).setEnabled(False)
+        box_menu.addAction("不弹管理员提示，系统进程碰不到").setEnabled(False)
+
         snd_menu = m.addMenu("音效")
         so = snd_menu.addAction("按键音效")
         so.setCheckable(True)
@@ -5665,6 +5860,54 @@ class PetWindow(QWidget):
                 self.set_passthrough(False)
             self.force_recover()          # 顺手把可能残留的"让位"状态也清掉
             self.say("穿透解除了，我回来啦" if was_passthrough else "我在这儿呢")
+
+    # ---------- 百宝箱：内存回收 ----------
+    def mem_trim_now(self):
+        """「百宝箱 → 回收内存」：后台把工作集收一遍，回来报个数（不卡住桌宠）。"""
+        if self._mem_trimming:
+            self.say("还在收拾呢，等我一下下")
+            return
+        self._mem_trimming = True
+        skip_fg = bool(self.cfg.get("mem_skip_foreground", True))
+        self.say("我收拾一下内存…")
+
+        def worker():
+            skip_exes = []
+            if skip_fg:
+                fg = foreground_process_name()     # 正在用的程序不动，收了它得重新读一遍
+                if fg:
+                    skip_exes.append(fg)
+            try:
+                got = trim_working_sets(skip_pids={os.getpid()}, skip_exes=skip_exes)
+            except Exception as exc:               # 兜底：别让后台线程把桌宠带崩
+                got = {"error": str(exc)}
+            self._mem_queue.append(got)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _mem_trim_done(self, got):
+        """回收结果回到主线程：冒个泡报数（菜单里那行"上次…"也在这儿记）。"""
+        self._mem_trimming = False
+        if not got or got.get("error"):
+            self.say("没收拾成，等会儿再试试")
+            return
+        n = int(got.get("trimmed") or 0)
+        freed = int(got.get("freed") or 0)
+        extra = int(got.get("avail_after") or 0) - int(got.get("avail_before") or 0)
+        self._mem_last = (n, freed)
+        if not n:
+            self.say("这会儿没什么可收拾的")
+            return
+        line = f"收拾完啦：{n} 个程序腾出 {human_mb(freed)}"
+        if extra > 16 * 1024 * 1024:
+            line += f"，可用内存多出 {human_mb(extra)}"
+        self.say(line, seconds=4.0, again=True)
+
+    def set_mem_skip_foreground(self, on):
+        """回收时要不要连前台程序一起收（默认不收：收了前台可能会顿一下）。"""
+        self.cfg["mem_skip_foreground"] = bool(on)
+        self.save_config()
+        self.say("回收时不动你正在用的程序" if on else "回收时前台程序也一起收，可能会顿一下")
 
     def _make_menu(self):
         """建右键菜单：打开期间桌宠让位（临时取消置顶）并站住不动。"""

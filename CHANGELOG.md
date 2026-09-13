@@ -1,5 +1,69 @@
 # 更新日志
 
+## v1.0.19
+
+### 新增「百宝箱 → 回收内存」：把后台程序占着的内存收一收
+
+- **右键 → 百宝箱 → 回收内存**：点一下，它就把能碰到的后台程序"已经用不着的那部分内存"
+  先还给系统，完事冒个泡报个数 —— 例如「收拾完啦：22 个程序腾出 2.6 GB，可用内存多出 251 MB」。
+- **不动你正在用的程序**：默认跳过前台窗口（免得你正在玩的游戏 / 正在编辑的文档被清出去、
+  再点的时候要重新加载一下）。想收得更狠一点，就把子菜单里的
+  「回收时不动前台程序（防卡顿）」勾掉，前台的那个也一起收。
+- **不弹管理员提示**：它收的就是浏览器、聊天软件、播放器这些你自己开的程序；
+  系统进程那部分本来也碰不到，所以**全程不需要管理员、不会弹 UAC 框**，安装包还是原来那个"双击就能装"的。
+- **子菜单里会留一行「上次：xx 个程序腾出 xx」**，方便你对照第二次还有没有可收的（同一台机器上
+  第一把收得最多，紧接着再点一下往往就只剩零头）。
+- **说清楚它是干嘛的**：收出来的内存并没有消失，只是从"进程占用"挪进了系统的备用缓存，
+  程序再用到时是**软缺页**（直接从内存里取回来，不用读盘）—— 所以它是"把现在用不着的内存先让出来"，
+  最适合**开大游戏 / 虚拟机之前先清一把**；平时内存本来就不紧张的话，收不收差别不大。
+
+- 实测（真机、真鼠标，`F:\Codex\work\probe_mem_box.py`）：右键桌宠 → 悬停一级菜单里的「百宝箱」→
+  子菜单弹出来（回收内存 / 回收时不动前台程序 / 灰字提示，截图 `shot_mem_box_sub_box.png`）→
+  真鼠标点「回收内存」→ 气泡报「收拾完啦：22 个程序腾出 2.6 GB，可用内存多出 251 MB」
+  （截图 `shot_mem_after.png`）→ 再开菜单，子菜单里多出「上次：22 个程序腾出 2.6 GB」
+  （截图 `shot_mem_box_sub_last.png`）→ 点「回收时不动前台程序（防卡顿）」把它勾掉 →
+  `config.json` 里 `mem_skip_foreground` 变 `false`、菜单里不打勾、回话「回收时前台程序也一起收，
+  可能会顿一下」（截图 `shot_mem_toggle.png`）→ 再点回来又变 `true`；整个探针打印 `PASS`。
+- 实测（离屏，`F:\Codex\work\test_mem_trim.py`，11 组全过）：菜单结构对得上 / 勾选状态跟着配置走、
+  点一下能写回 config / 「上次：…」只在真回收过之后才出现 / `human_mb` 与 `system_memory` 的读数 /
+  门槛调大就一个都不碰 / 按进程名跳过走 `skipped_named` / 系统进程打不开（denied > 0）/
+  连点只提醒一句不起第二个任务 / 结果从后台队列回到主线程后气泡会报数。另外做了一组**对照实验**：
+  先给自己灌 150 MB 常驻内存再回收 —— 跳过自己时工作集 222.2 → 222.3 MB **一动不动**，
+  直接对自己调 `EmptyWorkingSet` 则 222.3 → 3.2 MB 立刻掉下来（证明"没动自己"是真没动，
+  不是量不出来）。
+- 实测（这台机器的回收能力，`F:\Codex\work\probe_mem_optimize.py`）：311 个进程里 **141 个能碰到**
+  （都是同一个用户的），工作集 **12.2 GB → 0.29 GB**，整轮 **150 ~ 850 ms**；另外 170 个
+  （系统 / 提权进程）连句柄都打不开。真要把内存还给空闲列表得"清空备用列表 / 清系统文件缓存"，
+  这两件**需要管理员**（实测返回 `NTSTATUS = 0xC0000061`、`GetLastError = 5` 拒绝访问），
+  这一版不做，留在 TODO 里。
+- 实测（菜单不会挤爆屏幕）：一级菜单总高 613px，屏幕可用高度 1152px，还富余 539px。
+- 回归（离屏，`F:\Codex\work\test_*.py` 全套 29 套）：**27 套通过**。`test_new_features.py`
+  （扫描应用的数量断言）和 `test_still_front.py`（离屏环境下的拖拽识别）这两套在**改动前的干净版本上
+  失败的是同样两条断言**（用 `git stash` 回退后复跑确认过），跟这次改动无关。
+
+### 维护者相关（发版 / 仓库，不写进 Release 说明）
+
+- `桌宠.py` 新增（放在 `list_process_names()` 和 `process_exe_by_pid()` 之间）：
+  - 模块级 `human_mb(nbytes)` / `system_memory()` / `trim_working_sets(skip_pids, skip_exes, min_bytes)`；
+  - 常量 `MEM_TRIM_MIN_MB = 20`（比这还小的进程不动）和 `MEM_TRIM_SKIP_EXE`
+    （system / csrss / wininit / winlogon / services / lsass / dwm / fontdrvhost / audiodg 这些不碰）。
+- `PetWindow` 新增 `mem_trim_now()` / `_mem_trim_done(got)` / `set_mem_skip_foreground(on)`：
+  后台线程只跑 ctypes，结果塞 `self._mem_queue`，主线程在 `tick()` 里取（跟天气 / 应用扫描一个套路）；
+  `self._mem_last = (程序数, 腾出字节)` 只在内存里，不落盘；`_mem_trimming` 防连点。
+- `config.json` 新增 `mem_skip_foreground`（默认 `true`）。
+- 菜单在 `_build_menu()`：「流畅度」和「音效」之间插了「百宝箱」二级菜单；
+  子菜单条目 = 回收内存 / 回收时不动前台程序（可勾）/ 分隔线 / （回收过才有）上次：… / 灰字提示。
+- 踩过的坑（下次别再踩）：
+  ① `EmptyWorkingSet` 在 **psapi.dll** 里，kernel32 没有这个导出（`kernel32.EmptyWorkingSet`
+     直接 AttributeError）；
+  ② `OpenProcess` / `QueryFullProcessImageNameW` 不声明 `restype` 的话，64 位下返回的句柄会被
+     按 32 位截断；
+  ③ 收别的进程要 `PROCESS_QUERY_INFORMATION(0x400) | PROCESS_SET_QUOTA(0x100)` ——
+     探针第一版写成 `0x0410`（少了 SET_QUOTA、多了 VM_READ），结果"一个都收不动"，
+     差点得出"不提权就做不了全局回收"的错误结论；
+  ④ `ctypes.WinDLL(...)` 不加 `use_last_error=True` 时，`ctypes.get_last_error()` 拿到的是 CRT 的
+     errno 而不是 `GetLastError()`，`AdjustTokenPrivileges` 那种"其实没赋上权"的失败会被误判成成功。
+
 ## v1.0.18
 
 ### 修改一下大小：原来那五档照旧，另外加了个「无级调节」
