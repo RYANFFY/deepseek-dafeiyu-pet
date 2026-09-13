@@ -165,6 +165,11 @@ CONFIG_PATH = os.path.join(USER_DIR, "config.json")
 BUBBLE_H = 112         # 气泡区高度（要放得下四行余额气泡：余额 / 金额 / 今日已用 / 峰谷）
 MARGIN = 4
 SIZE_LEVELS = {"迷你": 0.30, "特小": 0.42, "小": 0.55, "中": 0.7, "大": 0.9}
+# 无级调节的范围（原来是五档，现在多一条滑块）：100% = 原图高度 340px，
+# 上来一点到 120%（比"大"档再大一点），下去跟"迷你"一档对齐，别缩到看不见。
+SIZE_MIN = 0.30
+SIZE_MAX = 1.20
+SIZE_DEFAULT = 0.7
 MIN_WIN_W = 168        # 窗口最窄宽度：小档位也别把气泡挤成一条（气泡要放得下三四行字）
 
 # 语录（闲着时自己冒话）的触发频率档位
@@ -2493,6 +2498,7 @@ class PetWindow(QWidget):
             "balance_always": False,
             "snap_on": True,
             "flip_on_left": True,
+            "locked": False,          # 锁定位置：开了就拖不动（防误触），点击 / 菜单照旧
             "turn_cost_on": True,
             "skin": SKIN_PET,
             "sound_on": True,
@@ -2555,6 +2561,7 @@ class PetWindow(QWidget):
         # 精灵加载（三视图 + 挂件，每一张都可以被用户自定义图片替换）
         self.sprites = {}
         self.custom_skin_ok = {}
+        self._base_cache = {}             # 原始大图（裁过透明边）的缓存：无级调节要反复缩放，不能每次都读盘
         self._migrate_skin_library()      # 老配置里直接存的图片路径 → 搬进「我的形象库」
         self._rebuild_sprites()
         self.icon = QIcon(os.path.join(SPRITE_DIR, "icon.png"))
@@ -2564,7 +2571,11 @@ class PetWindow(QWidget):
                                                         and not self._has_sprite("挂件")):
             self.skin = SKIN_PET
 
+        self.cfg["size"] = self._clamp_size(self.cfg["size"])
         self.cur_h = int(340 * self.cfg["size"])
+        # 老配置里存的是无级调节调出来的高度（不在五档上）时，得把那个高度的精灵补上，
+        # 否则第一帧就没图可画
+        self._ensure_sprites(self.cur_h)
         self._apply_window_size()
 
         # 状态
@@ -2587,6 +2598,7 @@ class PetWindow(QWidget):
         self.t = 0
         self.jump_t = 0
         self.dragging = False
+        self._drag_blocked = False   # 锁定时按着划了一下（不算点击、也不挪窝）
         self.drag_offset = None
         self.drag_start_pos = None
         self.last_line = ""
@@ -2685,6 +2697,7 @@ class PetWindow(QWidget):
         self._stuck_ticks = 0
         self.snap_on = bool(self.cfg.get("snap_on", True))
         self.flip_on_left = bool(self.cfg.get("flip_on_left", True))
+        self.locked = bool(self.cfg.get("locked", False))    # 锁定位置：拖不动，但点击 / 菜单照常
         self.turn_cost_on = bool(self.cfg.get("turn_cost_on", True))
         self.bal_busy = False
         self.bal_error = ""
@@ -3827,29 +3840,53 @@ class PetWindow(QWidget):
         return any(k[0] == key for k in self.sprites)
 
     def _load_view_pixmap(self, view, h):
-        """加载某个视图的某个高度：优先用户自定义图片，其次自带素材。"""
+        """加载某个视图的某个高度：优先用户自定义图片，其次自带素材。
+
+        注：无级调节会一路拖出几十个不同的高度，所以"原图（裁掉透明边）"走 `_view_base`
+        的缓存，每次只是从缓存缩放到目标高度 —— 不用反复读盘、反复裁边。
+        """
         custom = self._custom_path(view)
         if custom:
-            pix = QPixmap(custom)
-            if not pix.isNull():
+            base = self._view_base(custom)
+            if base is not None and not base.isNull():
                 self.custom_skin_ok[view] = True
-                return self._crop_alpha(pix).scaledToHeight(
-                    h, Qt.TransformationMode.SmoothTransformation)
+                return base.scaledToHeight(h, Qt.TransformationMode.SmoothTransformation)
         self.custom_skin_ok[view] = False
         if view == "widget":
-            base = QPixmap(os.path.join(ASSET_DIR, WIDGET_SKIN_FILE))
-            if base.isNull():
-                return None
-            return self._crop_alpha(base).scaledToHeight(
+            base = self._view_base(os.path.join(ASSET_DIR, WIDGET_SKIN_FILE))
+            return None if base is None else base.scaledToHeight(
                 h, Qt.TransformationMode.SmoothTransformation)
         name = SPRITE_VIEWS[view]
+        # 自带素材正好有这个高度的现成文件（原来那五档就是）→ 直接用，省一次缩放
         sized = os.path.join(SPRITE_DIR, f"{name}_{h}.png")
         if os.path.exists(sized):
             return QPixmap(sized)
         full = os.path.join(SPRITE_DIR, f"{name}.png")
-        if not os.path.exists(full):
+        base = self._view_base(full)
+        if base is None:
             return None
-        return QPixmap(full).scaledToHeight(h, Qt.TransformationMode.SmoothTransformation)
+        return base.scaledToHeight(h, Qt.TransformationMode.SmoothTransformation)
+
+    def _view_base(self, path):
+        """某个视图"原图裁掉透明边"之后的那份，按「路径 + 修改时间」缓存。
+
+        换过图（或者把原图改名换回来）时，修改时间一变缓存自然失效，不用手工清。
+        """
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            return None
+        key = (path, stamp)
+        base = self._base_cache.get(key)
+        if base is None:
+            raw = QPixmap(path)
+            if raw.isNull():
+                return None
+            base = self._crop_alpha(raw)
+            if len(self._base_cache) >= 8:      # 撑死了几 MB，超了就整批丢掉重来
+                self._base_cache.clear()
+            self._base_cache[key] = base
+        return base
 
     def _rebuild_sprites(self):
         """重新加载各尺寸精灵（换了自定义图片后调用）。"""
@@ -3861,6 +3898,36 @@ class PetWindow(QWidget):
                 if pix is not None and not pix.isNull():
                     self.sprites[(key, h)] = pix
         self.widget_skin_ok = self._has_sprite("挂件")
+
+    @staticmethod
+    def _clamp_size(mult):
+        """把大小倍率收进允许范围（老配置里可能存着奇怪的值）。"""
+        try:
+            mult = float(mult)
+        except (TypeError, ValueError):
+            mult = SIZE_DEFAULT
+        return max(SIZE_MIN, min(SIZE_MAX, mult))
+
+    def _ensure_sprites(self, h):
+        """把某个高度的精灵补进 self.sprites（已经有了就跳过）。
+
+        无级调节会用到五档以外的高度，这里现补：只缩放缓存好的原图，很快。
+        """
+        h = int(h)
+        for view, key in VIEW_SHORT.items():
+            if (key, h) not in self.sprites:
+                pix = self._load_view_pixmap(view, h)
+                if pix is not None and not pix.isNull():
+                    self.sprites[(key, h)] = pix
+        self.widget_skin_ok = self._has_sprite("挂件")
+
+    def _prune_sprites(self, keep_h):
+        """只留五档 + 当前高度：无级调节一路拖过去会产生几十个高度，
+        不清理的话它们会一直占着内存。
+        """
+        keep = {int(340 * m) for m in SIZE_LEVELS.values()} | {int(keep_h)}
+        for key in [k for k in self.sprites if k[1] not in keep]:
+            del self.sprites[key]
 
     def _skin_pick_dir(self):
         """上次挑图的那个文件夹（没有就用"图片"文件夹）。"""
@@ -4954,6 +5021,7 @@ class PetWindow(QWidget):
             self.play_click()           # 点一次响一声完整音效（不再区分松手）
             self.last_press_pos = e.globalPosition().toPoint()
             self.dragging = False
+            self._drag_blocked = False
             self.drag_start_pos = e.globalPosition().toPoint()
 
     def mouseMoveEvent(self, e):
@@ -4962,6 +5030,10 @@ class PetWindow(QWidget):
         if e.buttons() & Qt.MouseButton.LeftButton and self.drag_start_pos is not None:
             delta = e.globalPosition().toPoint() - self.drag_start_pos
             if not self.dragging and delta.manhattanLength() > 6:
+                if self.locked:
+                    # 锁定位置：按住拖也不挪窝（防误触）；松手时这一次也不算点击
+                    self._drag_blocked = True
+                    return
                 self.dragging = True
                 self.drag_offset = e.globalPosition().toPoint() - QPoint(self.x(), self.y())
             if self.dragging and self.drag_offset is not None:
@@ -4983,6 +5055,10 @@ class PetWindow(QWidget):
                 self._snap_to_edge()    # 松手后吸附到最近的边
                 if random.random() < 0.5:
                     self.say(random.choice(self.lines_for("DRAG_LINES")))
+            elif self._drag_blocked:
+                # 锁定着按住了乱划：什么都不做（不然会被当成单击/双击，蹦一句话或者弹窗口）
+                self._drag_blocked = False
+                self._last_click_ms = -99999      # 这一下也不算"上一次点击"，免得带出假双击
             else:
                 # 用**墙上时间**判双击：以前用桌宠自己的动画时钟（self.t × tick_ms），
                 # 一旦动画停一下 / 卡一下，时钟就走得比真实时间慢，两次隔了 0.8 秒的点击
@@ -5248,6 +5324,11 @@ class PetWindow(QWidget):
             a.setCheckable(True)
             a.setChecked(abs(self.cur_h - 340 * mult) < 2)
             a.triggered.connect(lambda _, v=mult: self.set_size(v))
+        size_menu.addSeparator()
+        # 无级调节：滑块弹窗（菜单里内嵌滑块在这台机器上拖不动，见 _slider_dialog）
+        size_menu.addAction(
+            f"无级调节…（现在 {int(round(self.cfg.get('size', SIZE_DEFAULT) * 100))}%）",
+            defer_dialog(self.size_dialog))
         skin_menu = m.addMenu("形象")
         # v1.0.16：二级菜单就四条 —— 切三维 / 切挂件 / 形象库 / 全部恢复默认。
         # （原来那两套三级菜单去掉了：上传、换图、单套恢复都收进形象库窗口里，留着是重复）
@@ -5445,6 +5526,11 @@ class PetWindow(QWidget):
         m.addSeparator()
         m.addAction("显示/隐藏", self.toggle_visible)
         m.addAction("回到屏幕内", self.snap_into_screen)
+        # 锁定位置：开了就拖不动（防误触），点击 / 双击 / 菜单照旧
+        lk = m.addAction("锁定位置（拖不动·防误触）")
+        lk.setCheckable(True)
+        lk.setChecked(self.locked)
+        lk.triggered.connect(self.set_locked)
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
@@ -6803,6 +6889,20 @@ class PetWindow(QWidget):
             f"拖动滑块调桌宠整体透明度（20% ~ 100%，现在 {int(self.opacity * 100)}%）。",
             20, 100, int(round(self.opacity * 100)), self.set_opacity)
 
+    def size_dialog(self):
+        """大小无级调节：滑块拖到哪儿就多大，原来那五档还在菜单里点一下就到。
+
+        百分数就是高度比例：100% = 原图高度（340px，「大」档是 90%）。
+        """
+        cur = int(round(self.cfg.get("size", SIZE_DEFAULT) * 100))
+        self._slider_dialog(
+            "大小（无级调节）",
+            f"拖动滑块无级调大小（{int(SIZE_MIN * 100)}% ~ {int(SIZE_MAX * 100)}%，"
+            "100% 就是原图那么大）：拖着的时候它当场变大变小，"
+            "而且是原地缩放（脚底和中心不动，不会满屏乱窜）；松手就记住，"
+            "菜单里的「迷你 / 特小 / 小 / 中 / 大」五档照旧点一下就到。",
+            int(SIZE_MIN * 100), int(SIZE_MAX * 100), cur, self.set_size)
+
     def set_process_alerts(self, on):
         self.process_alerts = bool(on)
         self.cfg["process_alerts"] = bool(on)
@@ -6933,16 +7033,48 @@ class PetWindow(QWidget):
             self.flip_x = False
         self.update()
 
+    def set_locked(self, on):
+        """锁定位置：固定在原地 —— 点它、双击它、右键菜单都照常，就是拖着不动了。
+
+        防的是"想点一下结果把桌宠拖跑了"这种误触。想让它连散步都不散，用
+        模式 →「原地待着」；这里只管"拖不动"。
+        """
+        self.locked = bool(on)
+        self.cfg["locked"] = bool(on)
+        self.dragging = False
+        self._drag_blocked = False
+        self.drag_offset = None
+        self.drag_start_pos = None
+        self.save_config()
+        self.say("锁定啦，我就在这儿不动了（右键 →「锁定位置」可以解锁）" if on
+                 else "解锁了，又能拖着我走了",
+                 seconds=3.0, again=True)
+        self.update()
+
     def set_turn_cost(self, on):
         self.turn_cost_on = bool(on)
         self.cfg["turn_cost_on"] = bool(on)
 
     def set_size(self, mult):
+        """设大小：菜单里那五档和"无级调节"的滑块都走这里。
+
+        两个细节：
+        · 五档以外的高度现补精灵（`_ensure_sprites`），顺手把多余的高度清掉（`_prune_sprites`）；
+        · 变大小是"原地缩放"：脚底和中心不动，免得滑块一拖它整只往下出溜。
+        """
+        mult = self._clamp_size(mult)
         self.cfg["size"] = mult
         self.cross_t = 0.0
         self.prev_key = None
+        old_x, old_y = self.x(), self.y()
+        old_w, old_h = self.width(), self.height()
         self.cur_h = int(340 * mult)
+        self._prune_sprites(self.cur_h)
+        self._ensure_sprites(self.cur_h)
         self._apply_window_size()
+        if old_w:                      # 建窗口那一趟（还没摆位）不用动位置
+            self.move(int(old_x + old_w / 2 - self.width() / 2),
+                      int(old_y + old_h - self.height()))
         self.snap_into_screen()
 
     def _apply_window_size(self):
