@@ -162,14 +162,82 @@ SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
 ASSET_DIR = os.path.join(BUNDLE_DIR, "assets")     # 音效 + 小鲸鱼挂件形象
 CONFIG_PATH = os.path.join(USER_DIR, "config.json")
 
+# 新界面（设置窗口）：v1.1.0 起，菜单里的「打开设置…」开的是它。
+# 单独一个模块；万一它起不来，也绝不能拖垮桌宠本身 —— 老菜单照旧能用。
+# （先把自己的目录塞进 sys.path：直接 exec 加载本文件时也能找到 ui_console）
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+try:
+    import ui_console
+    ui_console.set_asset_dir(ASSET_DIR)
+except Exception as _ui_exc:                       # pragma: no cover
+    ui_console = None
+    print("控制台界面加载失败:", _ui_exc)
+
+
+def theme_color(key, fallback):
+    """取当前主题里的一个颜色（界面模块没加载起来时退回写死的值）。"""
+    try:
+        return ui_console.tokens()[key]
+    except Exception:
+        return fallback
+
+
+# Qt 自带的中文翻译得留个引用，不然会被回收（回收了按钮又变回 OK / Cancel）
+_QT_TRANSLATORS = []
+
+
+def install_qt_translator(app):
+    """让 Qt 内置对话框的按钮显示中文。
+
+    `QInputDialog` / `QMessageBox` 那些窗口里的 OK / Cancel 是 Qt 自己的词条，
+    只能靠 Qt 的翻译文件；PySide6 自带 `translations/qtbase_zh_CN.qm`，装上就全汉化了
+    （弹出的"触发文字"窗口底下那两个按钮就是它）。
+    """
+    try:
+        from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+    except Exception:
+        return
+    try:
+        QLocale.setDefault(QLocale(QLocale.Language.Chinese, QLocale.Country.China))
+    except Exception:
+        pass
+    path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    for name in ("qtbase_zh_CN", "qt_zh_CN"):
+        try:
+            tr = QTranslator(app)
+            if tr.load(name, path):
+                app.installTranslator(tr)
+                _QT_TRANSLATORS.append(tr)
+        except Exception:
+            pass
+
 BUBBLE_H = 112         # 气泡区高度（要放得下四行余额气泡：余额 / 金额 / 今日已用 / 峰谷）
 MARGIN = 4
-SIZE_LEVELS = {"迷你": 0.30, "特小": 0.42, "小": 0.55, "中": 0.7, "大": 0.9}
-# 无级调节的范围（原来是五档，现在多一条滑块）：100% = 原图高度 340px，
-# 上来一点到 120%（比"大"档再大一点），下去跟"迷你"一档对齐，别缩到看不见。
-SIZE_MIN = 0.30
-SIZE_MAX = 1.20
-SIZE_DEFAULT = 0.7
+# 五档。**滑块上的百分比以「大」为 100%**（2026-09-14 定的：选「大」时滑块就停在 100%），
+# 所以这几档特意按"乘出来是整百分数"排：30% / 40% / 60% / 80% / 100%。
+SIZE_LEVELS = {"迷你": 0.27, "特小": 0.36, "小": 0.54, "中": 0.72, "大": 0.90}
+SIZE_REF = SIZE_LEVELS["大"]      # 滑块上的 100% = 这一档（340 * 0.9 = 306px）
+# 无级调节的范围：20% ~ 150%（原来只有 30% ~ 120%）
+SIZE_MIN = 0.18
+SIZE_MAX = 1.35
+SIZE_DEFAULT = SIZE_LEVELS["中"]
+
+
+def size_percent(mult):
+    """大小倍率 → 滑块上那个百分比（「大」= 100%）。"""
+    try:
+        return int(round(float(mult) / SIZE_REF * 100))
+    except (TypeError, ValueError):
+        return int(round(SIZE_DEFAULT / SIZE_REF * 100))
+
+
+def size_from_percent(pct):
+    """滑块上那个百分比 → 大小倍率。"""
+    try:
+        return float(pct) / 100.0 * SIZE_REF
+    except (TypeError, ValueError):
+        return SIZE_DEFAULT
 MIN_WIN_W = 168        # 窗口最窄宽度：小档位也别把气泡挤成一条（气泡要放得下三四行字）
 
 # 语录（闲着时自己冒话）的触发频率档位
@@ -310,7 +378,10 @@ SOUND_TIP = ("点击音最适合 0.15 ~ 0.60 秒：\n"
 # 所以不用猜窗口标题，直接读系统媒体会话就能拿到歌名 / 歌手 / 播放状态 / 进度。
 MUSIC_APPS = {
     "qqmusic": "QQ音乐",
+    "qq music": "QQ音乐",
     "cloudmusic": "网易云音乐",
+    "netease": "网易云音乐",       # 商店版 / 新版客户端 AUMID 里常写成 Netease.xxx
+    "网易云": "网易云音乐",
 }
 MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
 
@@ -710,6 +781,8 @@ class AppScanDialog(QDialog):
 
     def __init__(self, owner, apps):
         super().__init__(None)
+        if ui_console:                      # 跟设置窗口用同一套配色
+            ui_console.style_dialog(self, BUNDLE_DIR)
         self.owner = owner
         self._icons = QFileIconProvider()
         self.setWindowTitle("扫描到的应用")
@@ -898,6 +971,8 @@ class SkinEditDialog(QDialog):
 
     def __init__(self, owner, kind, entry=None, prefill=None):
         super().__init__(None)
+        if ui_console:                      # 跟设置窗口用同一套配色
+            ui_console.style_dialog(self, BUNDLE_DIR)
         self.owner = owner
         self.kind = kind if kind in self.SLOTS else "widget"
         self.entry = dict(entry) if entry else None
@@ -935,11 +1010,11 @@ class SkinEditDialog(QDialog):
             shot = QLabel("（还没选）")
             shot.setFixedSize(76, 76)
             shot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            shot.setStyleSheet("border:1px solid #ccc; color:#888;")
+            shot.setObjectName("thumb")
             line.addWidget(shot)
             path_lb = QLabel("")
             path_lb.setWordWrap(True)
-            path_lb.setStyleSheet("color:#666;")
+            path_lb.setObjectName("dim")
             line.addWidget(path_lb, 1)
             pick = QPushButton("选图片…")
             pick.clicked.connect(lambda _=False, vv=view: self._pick(vv))
@@ -956,7 +1031,7 @@ class SkinEditDialog(QDialog):
             "　· 别改它的路径 —— 改名、挪文件夹、换盘都会让桌宠找不到。\n"
             "真找不到时，「我的形象库…」里点「换图…」重新指一张就行。")
         warn.setWordWrap(True)
-        warn.setStyleSheet("color:#a15c00;")
+        warn.setObjectName("warnText")
         lay.addWidget(warn)
 
         btns = QHBoxLayout()
@@ -1011,13 +1086,13 @@ class SkinEditDialog(QDialog):
         if need:
             tail = "（三张齐了才能保存）" if self.kind == "pet" else ""
             self.status.setText("还差：" + "、".join(VIEW_SHORT[v] for v in need) + tail)
-            self.status.setStyleSheet("color:#a15c00;")
+            self.status.setStyleSheet(f"color:{theme_color('warn', '#c9770f')};")
         elif not self.name_edit.text().strip():
             self.status.setText("图齐了，再起个名字就能保存")
-            self.status.setStyleSheet("color:#a15c00;")
+            self.status.setStyleSheet(f"color:{theme_color('warn', '#c9770f')};")
         else:
             self.status.setText("齐了，可以保存 ✓")
-            self.status.setStyleSheet("color:#2e7d32;")
+            self.status.setStyleSheet(f"color:{theme_color('ok', '#2e9e5b')};")
         self.save_btn.setEnabled(not need and bool(self.name_edit.text().strip()))
 
     def _save(self):
@@ -1039,6 +1114,8 @@ class SkinLibraryDialog(QDialog):
 
     def __init__(self, owner, kind="pet"):
         super().__init__(None)
+        if ui_console:                      # 跟设置窗口用同一套配色
+            ui_console.style_dialog(self, BUNDLE_DIR)
         self.owner = owner
         self.kind = kind if kind in ("pet", "widget") else "pet"
         self.setWindowTitle("我的形象库")
@@ -1069,7 +1146,7 @@ class SkinLibraryDialog(QDialog):
         self.preview = QLabel("（选一张看看）")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumSize(230, 165)
-        self.preview.setStyleSheet("border:1px solid #ccc; color:#888;")
+        self.preview.setObjectName("preview")
         right.addWidget(self.preview, 1)
         # 三维形象：三张小图并排（正面 / 侧面 / 背面），一眼看出哪张缺
         self.slot_box = QWidget()
@@ -1081,10 +1158,10 @@ class SkinLibraryDialog(QDialog):
             shot = QLabel("（缺）")
             shot.setFixedSize(76, 76)
             shot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            shot.setStyleSheet("border:1px solid #ccc; color:#888;")
+            shot.setObjectName("thumb")
             cap = QLabel(VIEW_SHORT[view])
             cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cap.setStyleSheet("color:#666;")
+            cap.setObjectName("dim")
             cell.addWidget(shot)
             cell.addWidget(cap)
             self.slot_shots[view] = shot
@@ -1092,7 +1169,7 @@ class SkinLibraryDialog(QDialog):
         right.addWidget(self.slot_box)
         self.info = QLabel("")
         self.info.setWordWrap(True)
-        self.info.setStyleSheet("color:#666;")
+        self.info.setObjectName("dim")
         right.addWidget(self.info)
 
         row1 = QHBoxLayout()
@@ -1798,6 +1875,23 @@ def music_app_name(app_id):
     return ""
 
 
+def app_name_from_id(app_id):
+    """认不出来的标识，收拾成人能看的样子（总比「未知应用」强）。
+
+    商店版的 AUMID 长这样：`Netease.CloudMusic_pfh4abc!App`，普通版是 `cloudmusic.exe`
+    或完整路径。这里取最后一段、去掉 .exe / 下划线，截短到 24 个字。
+    """
+    text = (app_id or "").strip()
+    if not text:
+        return ""
+    text = text.split("!")[0]
+    text = text.replace("\\", "/").rstrip("/").split("/")[-1]
+    if text.lower().endswith(".exe"):
+        text = text[:-4]
+    text = text.replace("_", " ").strip()
+    return text[:24]
+
+
 def smtc_available():
     """本机能不能读 Windows 媒体会话（读不了就走"看窗口标题"的退路）。"""
     try:
@@ -1822,21 +1916,32 @@ def read_media_session():
     async def _read():
         manager = await _Manager.request_async()
         session = None
+        name = ""
         first = manager.get_current_session()
-        if first is not None and music_app_name(first.source_app_user_model_id):
-            session = first
-        else:
-            for one in manager.get_sessions():
-                if music_app_name(one.source_app_user_model_id):
-                    session = one
-                    break
+        for one in [first] + list(manager.get_sessions()):
+            if one is None:
+                continue
+            got = music_app_name(one.source_app_user_model_id)
+            if got:
+                session, name = one, got
+                break
+        if session is None and first is not None:
+            # 名字认不出来（各家版本 AUMID 写法五花八门）：只要播放器窗口那边认得出
+            # 是 QQ音乐 / 网易云，就跟着这个会话走，名字用窗口那边认出来的
+            # （不然气泡顶上会显示「未知应用」）
+            window = read_music_window()
+            if window is not None:
+                session = first
+                name = (window.get("app") or "").strip()
         if session is None:
             return None
         status = getattr(session.get_playback_info().playback_status, "name", "")
         props = await session.try_get_media_properties_async()
         line = session.get_timeline_properties()
         return {
-            "app": music_app_name(session.source_app_user_model_id),
+            "app": name,
+            # 原始标识留着：万一还是没名字，气泡顶上能拿它当兜底（见 _app_label）
+            "app_id": session.source_app_user_model_id or "",
             "title": (props.title or "").strip(),
             "artist": (props.artist or "").strip(),
             "album": (props.album_title or "").strip(),
@@ -1912,20 +2017,21 @@ def read_music_window():
                     return True
                 pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                app = music_app_name(process_exe_by_pid(pid.value))
+                exe = process_exe_by_pid(pid.value)
+                app = music_app_name(exe)
                 if app:
-                    found.append((app, title))
+                    found.append((app, title, exe))
             except Exception:
                 pass
             return True
 
         user32.EnumWindows(_visit, 0)
-        for app, title in found:
+        for app, title, exe in found:
             song, artist = split_music_title(title, app)
             if song:
-                return {"app": app, "title": song, "artist": artist, "album": "",
-                        "playing": True, "position": None, "duration": 0.0,
-                        "at": time.time(), "from_title": True}
+                return {"app": app, "app_id": exe, "title": song, "artist": artist,
+                        "album": "", "playing": True, "position": None,
+                        "duration": 0.0, "at": time.time(), "from_title": True}
     except Exception:
         pass
     return None
@@ -2971,6 +3077,9 @@ class PetWindow(QWidget):
 
         self.bubble_font = QFont("Microsoft YaHei UI", 11)
 
+        # 设置窗口：懒加载，点「打开设置…」才建，别拖慢启动
+        self._console = None
+
         # 托盘
         self.tray = QSystemTrayIcon(self.icon, self)
         # 注意：QSystemTrayIcon 不接管菜单所有权，这里必须自己留引用，
@@ -3053,7 +3162,17 @@ class PetWindow(QWidget):
 
     @staticmethod
     def _app_label(info=None):
-        return ((info or {}).get("app") or "").strip() or APP_PLACEHOLDER
+        """气泡顶上那个应用名。
+
+        三级兜底：认出来的中文名 → 原始标识再认一次 → 把标识收拾成人能看的样子。
+        只有连标识都没有时才会是「未知应用」。
+        """
+        info = info or {}
+        name = (info.get("app") or "").strip()
+        if name:
+            return name
+        raw = (info.get("app_id") or "").strip()
+        return music_app_name(raw) or app_name_from_id(raw) or APP_PLACEHOLDER
 
     def _music_playing(self):
         info = self.now_playing
@@ -3922,7 +4041,7 @@ class PetWindow(QWidget):
     def _refresh_skins(self):
         """换完图 / 换完形象：重新加载精灵、按当前档位缩放、写回配置。"""
         self._rebuild_sprites()
-        self.set_size(self.cfg.get("size", 0.7))
+        self.set_size(self.cfg.get("size", SIZE_DEFAULT))
         self.save_config()
 
     def _migrate_skin_library(self):
@@ -4068,10 +4187,17 @@ class PetWindow(QWidget):
         return base
 
     def _rebuild_sprites(self):
-        """重新加载各尺寸精灵（换了自定义图片后调用）。"""
+        """重新加载各尺寸精灵（换了自定义图片后调用）。
+
+        除了五档标准高度，**当前高度也要建**：v1.0.18 起大小能无级调（比如 40%），
+        那不是五档里的任何一档；漏了它，换完形象在当前高度上就没图可画。
+        """
+        heights = [int(340 * mult) for mult in SIZE_LEVELS.values()]
+        cur = getattr(self, "cur_h", None)
+        if cur:
+            heights.append(int(cur))
         self.sprites = {}
-        for _label, mult in SIZE_LEVELS.items():
-            h = int(340 * mult)
+        for h in heights:
             for view, key in VIEW_SHORT.items():
                 pix = self._load_view_pixmap(view, h)
                 if pix is not None and not pix.isNull():
@@ -4247,7 +4373,7 @@ class PetWindow(QWidget):
         if self.skin == SKIN_WIDGET and not self._has_sprite("挂件"):
             self.skin = SKIN_PET
             self.cfg["skin"] = SKIN_PET
-        self.set_size(self.cfg.get("size", 0.7))
+        self.set_size(self.cfg.get("size", SIZE_DEFAULT))
         self.save_config()
         self.say(f"{SKIN_KIND_LABELS[kind]}恢复成自带的啦（库里的还留着）"
                  if kind in SKIN_KIND_LABELS else "已恢复自带形象（上传过的还在「我的形象库」里）")
@@ -5075,6 +5201,8 @@ class PetWindow(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("台词内容（可以自己写，也可以改写内置的）")
         dlg.resize(560, 460)
+        if ui_console:                      # 跟设置窗口用同一套配色
+            ui_console.style_dialog(dlg, BUNDLE_DIR)
         lay = QVBoxLayout(dlg)
         # 语录频率也放这个窗口里（和菜单「文案 → 语录频率」是同一个设置）
         row0 = QHBoxLayout()
@@ -5091,7 +5219,7 @@ class PetWindow(QWidget):
         freq_hint = QLabel("说多勤只管「闲着时自己冒话」；点它、拖它、换歌的反应不受影响，"
                            "放歌时也照旧不插嘴。")
         freq_hint.setWordWrap(True)
-        freq_hint.setStyleSheet("color:#666;")
+        freq_hint.setObjectName("dim")
         lay.addWidget(freq_hint)
         row = QHBoxLayout()
         row.addWidget(QLabel("改哪一类："))
@@ -5108,17 +5236,18 @@ class PetWindow(QWidget):
                       "放歌那两类里可以写 %s 代表当前歌名；"
                       "保存时留空 = 恢复这一类默认。" % "{song}")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#666;")
+        hint.setObjectName("dim")
         lay.addWidget(hint)
         edit = QPlainTextEdit()
         lay.addWidget(edit, 1)
         state = QLabel("")
-        state.setStyleSheet("color:#666;")
+        state.setObjectName("dim")
         lay.addWidget(state)
         btns = QHBoxLayout()
         btn_restore = QPushButton("恢复这一类默认")
         btn_ok = QPushButton("保存")
         btn_cancel = QPushButton("取消")
+        btn_ok.setObjectName("primary")
         btns.addWidget(btn_restore)
         btns.addStretch(1)
         btns.addWidget(btn_ok)
@@ -5454,7 +5583,43 @@ class PetWindow(QWidget):
         if tokens:
             self.say(f"上一轮 {self.agent_name} 消耗 ¥{amount:.4f}（{tokens / 1000:.1f}k token）")
 
+    def _build_quick_menu(self):
+        """右键菜单（v1.1.0 起瘦身版）：**一条子菜单都没有**，全是点一下就走。
+
+        设置都搬进「打开设置…」那个窗口了，这里只留两类东西：
+        「看一眼」（余额 / 天气 / 在放什么）和几条随手要用的开关与救命通道。
+        菜单里没有子菜单，也就没有那套"悬停展开 / 点击摆渡"的老毛病。
+        （完整版老菜单的入口挪到设置窗口「通用 → 排查问题」里去了。）
+        """
+        m = QMenu()
+        m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
+        m.addAction("查看天气", self._get_weather)
+        m.addAction("看一眼在放什么", self.check_music_now)
+        m.addSeparator()
+        m.addAction("打开设置…", defer_dialog(self.open_console))
+        m.addSeparator()
+        # 「显示/隐藏」和「经典菜单」都不放菜单里了：设置窗口「通用」页里有
+        # （菜单只留"看一眼"和"救命"两类）
+        lk = m.addAction("锁定位置（拖不动·防误触）")
+        lk.setCheckable(True)
+        lk.setChecked(self.locked)
+        lk.triggered.connect(self.set_locked)
+        pa = m.addAction("鼠标穿透（点不到它）")
+        pa.setCheckable(True)
+        pa.setChecked(self.cfg["passthrough"])
+        pa.triggered.connect(lambda on: self.set_passthrough(on))
+        m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
+        m.addSeparator()
+        m.addAction("退出", self.quit_app)
+        return m
+
     def _build_menu(self):
+        """**完整版菜单**（老样子，一条没少）。
+
+        v1.1.0 起右键桌宠弹的是瘦身后的 `_build_quick_menu()`，这一份退到
+        「经典菜单…」那条后面当兜底 —— 等新界面用稳一版，这里连同下面那 1000 行
+        子菜单补丁一起删。
+        """
         # 菜单不挂在桌宠窗口下面（用无父窗口的弹出菜单）：
         # 依附桌宠时，子菜单的悬停/收起会受桌宠那个"无边框+半透明+置顶"窗口影响，
         # 靠屏幕边缘往左弹的子菜单尤其容易被误判成"鼠标离开了菜单"而收起来。
@@ -5468,6 +5633,8 @@ class PetWindow(QWidget):
         #   真发生这种变动时，气泡里照旧会解释一句"余额少了…看着不像用掉的"。）
         m.addAction("查看天气", self._get_weather)
         m.addAction("看一眼在放什么", self.check_music_now)
+        # 新界面：v1.1.0 起设置都搬进这个窗口（老菜单先全留着当兜底，跑稳一版再收）
+        m.addAction("打开设置…", defer_dialog(self.open_console))
         # 快速双击弹哪个窗口：也放在这块最常用的区域里（一级菜单点一下就能换）
         dc_menu = m.addMenu(self._double_click_menu_title())
         dc_picked = self._double_click_choice()
@@ -5508,7 +5675,7 @@ class PetWindow(QWidget):
         size_menu.addSeparator()
         # 无级调节：滑块弹窗（菜单里内嵌滑块在这台机器上拖不动，见 _slider_dialog）
         size_menu.addAction(
-            f"无级调节…（现在 {int(round(self.cfg.get('size', SIZE_DEFAULT) * 100))}%）",
+            f"精确调节…（现在 {size_percent(self.cfg.get('size', SIZE_DEFAULT))}%）",
             defer_dialog(self.size_dialog))
         skin_menu = m.addMenu("形象")
         # v1.0.16：二级菜单就四条 —— 切三维 / 切挂件 / 形象库 / 全部恢复默认。
@@ -5743,6 +5910,48 @@ class PetWindow(QWidget):
         m.addAction("退出", self.quit_app)
         return m
 
+    def open_console(self):
+        """打开设置窗口（菜单最上面那条「打开设置…」）。
+
+        窗口是懒加载的：建一次就留着，再点只是抬到前面。
+        """
+        if ui_console is None:
+            QMessageBox.warning(self, "设置", "界面模块没加载起来，看下启动时的报错。")
+            return
+        win = getattr(self, "_console", None)
+        if win is not None:
+            try:
+                # 最小化着的话先播"还原动画"，别"啪"一下蹦出来
+                win.restore_or_show()
+                return
+            except RuntimeError:          # 窗口已经被 Qt 收掉了，重建一个
+                self._console = None
+        ctx = {
+            "ASSET_DIR": ASSET_DIR,
+            "SPRITE_DIR": SPRITE_DIR,
+            "BUNDLE_DIR": BUNDLE_DIR,
+            "SIZE_LEVELS": SIZE_LEVELS,
+            "size_percent": size_percent,
+            "size_from_percent": size_from_percent,
+            "SIZE_MIN": SIZE_MIN,
+            "SIZE_MAX": SIZE_MAX,
+            "LYRIC_OFFSET_LEVELS": LYRIC_OFFSET_LEVELS,
+            "DOUBLE_CLICK_CHOICES": DOUBLE_CLICK_CHOICES,
+            "PEAK_TEXT_STYLES": PEAK_TEXT_STYLES,
+            "LINE_FREQ_LEVELS": LINE_FREQ_LEVELS,
+            "SKIN_PET": SKIN_PET,
+            "SKIN_WIDGET": SKIN_WIDGET,
+            "LAYER_LABELS": dict(self.LAYER_LABELS),
+            "currency_symbol": currency_symbol,
+            "human_mb": human_mb,
+        }
+        self._console = ui_console.ConsoleWindow(self, ctx)
+        # 设置窗口**不跟着桌宠的层级**：它就是个普通窗口，谁点谁在上面，
+        # 不会被压在最上面碍事（打开时抬一下，够用了）。
+        self._console.show()
+        self._console.raise_()
+        self._console.activateWindow()
+
     def set_balance_source(self, name):
         """切换余额来源（DeepSeek / 用户自己加的其他服务）。"""
         self.cfg["balance_source"] = name
@@ -5909,9 +6118,15 @@ class PetWindow(QWidget):
         self.save_config()
         self.say("回收时不动你正在用的程序" if on else "回收时前台程序也一起收，可能会顿一下")
 
-    def _make_menu(self):
-        """建右键菜单：打开期间桌宠让位（临时取消置顶）并站住不动。"""
-        m = self._build_menu()
+    def _make_menu(self, classic=None):
+        """建右键菜单：打开期间桌宠让位（临时取消置顶）并站住不动。
+
+        classic=None（默认）看配置：「通用 → 用经典版菜单」打开时用完整版老菜单，
+        否则用瘦身版快捷菜单；显式传 True / False 可以强制某一份（用例里用得多）。
+        """
+        if classic is None:
+            classic = bool(self.cfg.get("classic_menu", False))
+        m = self._build_menu() if classic else self._build_quick_menu()
         self._menu_keepalive = m          # 菜单是纯 Python 对象，留个引用防回收
         self._menu_pool = ([m] + self._menu_pool)[:4]     # 留几份，用来看"还有菜单开着吗"
         self._sub_rect = {}               # 新的一份菜单：上次那些"子菜单位置/补弹次数"作废
@@ -6942,6 +7157,30 @@ class PetWindow(QWidget):
         except Exception:
             pass
 
+    def _open_classic_menu(self):
+        """把完整版老菜单按老样子弹出来（设置窗口「通用」里那个"看一眼"用它）。"""
+        m = self._make_menu(classic=True)
+        try:
+            m.exec(QCursor.pos())
+        finally:
+            self._sync_overlay_state()
+
+    def set_classic_menu(self, on):
+        """右键菜单用哪一份：瘦身版（默认）还是旧版那份完整菜单。"""
+        self.cfg["classic_menu"] = bool(on)
+        self.save_config()
+        self.say("右键菜单换成旧版那份了（功能全，但很长）" if on
+                 else "右键菜单回到瘦身版了", seconds=3.0, again=True)
+
+    def set_minimize_target(self, point):
+        """记下"设置窗口最小化动画往哪儿收"的屏幕坐标（在「通用」页校准）。"""
+        try:
+            x, y = int(point[0]), int(point[1])
+        except (TypeError, ValueError, IndexError):
+            return
+        self.cfg["minimize_target"] = [x, y]
+        self.save_config()
+
     def _open_menu(self, pos):
         """弹右键菜单。
 
@@ -7084,6 +7323,8 @@ class PetWindow(QWidget):
         dlg.setWindowTitle(title)
         dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         dlg.setMinimumWidth(380)
+        if ui_console:                      # 跟设置窗口用同一套配色
+            ui_console.style_dialog(dlg, BUNDLE_DIR)
         lay = QVBoxLayout(dlg)
         tip = QLabel(tip_text)
         tip.setWordWrap(True)
@@ -7135,16 +7376,17 @@ class PetWindow(QWidget):
     def size_dialog(self):
         """大小无级调节：滑块拖到哪儿就多大，原来那五档还在菜单里点一下就到。
 
-        百分数就是高度比例：100% = 原图高度（340px，「大」档是 90%）。
+        百分数以「大」档为 100%（也就是 306px 高）；范围 20% ~ 150%。
         """
-        cur = int(round(self.cfg.get("size", SIZE_DEFAULT) * 100))
+        cur = size_percent(self.cfg.get("size", SIZE_DEFAULT))
         self._slider_dialog(
             "大小（无级调节）",
-            f"拖动滑块无级调大小（{int(SIZE_MIN * 100)}% ~ {int(SIZE_MAX * 100)}%，"
-            "100% 就是原图那么大）：拖着的时候它当场变大变小，"
+            f"拖动滑块无级调大小（{size_percent(SIZE_MIN)}% ~ {size_percent(SIZE_MAX)}%，"
+            "100% 就是「大」那一档那么大）：拖着的时候它当场变大变小，"
             "而且是原地缩放（脚底和中心不动，不会满屏乱窜）；松手就记住，"
             "菜单里的「迷你 / 特小 / 小 / 中 / 大」五档照旧点一下就到。",
-            int(SIZE_MIN * 100), int(SIZE_MAX * 100), cur, self.set_size)
+            size_percent(SIZE_MIN), size_percent(SIZE_MAX), cur,
+            lambda pct: self.set_size(size_from_percent(pct)))
 
     def set_process_alerts(self, on):
         self.process_alerts = bool(on)
@@ -7435,6 +7677,11 @@ class PetWindow(QWidget):
     def quit_app(self):
         self.cfg["x"], self.cfg["y"] = self.x(), self.y()
         self.save_config()
+        if getattr(self, "_console", None) is not None:
+            try:
+                self._console.close()
+            except Exception:
+                pass
         self.tray.hide()
         QApplication.quit()
 
@@ -7445,6 +7692,12 @@ SINGLE_INSTANCE_KEY = "dafeiyu-pet-whale-single-instance"
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    install_qt_translator(app)      # Qt 自带按钮（OK / Cancel…）显示中文
+    # 窗口 / 任务栏图标：以前一个 setWindowIcon 都没有，任务栏上就是一只空白方块
+    if ui_console:
+        _ico = ui_console.bundle_icon(BUNDLE_DIR)
+        if not _ico.isNull():
+            app.setWindowIcon(_ico)
 
     # 单实例：已经在跑了就把那一只叫出来，不再开第二只（快捷方式 / 源码双击都一样）
     server = None

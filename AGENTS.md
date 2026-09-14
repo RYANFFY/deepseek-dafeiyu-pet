@@ -95,7 +95,16 @@ pyinstaller --noconfirm --clean 桌宠.spec
      写成 Markdown 链接，别用 `代码块`/纯文本把路径括起来：
      `[大肥鱼桌宠-vX.Y.Z-微信版.zip](F:/Codex/2026-09-11/deepseek-harness-dsh-ai-harness-deepseek/outputs/大肥鱼桌宠-vX.Y.Z-微信版.zip)`
    - 只想补做 zip：`publish-pet.ps1 -ZipOnly -Version X.Y.Z`
-5. 版本号 = 现有最高版本 + 1（脚本自己从 Release 列表算），保持连续、不跳号。
+5. 版本号规则（2026-09-14 主人改的，原话：
+   > 「之后迭代就每20一版吧，比如1.2.0的上一版是1.1.19」
+   ）：**补丁位每 20 个一进位** —— 一个次版本号带 20 个补丁版，
+   `x.y.0` → `x.y.1` → … → `x.y.19`，下一版就是 `x.(y+1).0`。
+   也就是**没有再发 `x.y.20` 这回事**，`.19` 用完直接进位。
+   现有最高版本接上这条也不会跳号：v1.0.19 已经发过，所以下一版是 **v1.1.0**。
+   脚本（`publish-pet.ps1`）如果还在按"最高版本 +1"算，得先改成这个规则。
+   保持连续、不跳号，内容没变不重发。
+   另：界面里显示的版本号在 `ui_console.py` 的 `APP_VERSION`，
+   发版时**要跟版本号一起改**（关于页和侧边栏底部都读它）。
 6. 打包用 `桌宠.spec`（别手写 PyInstaller 参数），安装包用
    `F:\Codex\tools\innosetup\ISCC.exe /DMyAppVersion=X.Y.Z installer.iss`。
 7. **Release 说明怎么写**（主人 2026-09-13：「现在就改，减少不必要的文案，1.0.15 的就很好」）：
