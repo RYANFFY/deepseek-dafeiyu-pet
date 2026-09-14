@@ -29,8 +29,7 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QPainter,
 from PySide6.QtWidgets import (QAbstractButton, QAbstractScrollArea,
                                QAbstractSlider, QApplication, QButtonGroup,
                                QColorDialog, QComboBox, QFileDialog, QFrame,
-                               QGraphicsOpacityEffect, QGridLayout, QHBoxLayout,
-                               QInputDialog, QLabel,
+                               QGridLayout, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QPushButton, QScrollArea, QScrollBar,
                                QSizePolicy, QSlider, QStackedWidget,
                                QVBoxLayout, QWidget)
@@ -799,6 +798,15 @@ class Segmented(QWidget):
         if not btn.isChecked():
             btn.setChecked(True)
 
+    def set_label(self, value, text, tooltip=""):
+        """改某一项的文字（「现在是谁」要跟着库里的形象名换）。"""
+        btn = self._buttons.get(value)
+        if btn is None:
+            return
+        if btn.text() != text:
+            btn.setText(text)
+        btn.setToolTip(tooltip or text)
+
 
 class ColorSwatches(QWidget):
     """一排色卡 + 「自定义…」+ 「从背景取色」。
@@ -1236,6 +1244,41 @@ class Page(QScrollArea):
 # --------------------------------------------------------------------------- #
 # 窗口壳：背景图画在这一层（所有控件底下）
 # --------------------------------------------------------------------------- #
+class _PageFade(QWidget):
+    """切页时铺在整壳上的那张"上一屏"截图，按自己的拍子淡掉。
+
+    刻意**不用** QGraphicsOpacityEffect：它会把那一页整棵子树塞进离屏图里重画一遍，
+    配这个"无边框 + 半透明"的窗口会闪、会错位，而且一帧就贵得多
+    （一帧一次整页离屏合成，滚动也跟着慢）。这里只是把一张截图按不透明度贴出来，
+    跟最小化动画是同一套做法。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pm = None
+        self._op = 1.0
+        # 动画这 150 毫秒里别吃鼠标：点哪就点到底下的真控件
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def set_pixmap(self, pm):
+        self._pm = pm
+        self.update()
+
+    def set_opacity(self, value):
+        self._op = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def paintEvent(self, _ev):
+        if self._pm is None or self._pm.isNull():
+            return
+        painter = QPainter(self)
+        painter.setOpacity(self._op)
+        painter.drawPixmap(0, 0, self._pm)
+        painter.end()
+
+
 class ShellFrame(QFrame):
     """窗口那张圆角卡片。
 
@@ -1579,55 +1622,65 @@ class ConsoleWindow(QWidget):
         """改「页面切换动效 / 减少动效」：存下来，顺手把正跑着的那段动画收干净。"""
         self._set_bg(key, bool(on))
         if not self._page_anim_on():
-            self._stop_page_anim()
+            self._stop_page_fade()
 
-    def _stop_page_anim(self):
-        """把手里的切页动画收干净：停掉、拆掉那个不透明度效果（留着会让整页走离屏合成）。"""
-        anim = getattr(self, "_page_anim", None)
-        page = getattr(self, "_page_anim_page", None)
-        self._page_anim = None
-        self._page_anim_page = None
-        if anim is not None:
+    def _stop_page_fade(self):
+        """把手里那段切页淡出收干净：停拍子、把那张截图撤掉。"""
+        timer = getattr(self, "_page_fade_timer", None)
+        if timer is not None:
+            timer.stop()
+        fade = getattr(self, "_page_fade", None)
+        self._page_fade = None
+        if fade is not None:
             try:
-                anim.stop()
-                anim.deleteLater()
-            except RuntimeError:
-                pass
-        if page is not None:
-            try:
-                page.setGraphicsEffect(None)   # 传 None = 把上一张效果拆掉
+                fade.hide()
+                fade.deleteLater()
             except RuntimeError:
                 pass
 
-    def _animate_page_in(self, page):
-        """新页面淡入一下（150ms，只动透明度）。
+    def _start_page_fade(self):
+        """切页前先把"这一屏"拍下来，切完之后把它淡掉 —— 新页面就浮出来了。
 
-        用 QGraphicsOpacityEffect 是没法子 —— 这个窗口是无边框 + 半透明（分层窗口），
-        动透明度只有这条路。它会让这一页在动画期间走离屏合成，所以**跑完立刻拆掉**，
-        不然之后滚动会一直慢半拍。
+        拍的是整个壳（含侧边栏和底图），所以淡出的时候只有内容区在变，
+        侧边栏看着一动不动。截图一定要在 `setCurrentWidget` **之前**拍。
         """
         if not self._page_anim_on() or not self.isVisible():
+            self._stop_page_fade()
             return
-        self._stop_page_anim()
+        # 先把上一次那张撤掉：不然这次会把"半透明的旧图"一起拍进新图里
+        self._stop_page_fade()
+        pm = None
         try:
-            fx = QGraphicsOpacityEffect(page)
-            page.setGraphicsEffect(fx)
-            anim = QPropertyAnimation(fx, b"opacity", self)
-            anim.setDuration(PAGE_ANIM_MS)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            anim.finished.connect(lambda p=page: self._page_anim_done(p))
-            self._page_anim = anim
-            self._page_anim_page = page
-            anim.start(QPropertyAnimation.DeletionPolicy.KeepWhenStopped)
+            pm = self.shell.grab()
         except Exception as exc:
-            print("切页动效失败:", exc)
-            self._stop_page_anim()
+            print("切页截图失败:", exc)
+        if pm is None or pm.isNull():
+            return
+        fade = _PageFade(self.shell)
+        fade.setGeometry(self.shell.rect())
+        fade.set_pixmap(pm)
+        fade.set_opacity(1.0)
+        fade.show()
+        fade.raise_()
+        self._page_fade = fade
+        self._page_fade_t0 = time.perf_counter()
+        if getattr(self, "_page_fade_timer", None) is None:
+            self._page_fade_timer = QTimer(self)
+            self._page_fade_timer.setInterval(ANIM_TICK_MS)
+            self._page_fade_timer.timeout.connect(self._page_fade_tick)
+        self._page_fade_timer.start()
 
-    def _page_anim_done(self, page):
-        if getattr(self, "_page_anim_page", None) is page:
-            self._stop_page_anim()
+    def _page_fade_tick(self):
+        fade = getattr(self, "_page_fade", None)
+        if fade is None:
+            self._stop_page_fade()
+            return
+        dur = max(0.05, PAGE_ANIM_MS / 1000.0)
+        t = (time.perf_counter() - self._page_fade_t0) / dur
+        if t >= 1.0:
+            self._stop_page_fade()
+            return
+        fade.set_opacity((1.0 - t) ** 3)      # 前快后慢，最后收得很轻
 
     def _ask_file(self, title, filt, current=""):
         """挑文件。期间让桌宠站住不动（跟别的对话框一个规矩）。"""
@@ -2052,9 +2105,9 @@ class ConsoleWindow(QWidget):
         if page is None:
             return
         self._cur_page_key = key
+        # 先拍下"切之前"这一屏，切完把它淡掉（关掉动效时这一步什么都不做）
+        self._start_page_fade()
         self.stack.setCurrentWidget(page)
-        # 新页面淡入一下（「页面切换动效」关掉、或开着「减少动效」时不播）
-        self._animate_page_in(page)
         self.title_label.setText(page.title)
         self.desc_label.setText(page.desc)
         for name, item in self._nav_items.items():
@@ -2199,8 +2252,8 @@ class ConsoleWindow(QWidget):
         card = page.card("形象", "换形象、上传自己的图", "nav.appearance")
         # 「现在是谁」和"形象库有几个"都是会变的：建的时候摆一次，
         # 之后每次切到这一页（或把窗口重新露出来）都按实际状态重摆（见 _sync_skin_controls）
-        self.skin_seg = Segmented([(skin_pet, f"{skin_pet}（三视图）"),
-                                   (skin_widget, f"{skin_widget}（单张）")],
+        self.skin_seg = Segmented([(skin_pet, self._skin_option_text("pet", skin_pet, "（三视图）")),
+                                   (skin_widget, self._skin_option_text("widget", skin_widget, "（单张）"))],
                                   pet.skin, lambda name: self._run(pet.set_skin, name))
         page.row(card, "现在是谁", "", self.skin_seg)
         row = page.buttons(card, [
@@ -2259,6 +2312,30 @@ class ConsoleWindow(QWidget):
             return "我的形象库…"
         return f"我的形象库…（三维 {n_pet} · 挂件 {n_widget}）"
 
+    def _skin_name(self, kind, builtin):
+        """这一本现在用着谁：用着库里的自定义形象就是它的名字，否则是自带的那个。"""
+        try:
+            ref = self.pet._current_skin_ref(kind)
+            ent = self.pet.skin_entry(kind, ref) if ref else None
+            if ent and ent.get("name"):
+                return str(ent["name"])
+        except Exception:
+            pass
+        return builtin
+
+    def _skin_option_text(self, kind, builtin, suffix):
+        """「现在是谁」那一档的文字：名字 + 按本的说法。
+
+        「（三视图）」「（单张）」是**按本**来的、永远跟着这一档走，截断也只会截名字 ——
+        用着库里的自定义形象就把前面的名字换成它的。
+        """
+        return f"{self._shorten(self._skin_name(kind, builtin), 12)}{suffix}"
+
+    @staticmethod
+    def _shorten(text, limit=16):
+        """太长就截断（档位那一排很窄，左边那行说明别被挤没了）。全名挂 tooltip。"""
+        return text if len(text) <= limit else text[:limit - 1] + "…"
+
     def _sync_skin_controls(self):
         """形象库条目数 + "现在是谁"，都按现在的实际状态重摆一遍。
 
@@ -2270,6 +2347,16 @@ class ConsoleWindow(QWidget):
             btn.setText(self._skin_lib_text())
         seg = getattr(self, "skin_seg", None)
         if seg is not None:
+            # 名字跟着库里的形象走（用着自定义的就把档位文字换成它的名字）
+            # 注意：这一排的"值"就是两套自带的形象名（SKIN_PET / SKIN_WIDGET），
+            # 档位文字才是会变的那部分
+            skin_pet = self.ctx.get("SKIN_PET", "大肥鱼")
+            skin_widget = self.ctx.get("SKIN_WIDGET", "小鲸鱼挂件")
+            # 悬停给全名（档位上那个是截过的）
+            seg.set_label(skin_pet, self._skin_option_text("pet", skin_pet, "（三视图）"),
+                          f"{self._skin_name('pet', skin_pet)}（三视图）")
+            seg.set_label(skin_widget, self._skin_option_text("widget", skin_widget, "（单张）"),
+                          f"{self._skin_name('widget', skin_widget)}（单张）")
             # clear_custom_skin 可能把挂件退回"大肥鱼"，这里跟着对上
             seg.set_value(getattr(self.pet, "skin", None))
         bubble = getattr(self, "bubble_seg", None)
