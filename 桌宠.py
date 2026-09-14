@@ -441,6 +441,100 @@ BUBBLE_INK = {
 # 余额气泡里"现在高峰 / 空闲"那行的颜色（深色底上得亮一点才看得清）
 BUBBLE_PEAK_COLORS = {"light": (QColor(198, 90, 20), QColor(46, 125, 50)),
                       "dark": (QColor(232, 152, 92), QColor(120, 214, 156))}
+
+# 右键菜单每条前面的小图标：跟设置窗口**同一套**（assets/icons 里的 Lucide 线稿，
+# 同一个 24 网格、线宽 1.75）。按文字**前缀**匹配、取最长的那个 ——
+# 菜单文字常带状态后缀（「语录频率（现在：话多）」「透明度…（现在 100%）」）。
+# 一张表、一份刷图标的代码，两版菜单（瘦身版 / 经典版）一起上 —— 这就是"图标风格统一"。
+# 没写进来的条目就留空，菜单不会因为缺图标少显示一条。
+MENU_ICONS = (
+    ("查看余额", "nav.balance"),
+    ("查看天气", "nav.weather"),
+    ("看一眼", "ui.eye"),
+    ("打开设置", "nav.general"),
+    ("快速双击", "page.click"),
+    ("说一句我写的台词", "ui.quote"),
+    ("改写这几句", "ui.quote"),
+    ("模式", "nav.behavior"),
+    ("自由散步", "nav.behavior"),
+    ("跟随鼠标", "nav.behavior"),
+    ("原地待着", "nav.behavior"),
+    ("大小", "page.resize"),
+    ("迷你", "page.resize"),
+    ("特小", "page.resize"),
+    ("精确调节", "page.resize"),
+    ("形象", "nav.appearance"),
+    ("大肥鱼", "nav.appearance"),
+    ("小鲸鱼挂件", "nav.appearance"),
+    ("我的形象库", "nav.appearance"),
+    ("全部恢复默认形象", "nav.appearance"),
+    ("层级", "page.layers"),
+    ("置顶", "page.layers"),
+    ("置底", "page.layers"),
+    ("普通层", "page.layers"),
+    ("透明度", "page.opacity"),
+    ("设置默认城市", "page.location"),
+    ("自动定位城市", "page.location"),
+    ("添加城市", "page.location"),
+    ("天气", "nav.weather"),
+    ("设置 Key", "nav.balance"),
+    ("余额来源", "nav.balance"),
+    ("添加其他 API Key", "nav.balance"),
+    ("校准今日已用", "page.calibrate"),
+    ("余额常显", "nav.balance"),
+    ("每轮消耗统计", "page.calibrate"),
+    ("每轮对话后显示消耗", "page.calibrate"),
+    ("设置 Agent 名称", "ui.edit"),
+    ("设置会话日志目录", "page.location"),
+    ("日志目录", "page.location"),
+    ("余额", "nav.balance"),
+    ("吸附", "page.magnet"),
+    ("拖拽吸附四边", "page.magnet"),
+    ("左吸附时翻面", "page.magnet"),
+    ("文案", "ui.quote"),
+    ("显示峰谷时段", "nav.lines"),
+    ("峰谷文案", "ui.quote"),
+    ("语录频率", "ui.quote"),
+    ("台词内容", "ui.quote"),
+    ("进程联动", "nav.integration"),
+    ("打开应用时冒泡", "nav.integration"),
+    ("扫描电脑应用并添加", "nav.integration"),
+    ("音乐联动", "nav.music"),
+    ("放歌时看着", "nav.music"),
+    ("显示歌词内容", "nav.music"),
+    ("歌词对时", "page.clock"),
+    ("歌词太慢", "page.clock"),
+    ("歌词太快", "page.clock"),
+    ("按播放器显示的时间对齐", "page.clock"),
+    ("这首歌的微调清零", "page.clock"),
+    ("这首歌对不上", "page.clock"),
+    ("流畅度", "nav.performance"),
+    ("性能模式", "nav.performance"),
+    ("休闲模式", "nav.performance"),
+    ("百宝箱", "page.sparkle"),
+    ("回收内存", "page.sparkle"),
+    ("回收时不动前台程序", "page.sparkle"),
+    ("音效选择", "nav.sound"),
+    ("按键音效", "nav.sound"),
+    ("添加我的音效", "ui.add"),
+    ("音量", "page.volume-high"),
+    ("试听音效", "page.volume-high"),
+    ("音效", "nav.sound"),
+    ("显示/隐藏", "ui.eye"),
+    ("回到屏幕内", "page.location"),
+    ("锁定位置", "page.lock"),
+    ("鼠标穿透", "page.pointer-off"),
+    ("救急恢复", "page.rescue"),
+    ("记菜单日志", "ui.help"),
+    ("开机自启", "page.power"),
+    ("退出", "page.exit"),
+)
+
+# 子菜单里的条目往下继承父项的图标（"大小"下面的迷你 / 小 / 中…都跟大小一个图案），
+# 只有**父项和子项本来就不是一回事**的写在这里（天气菜单下面列的是城市）。
+MENU_ICON_CHILD = (
+    ("天气", "page.location"),
+)
 LYRIC_MAX_ROWS = 4              # 当前这句最多折几行（再多就先把字号缩一档）
 LYRIC_MIN_PT = 7                # 折行还是超了时，字号最小缩到几磅（只有"迷你档 + 超长英文句"才会用到）
 LYRIC_OVERFLOW_ROWS = 8         # 缩到底还装不下时最多铺几行（宁可气泡高一点，也别丢歌词）
@@ -1071,6 +1165,14 @@ class SkinEditDialog(QDialog):
         btns = QHBoxLayout()
         self.save_btn = QPushButton("保存")
         cancel_btn = QPushButton("取消")
+        # 对话框按钮也配同一套小图标（颜色按对话框自己的主题算，每次建窗口都现算）
+        if ui_console is not None:
+            try:
+                fg = ui_console.tokens()["text"]      # 保存键是普通按钮，配正文色
+                self.save_btn.setIconSize(QSize(16, 16))
+                self.save_btn.setIcon(ui_console.icon("ui.save", fg, 16))
+            except Exception:
+                pass
         btns.addStretch(1)
         btns.addWidget(self.save_btn)
         btns.addWidget(cancel_btn)
@@ -1182,6 +1284,17 @@ class SkinLibraryDialog(QDialog):
         self.preview.setMinimumSize(230, 165)
         self.preview.setObjectName("preview")
         right.addWidget(self.preview, 1)
+        # 这本空着的时候，预览那块地方换成"插图 + 该干嘛"（不是只丢一句灰字）
+        self.empty_mark = None
+        if ui_console is not None:
+            try:
+                self.empty_mark = ui_console.EmptyState(
+                    "empty.skin", "这本还空着",
+                    "点下面的「上传新形象…」加一个", size=64)
+                self.empty_mark.setVisible(False)
+                right.addWidget(self.empty_mark, 1)
+            except Exception:
+                self.empty_mark = None
         # 三维形象：三张小图并排（正面 / 侧面 / 背面），一眼看出哪张缺
         self.slot_box = QWidget()
         slot_row = QHBoxLayout(self.slot_box)
@@ -1302,20 +1415,30 @@ class SkinLibraryDialog(QDialog):
     def _show_detail(self):
         ent = self._current_entry()
         if ent is None:
+            if self.empty_mark is not None:
+                self.empty_mark.setVisible(True)
+            self.preview.setVisible(False)
             self.tip.setText(
                 ("这本还空着。点下面的「上传新形象…」把正面 / 侧面 / 背面三张图都挑齐，"
                  "起个名字就收录成一个三维形象（列表和预览显示的是正面那张）。")
                 if self.kind == "pet" else
                 "这本还空着。点下面的「上传新形象…」挑一张图、起个名字就行"
                 "（PNG 这类带透明背景的最好看）。")
-            self.preview.setPixmap(QPixmap())
-            self.preview.setText("（这本还没有形象）")
+            if self.empty_mark is not None:
+                self.empty_mark.set_text(
+                    "这本还空着",
+                    "点下面的「上传新形象…」挑三张（正面 / 侧面 / 背面）"
+                    if self.kind == "pet" else
+                    "点下面的「上传新形象…」挑一张（带透明背景的最好）")
             self.info.setText("")
             for shot in self.slot_shots.values():
                 shot.setPixmap(QPixmap())
                 shot.setText("（缺）")
             self._enable(False)
             return
+        if self.empty_mark is not None:
+            self.empty_mark.setVisible(False)
+        self.preview.setVisible(True)
         missing = self.owner.skin_missing_views(self.kind, ent)
         self.tip.setText(
             ("三张图齐了才算一个三维形象；下面显示的是正面那张，点「用这个形象」整套换上。\n"
@@ -5713,6 +5836,7 @@ class PetWindow(QWidget):
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         m.addSeparator()
         m.addAction("退出", self.quit_app)
+        self._iconize_menu(m)          # 每条前面的小图标（跟设置窗口同一套）
         return m
 
     def _build_menu(self):
@@ -6010,6 +6134,7 @@ class PetWindow(QWidget):
         aa.triggered.connect(lambda on: self.set_autostart(on))
         m.addSeparator()
         m.addAction("退出", self.quit_app)
+        self._iconize_menu(m)          # 经典版也配同一套图标（两版菜单才叫统一）
         return m
 
     def _notify_console(self):
@@ -6268,7 +6393,54 @@ class PetWindow(QWidget):
 
         m.aboutToShow.connect(on_show)
         m.aboutToHide.connect(on_hide)
+        self._iconize_menu(m)
         return m
+
+    @staticmethod
+    def _menu_icon_lookup(table, text):
+        """在一张 (前缀, 图标) 表里挑最合适的一条（取最长的前缀；没有就空串）。"""
+        best, name = -1, ""
+        for prefix, icon_name in table:
+            if text.startswith(prefix) and len(prefix) > best:
+                best, name = len(prefix), icon_name
+        return name
+
+    def _menu_icon_name(self, text):
+        return self._menu_icon_lookup(MENU_ICONS, text)
+
+    def _iconize_menu(self, menu, color=None, inherit=""):
+        """给一棵菜单（连各级子菜单）按 MENU_ICONS 配上图标。
+
+        颜色取**菜单自己的文字色**：右键菜单是系统画的，亮 / 暗跟着系统走，
+        写死一个颜色总有一边看不清。界面模块没起来就跳过（菜单照常能用）。
+
+        inherit 是"父项那个图标"：子项没单独写在 MENU_ICONS 里就跟着父项
+        （所以"大小"下面的迷你 / 小 / 中…也会带上同一个图案）。
+        """
+        if ui_console is None:
+            return
+        if color is None:
+            try:
+                from PySide6.QtGui import QPalette
+                color = menu.palette().color(QPalette.ColorRole.WindowText).name()
+            except Exception:
+                color = "#5a5a64"
+        for act in menu.actions():
+            if act.isSeparator():
+                continue
+            sub = act.menu()
+            name = self._menu_icon_name(act.text()) or inherit
+            if not name:
+                if sub is not None:
+                    self._iconize_menu(sub, color, "")
+                continue
+            try:
+                act.setIcon(ui_console.icon(name, color, ui_console.ICON_SM))
+            except Exception:
+                pass
+            if sub is not None:
+                child = self._menu_icon_lookup(MENU_ICON_CHILD, act.text()) or name
+                self._iconize_menu(sub, color, child)
 
     def _install_place_fix(self, menu):
         """给这棵菜单树里每一层都装上"一显示就摆正"的过滤器（重复调用没关系）。"""

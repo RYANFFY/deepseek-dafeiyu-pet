@@ -25,12 +25,13 @@ from PySide6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent,
                             QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer,
                             QUrl, QVariantAnimation)
 from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QPainter,
-                           QPainterPath, QPixmap, QWheelEvent)
+                           QPainterPath, QPen, QPixmap, QWheelEvent)
 from PySide6.QtWidgets import (QAbstractButton, QAbstractScrollArea,
                                QAbstractSlider, QApplication, QButtonGroup,
                                QColorDialog, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QInputDialog, QLabel,
-                               QLineEdit, QPushButton, QScrollArea, QScrollBar,
+                               QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+                               QScrollArea, QScrollBar,
                                QSizePolicy, QSlider, QStackedWidget,
                                QVBoxLayout, QWidget)
 
@@ -59,6 +60,16 @@ APP_VERSION = "1.1.2"
 MINIMIZE_ANIM_MS = 190
 # 切页淡入的时长（毫秒）：短到"看得出是换了一页"，又不至于等
 PAGE_ANIM_MS = 150
+# 搜索跳转之后那一圈高亮闪多久（毫秒）
+FLASH_MS = 900
+
+# 图标尺寸只有这三档（全界面统一，别在页面里现写数字）：
+#   ICON_SM   小按钮 / 右键菜单
+#   ICON_CARD 卡片标题左边那颗（配 13px 的标题）
+#   ICON_MD   侧边栏分类、标题栏按钮、对话框按钮
+ICON_SM = 16
+ICON_CARD = 17
+ICON_MD = 18
 # 动画节拍：**自己去插值**，一拍 8ms（≈120fps）。
 # Qt 自带的动画走的是全局统一计时器（默认 16ms ≈ 60fps），时长相同时帧数只有一半，
 # 所以同一段 190ms 我们按 8ms 走 —— 时间不变、帧数翻倍。
@@ -118,7 +129,10 @@ THEMES = {
     },
 }
 
-THEME_MODES = [("system", "跟随系统"), ("light", "亮色"), ("dark", "暗色")]
+# 三档配色（第三项是图标：跟别处同一套线稿）
+THEME_MODES = [("system", "跟随系统", "page.theme-system"),
+               ("light", "亮色", "page.theme-light"),
+               ("dark", "暗色", "page.theme-dark")]
 
 # --------------------------------------------------------------------------- #
 # 控制台自己的样子（背景 / 标题 / 图标）
@@ -347,6 +361,15 @@ def icon_pixmap(name, color, size=18):
 
 def icon(name, color, size=18):
     return QIcon(icon_pixmap(name, color, size))
+
+
+def button_icon_color(style):
+    """按钮上的小图标用哪个颜色（跟这颗按钮的文字一路）。"""
+    if style == "primary":
+        return tokens()["accent_text"]
+    if style == "danger":
+        return tokens()["danger"]
+    return tokens()["text"]
 
 
 def swatch_pixmap(color, size=18):
@@ -646,6 +669,16 @@ QComboBox QAbstractItemView { background: $surface; color: $text;
 QLineEdit { background: $surface_alt; border: 1px solid $border; border-radius: 8px;
             padding: 6px 10px; color: $text; font-size: 12px; }
 QLineEdit:focus { border-color: $accent; background: $surface; }
+/* 侧边栏里那个"搜设置…" */
+QLineEdit#searchBox { background: $surface_alt; border-color: transparent;
+                      padding: 5px 8px; margin-bottom: 6px; }
+QLineEdit#searchBox:focus { border-color: $accent; background: $surface; }
+/* 搜索结果列表：贴着侧边栏，别做成一张卡片 */
+QListWidget#searchResults { background: transparent; border: none; padding: 0px; }
+QListWidget#searchResults::item { padding: 6px 8px; border-radius: 7px;
+                                  color: $nav_text; }
+QListWidget#searchResults::item:hover { background: $surface_alt; color: $text; }
+QListWidget#searchResults::item:selected { background: $accent_soft; color: $text; }
 QSlider::groove:horizontal { height: 4px; background: $surface_alt; border-radius: 2px; }
 QSlider::sub-page:horizontal { background: $accent; border-radius: 2px; }
 QSlider::handle:horizontal { width: 14px; margin: -6px 0; border-radius: 7px;
@@ -760,6 +793,7 @@ class Segmented(QWidget):
         super().__init__(parent)
         self._on_change = on_change
         self._buttons = {}
+        self._icons = {}              # 值 → 图标名（options 第三项给了才有）
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self._box = QFrame()
@@ -769,18 +803,28 @@ class Segmented(QWidget):
         self._line.setSpacing(2)
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
-        for value, label in options:
-            self._add(value, label, value == current)
+        self._fill(options, current)
         outer.addWidget(self._box)
         outer.addStretch(1)
 
-    def _add(self, value, label, checked=False):
+    def _fill(self, options, current):
+        """按 (值, 文字[, 图标]) 摆一排按钮。"""
+        for opt in options:
+            value, label = opt[0], opt[1]
+            self._add(value, label, value == current,
+                      opt[2] if len(opt) > 2 else None)
+
+    def _add(self, value, label, checked=False, icon_name=None):
         btn = QPushButton(label)
         btn.setObjectName("segBtn")
         btn.setCheckable(True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setChecked(bool(checked))
         btn.clicked.connect(lambda _=False, v=value: self._pick(v))
+        if icon_name:
+            self._icons[value] = icon_name
+            btn.setIconSize(QSize(ICON_SM, ICON_SM))
+            btn.setIcon(icon(icon_name, tokens()["nav_text"], ICON_SM))
         self._line.addWidget(btn)
         self._group.addButton(btn)
         self._buttons[value] = btn
@@ -794,9 +838,16 @@ class Segmented(QWidget):
             btn.setParent(None)
             btn.deleteLater()
         self._buttons.clear()
-        for value, label in options:
-            self._add(value, label, value == current)
+        self._icons.clear()
+        self._fill(options, current)
         self.update()
+
+    def repaint_theme(self):
+        """换主题后重画里面的小图标（颜色跟着主题的文字色走）。"""
+        for value, name in self._icons.items():
+            btn = self._buttons.get(value)
+            if btn is not None:
+                btn.setIcon(icon(name, tokens()["nav_text"], ICON_SM))
 
     def _pick(self, value):
         if self._on_change is not None:
@@ -873,7 +924,7 @@ class ColorSwatches(QWidget):
         self._from_bg.setIconSize(QSize(16, 16))
         self._from_bg.setCursor(Qt.CursorShape.PointingHandCursor)
         self._from_bg.setToolTip("从背景图里挑一个颜色")
-        self._from_bg.setIcon(icon("ui.pipette", tokens()["text"], 16))
+        self._from_bg.setIcon(icon("ui.pipette", tokens()["text"], ICON_SM))
         self._from_bg.clicked.connect(lambda _=False: on_from_bg())
         box.addWidget(self._from_bg)
         self.set_value(current)
@@ -905,7 +956,7 @@ class ColorSwatches(QWidget):
     def repaint_theme(self):
         """换主题（亮/暗）之后重画那颗「默认」和图标按钮。"""
         self.set_value(self._current)
-        self._from_bg.setIcon(icon("ui.pipette", tokens()["text"], 16))
+        self._from_bg.setIcon(icon("ui.pipette", tokens()["text"], ICON_SM))
 
 
 class AlignGrid(QWidget):
@@ -977,7 +1028,7 @@ class NavItem(QAbstractButton):
             painter.drawRoundedRect(
                 QRectF(0.0, 0.5, float(self.width()), self.height() - 1.0), 9, 9)
         painter.drawPixmap(11, (self.height() - 18) // 2,
-                           icon_pixmap(self.icon_name, fg, 18))
+                           icon_pixmap(self.icon_name, fg, ICON_MD))
         font = QFont(self.font())
         font.setPixelSize(13)
         font.setBold(self.isChecked())
@@ -1068,6 +1119,78 @@ class DragBar(QFrame):
         super().mouseReleaseEvent(ev)
 
 
+class EmptyState(QWidget):
+    """空状态：一张小插图 + 一句人话（比光丢一行灰字好看，也一眼看懂该干嘛）。
+
+    插图用跟别处同一套线稿（assets/icons），颜色取当前主题的淡字色，
+    所以换主题时由页面的 repaint_cards() 一起重画。
+    """
+
+    def __init__(self, icon_name, title, hint="", size=54, parent=None):
+        super().__init__(parent)
+        self._icon_name = icon_name
+        self._size = size
+        col = QVBoxLayout(self)
+        col.setContentsMargins(6, 10, 6, 12)
+        col.setSpacing(6)
+        self._mark = QLabel()
+        self._mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._mark.setPixmap(icon_pixmap(icon_name, tokens()["text_faint"], size))
+        col.addWidget(self._mark)
+        self._title = QLabel(title)
+        self._title.setObjectName("muted")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title.setWordWrap(True)
+        col.addWidget(self._title)
+        self._hint = None
+        if hint:
+            self._hint = QLabel(hint)
+            self._hint.setObjectName("faint")
+            self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._hint.setWordWrap(True)
+            col.addWidget(self._hint)
+
+    def set_text(self, title, hint=""):
+        self._title.setText(title)
+        if self._hint is not None:
+            self._hint.setText(hint)
+
+    def repaint_theme(self):
+        self._mark.setPixmap(icon_pixmap(self._icon_name, tokens()["text_faint"],
+                                        self._size))
+
+
+class _FlashBox(QWidget):
+    """跳到某个设置项之后，在那一行上闪一圈主色边框。
+
+    自己画一圈就走，不动那一行自己的样式 —— 改样式表会牵连里面的子控件。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._t = 1.0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def set_opacity(self, value):
+        self._t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def paintEvent(self, _ev):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        color = QColor(tokens()["accent"])
+        color.setAlphaF(min(1.0, 0.9 * self._t))
+        pen = QPen(color)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(QRectF(1.0, 1.0, self.width() - 2.0,
+                                       self.height() - 2.0), 9.0, 9.0)
+        painter.end()
+
+
 class Page(QScrollArea):
     """一页内容。卡片 / 行 / 分隔线都从这儿长出来，风格自然统一。"""
 
@@ -1088,6 +1211,10 @@ class Page(QScrollArea):
         self.body.addStretch(1)
         self.setWidget(inner)
         self._card_icons = []
+        self._btn_icons = []          # [(按钮, 图标名, 样式名)]：换主题时要重画颜色
+        self._segments = []           # 这一页上的分段控件：换主题时也要重画里面的图标
+        self._empties = []            # 空状态块：换主题时也要重画插图
+        self._index = []              # [(标题, 说明, 控件)] —— 给"设置项搜索"用的目录
 
     # ---- 积木 ----
     def card(self, title, desc="", icon_name=None):
@@ -1102,7 +1229,7 @@ class Page(QScrollArea):
         if icon_name:
             mark = QLabel()
             mark.setFixedSize(17, 17)
-            mark.setPixmap(icon_pixmap(icon_name, tokens()["accent"], 17))
+            mark.setPixmap(icon_pixmap(icon_name, tokens()["accent"], ICON_CARD))
             self._card_icons.append((mark, icon_name))
             head.addWidget(mark)
         label = QLabel(title)
@@ -1144,10 +1271,29 @@ class Page(QScrollArea):
         # 挂两个引用：外面要改这一行的文字时不用再去翻 QLabel（背景那行就靠它刷文件名）
         wrap.title_label = name
         wrap.desc_label = sub if desc else None
+        self._index.append((title, desc or "", wrap))
         return wrap
 
+    def empty(self, icon_name, title, hint="", size=54, layout=None):
+        """放一个空状态（插画 + 一句话）。layout 给了就放进那张卡片里。
+
+        返回它，方便按状态 set_text / 显隐。
+        """
+        widget = EmptyState(icon_name, title, hint, size)
+        if layout is not None:
+            layout.addWidget(widget)
+        else:
+            self.body.insertWidget(self.body.count() - 1, widget)
+        self._empties.append(widget)
+        return widget
+
     def buttons(self, layout, items, align_right=True):
-        """一行按钮：items = [(文字, 回调, 样式名 or None), …]。"""
+        """一行按钮：items = [(文字, 回调, 样式名 or None[, 图标名]), …]。
+
+        图标是可选的第四项：给了就画在文字前面，颜色按按钮样式走
+        （主按钮用主色上的字色、危险按钮用危险色、普通按钮用正文色），
+        换主题时由 repaint_cards() 一起重画。
+        """
         wrap = QWidget()
         line = QHBoxLayout(wrap)
         line.setContentsMargins(0, 0, 0, 0)
@@ -1155,7 +1301,9 @@ class Page(QScrollArea):
         if align_right:
             line.addStretch(1)
         btns = []
-        for text, slot, style in items:
+        for item in items:
+            text, slot, style = item[0], item[1], item[2]
+            icon_name = item[3] if len(item) > 3 else None
             btn = QPushButton(text)
             # 固定高度 32：125% 缩放下 = 整 40 物理像素（30 会落在半像素上，
             # 细边框和圆角那一下容易画糊）
@@ -1163,6 +1311,10 @@ class Page(QScrollArea):
             if style:
                 btn.setObjectName(style)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            if icon_name:
+                btn.setIconSize(QSize(ICON_SM, ICON_SM))
+                btn.setIcon(icon(icon_name, button_icon_color(style), ICON_SM))
+                self._btn_icons.append((btn, icon_name, style))
             if slot is not None:
                 btn.clicked.connect(lambda _=False, f=slot: f())
             line.addWidget(btn)
@@ -1173,6 +1325,10 @@ class Page(QScrollArea):
         # 挂个按钮清单：外面要改按钮文字（比如"我的形象库…（三维 1 · 挂件 0）"的条目数）时
         # 不用再去翻 QPushButton，也不用赌 findChildren 的先后顺序
         wrap.buttons = btns
+        # 一排按钮当成一条目录项（搜索「删除」能一次找到这一排）
+        texts = [b.text() for b in btns if b.text()]
+        if texts:
+            self._index.append((" / ".join(texts), "", wrap))
         return wrap
 
     def hint(self, layout, text, style="faint"):
@@ -1235,6 +1391,7 @@ class Page(QScrollArea):
         line.addWidget(bar, 0, Qt.AlignmentFlag.AlignVCenter)
         line.addWidget(show, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(box)
+        self._index.append((title, desc or "", box))
         return bar
 
     def combo(self, layout, title, desc, options, current, on_change):
@@ -1252,9 +1409,15 @@ class Page(QScrollArea):
         return box
 
     def repaint_cards(self):
-        """换主题后重画卡片标题上的小图标。"""
+        """换主题后重画这一页上的所有小图标（卡片标题 / 按钮 / 分段控件）。"""
         for label, name in self._card_icons:
-            label.setPixmap(icon_pixmap(name, tokens()["accent"], 17))
+            label.setPixmap(icon_pixmap(name, tokens()["accent"], ICON_CARD))
+        for btn, name, style in self._btn_icons:
+            btn.setIcon(icon(name, button_icon_color(style), ICON_SM))
+        for seg in self._segments:
+            seg.repaint_theme()
+        for empty in self._empties:
+            empty.repaint_theme()
 
 
 # --------------------------------------------------------------------------- #
@@ -1372,6 +1535,10 @@ class ConsoleWindow(QWidget):
         # 不然就得重启桌宠才能看见新数（见 _hook_page / _refresh_page）。
         self._page_hooks = {}
         self._cur_page_key = None         # 现在停在哪一页（showEvent 刷新时用）
+        self._btn_icons = []              # 窗口自己建的按钮（_text_button）上的图标
+        self._search_index = []           # 设置项搜索的目录（见 _build_main）
+        self._flash = None                # 搜索跳转之后那一圈高亮
+        self._flash_timer = None
         self._shadow_pm = None            # 阴影贴图缓存（见 _shadow_pixmap）
         self._shadow_key = None
         self._min_anim = None             # 最小化动画（跑着的时候不接第二次）
@@ -1510,18 +1677,143 @@ class ConsoleWindow(QWidget):
         # 名字和图标都能改成自己的（「控制台外观」那一页）
         self._apply_brand()
 
+        # ---- 设置项搜索 ----
+        # 敲字就把左边的分类换成"结果列表"，清空回分类；点一条就跳到那一页并闪一下那一行
+        self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("searchBox")
+        self.search_edit.setPlaceholderText("搜设置…")
+        self.search_edit.setClearButtonEnabled(True)
+        try:
+            self.search_edit.addAction(
+                icon("ui.search", tokens()["text_faint"], ICON_SM),
+                QLineEdit.ActionPosition.LeadingPosition)
+        except Exception:
+            pass
+        self.search_edit.textChanged.connect(self._on_search_text)
+        box.addWidget(self.search_edit)
+
+        # 分类那一块（搜索时整块藏起来）
+        self.nav_box = QWidget()
+        nav = QVBoxLayout(self.nav_box)
+        nav.setContentsMargins(0, 2, 0, 0)
+        nav.setSpacing(4)
         for key, title, _desc, icon_name, _builder in self.PAGES:
             item = NavItem(key, title, icon_name)
             item.clicked.connect(lambda _=False, k=key: self.switch_page(k))
             self._nav_items[key] = item
-            box.addWidget(item)
+            nav.addWidget(item)
+        nav.addStretch(1)
+        box.addWidget(self.nav_box, 1)
 
-        box.addStretch(1)
+        # 搜索结果那一块（平时藏着）
+        self.search_box = QWidget()
+        found = QVBoxLayout(self.search_box)
+        found.setContentsMargins(0, 2, 0, 0)
+        found.setSpacing(6)
+        self.search_list = QListWidget()
+        self.search_list.setObjectName("searchResults")
+        self.search_list.itemClicked.connect(self._on_search_hit)
+        self.search_list.itemActivated.connect(self._on_search_hit)
+        found.addWidget(self.search_list, 1)
+        self.search_empty = EmptyState("empty.search", "没找到相关的设置",
+                                       "换个词试试，比如「气泡」「城市」「锁定」", size=34)
+        self.search_empty.setVisible(False)
+        found.addWidget(self.search_empty)
+        self.search_box.setVisible(False)
+        box.addWidget(self.search_box, 1)
+
         foot = QLabel(f"v{APP_VERSION}")
         foot.setObjectName("faint")
         foot.setContentsMargins(8, 0, 0, 0)
         box.addWidget(foot)
         return side
+
+    # ---------------- 设置项搜索 ----------------
+    def _on_search_text(self, text):
+        """敲字：左边从"分类"换成"搜索结果"；清空就换回来。"""
+        query = (text or "").strip()
+        searching = bool(query)
+        self.nav_box.setVisible(not searching)
+        self.search_box.setVisible(searching)
+        if not searching:
+            self.search_list.clear()
+            return
+        terms = [t for t in query.lower().split() if t]
+        hits = []
+        for ent in self._search_index:
+            blob = " ".join((ent["title"], ent["desc"], ent["page"])).lower()
+            if all(t in blob for t in terms):
+                hits.append(ent)
+        self.search_list.clear()
+        for ent in hits[:60]:
+            item = QListWidgetItem(f"{ent['title']}　·　{ent['page']}")
+            item.setData(Qt.ItemDataRole.UserRole, ent)
+            self.search_list.addItem(item)
+        self.search_list.setVisible(bool(hits))
+        self.search_empty.setVisible(not hits)
+        if not hits:
+            self.search_empty.set_text(f"没找到「{query}」",
+                                       "换个词试试，比如「气泡」「城市」「锁定」")
+
+    def _on_search_hit(self, item):
+        """点一条结果：切到那一页、滚到那一行、闪一下。"""
+        ent = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not ent:
+            return
+        key = ent.get("key")
+        if key and key != self._cur_page_key:
+            self.switch_page(key)
+        widget = ent.get("widget")
+        page = self._pages.get(key)
+        if widget is None or page is None:
+            return
+        try:
+            page.ensureWidgetVisible(widget, 0, 40)
+        except Exception:
+            pass
+        self._flash_widget(widget)
+
+    def _stop_flash(self):
+        timer = getattr(self, "_flash_timer", None)
+        if timer is not None:
+            timer.stop()
+        box = getattr(self, "_flash", None)
+        self._flash = None
+        if box is not None:
+            try:
+                box.hide()
+                box.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _flash_widget(self, widget):
+        """在某个控件上闪一圈主色边框（跳转之后"就是这一条"）。"""
+        parent = widget.parentWidget()
+        if parent is None:
+            return
+        self._stop_flash()
+        box = _FlashBox(parent)
+        box.setGeometry(widget.geometry().adjusted(-5, -5, 5, 5))
+        box.show()
+        box.raise_()
+        self._flash = box
+        self._flash_t0 = time.perf_counter()
+        if getattr(self, "_flash_timer", None) is None:
+            self._flash_timer = QTimer(self)
+            self._flash_timer.setInterval(ANIM_TICK_MS)
+            self._flash_timer.timeout.connect(self._flash_tick)
+        self._flash_timer.start()
+
+    def _flash_tick(self):
+        box = getattr(self, "_flash", None)
+        if box is None:
+            self._stop_flash()
+            return
+        t = (time.perf_counter() - self._flash_t0) / max(0.1, FLASH_MS / 1000.0)
+        if t >= 1.0:
+            self._stop_flash()
+            return
+        box.set_opacity(1.0 - t)
 
     def _build_main(self):
         main = QFrame()
@@ -1551,8 +1843,8 @@ class ConsoleWindow(QWidget):
             btn = QPushButton()
             btn.setObjectName("winBtn")
             btn.setFixedSize(30, 30)
-            btn.setIconSize(QSize(16, 16))
-            btn.setIcon(icon(icon_name, tokens()["text_dim"], 16))
+            btn.setIconSize(QSize(ICON_SM, ICON_SM))
+            btn.setIcon(icon(icon_name, tokens()["text_dim"], ICON_SM))
             btn.setToolTip(tip)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             # 最小化 = 真最小化（任务栏图标还在，点一下能还原）；关闭 = 收起来
@@ -1570,6 +1862,15 @@ class ConsoleWindow(QWidget):
             self._pages[key] = page
             self.stack.addWidget(page)
             getattr(self, builder)(page)
+            # 这一页上的分段控件：换主题时要连里面的小图标一起重画
+            page._segments = page.findChildren(Segmented)
+        # 设置项搜索的目录：每一页建完之后把它自己的条目收上来
+        self._search_index = []
+        for key, title, _desc, _icon, _builder in self.PAGES:
+            for item_title, item_desc, widget in self._pages[key]._index:
+                self._search_index.append({"key": key, "page": title,
+                                           "title": item_title, "desc": item_desc,
+                                           "widget": widget})
         return main
 
     def _logo_pixmap(self, size):
@@ -2067,6 +2368,11 @@ class ConsoleWindow(QWidget):
         self._repaint_icons()
         for page in self._pages.values():
             page.repaint_cards()
+        for btn, name, style in self._btn_icons:      # 窗口自己建的那些按钮
+            try:
+                btn.setIcon(icon(name, button_icon_color(style), ICON_SM))
+            except RuntimeError:
+                pass
         for item in self._nav_items.values():
             item.update()
         self._apply_backdrop(force=True)
@@ -2080,7 +2386,7 @@ class ConsoleWindow(QWidget):
             if btn.objectName() != "winBtn":
                 continue
             name = "ui.close" if btn.toolTip() == "关闭" else "ui.minimize"
-            btn.setIcon(icon(name, tokens()["text_dim"], 16))
+            btn.setIcon(icon(name, tokens()["text_dim"], ICON_SM))
 
     def _on_system_scheme(self, _scheme=None):
         if self._mode == "system":
@@ -2184,7 +2490,7 @@ class ConsoleWindow(QWidget):
         page.row(card, "余额常显", "不收起余额气泡，一直挂着",
                  Switch(pet.balance_always, pet.set_balance_always))
         page.buttons(card, [
-            ("刷新", lambda: pet.refresh_balance(silent=False), "primary"),
+            ("刷新", lambda: pet.refresh_balance(silent=False), "primary", "ui.refresh"),
         ])
 
         card = page.card("余额来源", "换来源会重新取一次数", "nav.balance")
@@ -2201,8 +2507,8 @@ class ConsoleWindow(QWidget):
             "当前：已配置" if has_key else "当前：还没配，配了才看得到余额",
             self.key_btn)
         page.buttons(card, [
-            ("添加其他 API Key…", self._add_other_key, None),
-            ("删除其他 API Key…", self._remove_other_key, "danger"),
+            ("添加其他 API Key…", self._add_other_key, None, "ui.add"),
+            ("删除其他 API Key…", self._remove_other_key, "danger", "ui.delete"),
         ])
         self._hook_page("balance", self._sync_source_controls)
 
@@ -2219,7 +2525,7 @@ class ConsoleWindow(QWidget):
         page.row(card, "校准今日已用", "按平台用量页对一次数",
                  self._text_button("校准…",
                                    lambda: self._run(pet.calibrate_usage_dialog),
-                                   "primary"))
+                                   "primary", "page.calibrate"))
 
     def _sync_source_controls(self):
         """余额来源那一栏现读：自己加 / 删过服务、换过 Key 之后要说得出现在是啥。"""
@@ -2266,21 +2572,21 @@ class ConsoleWindow(QWidget):
     # ---------------- 天气与城市 ----------------
     def _page_weather(self, page):
         pet = self.pet
-        card = page.card("城市", "点一下切过去", "nav.weather")
+        card = page.card("城市", "点一下切过去", "page.location")
         # 城市列表是"条目本身会变"的那类（联网加、删掉都算），所以建的时候先空着，
         # 交给 _sync_weather_controls 按现在的配置摆 —— 加完 / 删完立刻就反映
         self.city_seg = Segmented([], None,
                                   lambda name: self._run(pet._apply_city, name))
         card.addWidget(self.city_seg)
         page.buttons(card, [
-            ("手动输入…", self._set_city_manual, "primary"),
-            ("自动定位（按 IP）", lambda: self._run(pet.auto_locate_city), None),
+            ("手动输入…", self._set_city_manual, "primary", "ui.edit"),
+            ("自动定位（按 IP）", lambda: self._run(pet.auto_locate_city), None, "page.location"),
             ("添加城市（联网搜索）",
-             self._add_city_search, None),
+             self._add_city_search, None, "ui.add"),
         ])
         # 这一行只有"列表里不止一个城市"时才露出来 —— 建的时候先放着，靠 sync 显隐
         self.city_del_row = page.buttons(card, [
-            ("从列表里删掉城市…", self._remove_city, "danger")])
+            ("从列表里删掉城市…", self._remove_city, "danger", "ui.delete")])
         page.hint(card, "挂梯子时按 IP 定位会不准，最好手动填。"
                         "想看一眼现在几度：右键桌宠 →「查看天气」。")
         self._hook_page("weather", self._sync_weather_controls)
@@ -2343,7 +2649,7 @@ class ConsoleWindow(QWidget):
             ("往前赶 0.5 秒", lambda: pet.nudge_lyric(0.5), None),
             ("往后压 0.5 秒", lambda: pet.nudge_lyric(-0.5), None),
             ("按播放器时间对齐…",
-             lambda: self._run(pet.align_lyric_dialog), "primary"),
+             lambda: self._run(pet.align_lyric_dialog), "primary", "page.clock"),
             ("清零", lambda: pet.nudge_lyric(0.0, True), None),
         ])
 
@@ -2361,8 +2667,8 @@ class ConsoleWindow(QWidget):
         page.row(card, "现在是谁", "", self.skin_seg)
         row = page.buttons(card, [
             (self._skin_lib_text(),
-             self._open_skin_library, "primary"),
-            ("全部恢复默认形象", self._reset_all_skin, "danger"),
+             self._open_skin_library, "primary", "nav.appearance"),
+            ("全部恢复默认形象", self._reset_all_skin, "danger", "ui.reset"),
         ])
         btns = getattr(row, "buttons", [])
         self.skin_lib_btn = btns[0] if btns else None
@@ -2482,13 +2788,13 @@ class ConsoleWindow(QWidget):
         # （原来有「不用 / 图片 / 视频」一排 + 另外一颗「清掉」，
         #   「不用」和「清掉」干的是同一件事，主人说分不清。）
         self.bg_pick_btn = self._text_button(self._bg_pick_text(),
-                                             self._pick_backdrop)
+                                             self._pick_backdrop, None, "ui.upload-image")
         bg_buttons = QWidget()
         bg_line = QHBoxLayout(bg_buttons)
         bg_line.setContentsMargins(0, 0, 0, 0)
         bg_line.setSpacing(8)
         bg_line.addWidget(self.bg_pick_btn)
-        bg_line.addWidget(self._text_button("移除", self._clear_backdrop))
+        bg_line.addWidget(self._text_button("移除", self._clear_backdrop, None, "ui.delete"))
         self.bg_path_row = page.row(card, "图片 / 视频", self._bg_path_text(),
                                     bg_buttons)
         self.bg_fit_switch = Switch(self._bg_bool("console_bg_fit_window"),
@@ -2552,7 +2858,7 @@ class ConsoleWindow(QWidget):
             self._start_page(), self._on_start_page)
 
         card = page.card("恢复默认", "一把清干净", "ui.reset")
-        page.buttons(card, [("全部恢复默认", self._reset_console_look, "danger")])
+        page.buttons(card, [("全部恢复默认", self._reset_console_look, "danger", "ui.reset")])
 
     # ---- 控制台外观：动一下就要顺手存盘 ----
     def _pick_backdrop(self):
@@ -2720,7 +3026,7 @@ class ConsoleWindow(QWidget):
         page.row(card, "原地待着时也跟着鼠标转", "只转头、不挪窝",
                  Switch(pet.still_face_cursor, pet.set_still_face_cursor))
 
-        card = page.card("快速双击", "双击它一下会做什么", "ui.spinner")
+        card = page.card("快速双击", "双击它一下会做什么", "page.click")
         choices = list(self.ctx.get("DOUBLE_CLICK_CHOICES") or [])
         page.combo(card, "双击效果", "没配 Key 时选不了「看一眼余额」",
                    [(k, label) for k, label in choices],
@@ -2731,7 +3037,7 @@ class ConsoleWindow(QWidget):
              lambda: self._run(pet.edit_lines_dialog, "DOUBLE_CLICK_LINES"),
              None)])
 
-        card = page.card("防误触", "按住它拖不动、点不到它", "page.lock")
+        card = page.card("防误触", "按住它拖不动、点不到它", "page.pointer-off")
         page.row(card, "锁定位置", "拖不动，点击 / 双击照常",
                  Switch(pet.locked, pet.set_locked))
         page.row(card, "鼠标穿透", "点不到它（托盘图标能解除）",
@@ -2751,7 +3057,7 @@ class ConsoleWindow(QWidget):
                    pet.peak_style,
                    lambda style: self._run(pet.set_peak_style, style))
 
-        card = page.card("语录", "闲着时它自己冒话", "ui.spinner")
+        card = page.card("语录", "闲着时它自己冒话", "ui.quote")
         levels = list((self.ctx.get("LINE_FREQ_LEVELS") or {}).items())
         page.combo(card, "说话频率", "太吵就调安静一点",
                    [(name, f"{name}（{conf.get('hint', '')}）")
@@ -2793,9 +3099,9 @@ class ConsoleWindow(QWidget):
         page.slider(card, "音量", "", 0, 100, int(pet.volume * 100), "%",
                     lambda v: self._run(pet.set_volume, v / 100.0))
         page.buttons(card, [
-            ("试听", lambda: pet.preview_sounds(), "primary"),
-            ("添加我的音效…", self._add_sound, None),
-            ("删掉我加的音效…", self._remove_sound, "danger"),
+            ("试听", lambda: pet.preview_sounds(), "primary", "page.volume-high"),
+            ("添加我的音效…", self._add_sound, None, "ui.add"),
+            ("删掉我加的音效…", self._remove_sound, "danger", "ui.delete"),
         ])
         self._hook_page("sound", self._sync_sound_controls)
 
@@ -2838,11 +3144,25 @@ class ConsoleWindow(QWidget):
                  Switch(pet.process_alerts, pet.set_process_alerts))
         page.buttons(card, [
             ("扫描电脑应用并添加…",
-             lambda: self._run(pet.scan_apps_dialog), "primary"),
+             lambda: self._run(pet.scan_apps_dialog), "primary", "ui.spinner"),
             ("清理自定义 / 改写的文字…",
-             lambda: self._run(pet.remove_custom_app_dialog), "danger"),
+             lambda: self._run(pet.remove_custom_app_dialog), "danger", "ui.delete"),
         ])
         page.hint(card, "扫出来的每个应用都能单独改台词，改错了可以在这儿清掉。")
+        # 一个都没配过的时候：给张插图 + 一句"该干嘛"，别只留一片空白
+        self.integration_empty = page.empty(
+            "empty.app", "还没给任何应用配过台词",
+            "点上面的「扫描电脑应用并添加…」挑一个", size=44, layout=card)
+        self._hook_page("integration", self._sync_integration_empty)
+
+    def _sync_integration_empty(self):
+        """一个自定义 / 改写的应用都没有时，把那块空状态露出来。"""
+        pet = self.pet
+        custom = pet.cfg.get("custom_process_lines") or {}
+        overrides = pet.cfg.get("default_line_overrides") or {}
+        empty = getattr(self, "integration_empty", None)
+        if empty is not None:
+            empty.setVisible(not (custom or overrides))
 
     # ---------------- 性能与工具 ----------------
     def _page_performance(self, page):
@@ -2860,7 +3180,7 @@ class ConsoleWindow(QWidget):
                  Switch(pet.cfg.get("mem_skip_foreground", True),
                         pet.set_mem_skip_foreground))
         self.mem_hint = page.hint(card, self._mem_hint_text(), "muted")
-        page.buttons(card, [("回收内存", lambda: pet.mem_trim_now(), "primary")])
+        page.buttons(card, [("回收内存", lambda: pet.mem_trim_now(), "primary", "page.sparkle")])
         # 回收是后台跑的，点完这一下数还不准 —— 回到这一页时现读一遍就够了
         self._hook_page("performance", self._sync_mem_hint)
 
@@ -2891,14 +3211,14 @@ class ConsoleWindow(QWidget):
     # ---------------- 通用 ----------------
     def _page_general(self, page):
         pet = self.pet
-        card = page.card("显示", "", "nav.general")
+        card = page.card("显示", "", "ui.eye")
         page.buttons(card, [
-            ("显示 / 隐藏", lambda: pet.toggle_visible(), "primary"),
-            ("回到屏幕内", lambda: pet.snap_into_screen(), None),
-            ("救急恢复", lambda: pet.force_recover(), None),
+            ("显示 / 隐藏", lambda: pet.toggle_visible(), "primary", "ui.eye"),
+            ("回到屏幕内", lambda: pet.snap_into_screen(), None, "page.location"),
+            ("救急恢复", lambda: pet.force_recover(), None, "page.rescue"),
         ], align_right=False)
 
-        card = page.card("开机", "", "nav.general")
+        card = page.card("开机", "", "page.power")
         page.row(card, "开机自启", "下次开机自己出来",
                  Switch(pet.cfg.get("autostart", False), pet.set_autostart))
         page.hint(card, "自启是在「启动」文件夹里放一个快捷方式，随时关得掉。")
@@ -2936,9 +3256,9 @@ class ConsoleWindow(QWidget):
                         pet.set_classic_menu))
         page.buttons(card, [
             ("打开经典菜单…（旧版那份长菜单）",
-             lambda: self._run(pet._open_classic_menu), None)])
+             lambda: self._run(pet._open_classic_menu), None, "ui.chevron")])
 
-        card = page.card("最小化动画", "窗口最小化时往哪儿收", "page.resize")
+        card = page.card("最小化动画", "窗口最小化时往哪儿收", "ui.minimize")
         page.row(card, "落点",
                  "默认落在任务栏中间；想对准任务栏上自己那个图标就校准一次",
                  self._text_button("校准…", self._calibrate_min_target))
@@ -2974,9 +3294,9 @@ class ConsoleWindow(QWidget):
         page.hint(card, "显示 DeepSeek 余额、天气、正在放的歌与歌词；"
                         "能换形象、带音效、可开机自启。")
         page.buttons(card, [
-            ("项目主页", lambda: self._open_url(GITHUB_URL), "primary"),
+            ("项目主页", lambda: self._open_url(GITHUB_URL), "primary", "ui.external"),
             ("反馈 / 提需求",
-             lambda: self._open_url(GITHUB_URL + "/issues"), None),
+             lambda: self._open_url(GITHUB_URL + "/issues"), None, "ui.help"),
         ], align_right=False)
 
     # ---------------- 小工具 ----------------
@@ -3081,12 +3401,17 @@ class ConsoleWindow(QWidget):
                 names.append(name)
         return names
 
-    def _text_button(self, text, slot, style=None):
+    def _text_button(self, text, slot, style=None, icon_name=None):
+        """单独一颗按钮（不在 page.buttons 那一行里的）。第四项 = 图标名。"""
         btn = QPushButton(text)
         btn.setFixedHeight(32)
         if style:
             btn.setObjectName(style)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        if icon_name:
+            btn.setIconSize(QSize(ICON_SM, ICON_SM))
+            btn.setIcon(icon(icon_name, button_icon_color(style), ICON_SM))
+            self._btn_icons.append((btn, icon_name, style))
         btn.clicked.connect(lambda _=False: slot())
         return btn
 
@@ -3526,6 +3851,17 @@ class ConsoleWindow(QWidget):
             self._capture_min_target()      # 校准期间按空格 = 就记这儿
             return
         if ev.key() == Qt.Key.Key_Escape:
+            # 搜索框里按 Esc = 清空搜索（回到分类），不是关窗口
+            if (getattr(self, "search_edit", None) is not None
+                    and self.search_edit.hasFocus() and self.search_edit.text()):
+                self.search_edit.clear()
+                return
             self.hide()
+            return
+        # Ctrl+F：直接跳到搜索框（顺手）
+        if (ev.key() == Qt.Key.Key_F and ev.modifiers() & Qt.KeyboardModifier.ControlModifier
+                and getattr(self, "search_edit", None) is not None):
+            self.search_edit.setFocus()
+            self.search_edit.selectAll()
             return
         super().keyPressEvent(ev)

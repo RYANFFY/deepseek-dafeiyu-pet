@@ -49,6 +49,32 @@
     最小化 / 从任务栏点回来也直接到位，不拍截图、不插帧）—— 省电，
     也照顾不喜欢画面动来动去的情况。
 
+### 设置项搜索：不用再一页页翻了
+
+- 侧边栏最上面多了个 **「搜设置…」**（**Ctrl+F** 直接跳进去）：敲两个字，
+  左边就从"分类"换成**搜索结果** —— 12 个分类里的设置项都能搜到
+  （比如「气泡」「城市」「锁定」「回收」）。
+- 点一条结果就**跳到那一页、滚到那一行、在那条上闪一圈高亮**，
+  一眼就知道是哪一个；清空搜索框（或者按 **Esc**）就回到分类列表。
+- 搜不到时不是干瞪眼：给一张插图和一句"换个词试试"。
+
+### 空状态：该干嘛一眼看懂
+
+- **搜索没结果**、**形象库里那一本还空着**、**应用联动一个应用都没配过** ——
+  这三处原来只有一行灰字（或者干脆空着），现在都换成**一张小插图 + 一句该干嘛**
+  （插图跟别处同一套线稿，深色 / 亮色下颜色都跟着主题走）。
+
+### 图标风格统一：一套线稿用到底
+
+- **右键菜单每条前面都有小图标了**（原来一份纯文字）：查看余额是钱包、
+  天气是云、在放什么是一眼、设置是齿轮、锁定是锁、鼠标穿透是带斜杠的指针、
+  救急恢复是救生圈、退出是门 —— **跟设置窗口里用的是同一套**（`assets/icons`）。
+- 菜单图标用的是**菜单自己的文字色**：Windows 亮色 / 暗色主题下都看得清，不会一边糊掉。
+- **设置窗口里的按钮也带上了小图标**：导入文件 / 移除 / 刷新 / 校准 / 删除 / 跳转外链……
+  尺寸只有三档（16 / 17 / 18），颜色跟着主题走，换主题会一起重画。
+- 顺手清掉 7 个没人用的图标，补上 9 个缺口（退出 / 救急 / 双击 / 开机 / 引号 /
+  带斜杠的指针 + 3 张空状态插图）。
+
 - 实测：离屏脚本 `F:\Codex\work\test_console_live_refresh.py`（10 组，22 项全过）——
   空库时按钮写「三维 0 · 挂件 0」；在形象库里收一条、关掉窗口**当场**变「三维 0 · 挂件 1」；
   切到别的页再切回来读到「三维 1 · 挂件 1」；删掉一条变「三维 1 · 挂件 0」；
@@ -92,6 +118,24 @@
 - 实测：余额来源那栏 `test_console_live_refresh.py` 里也补了一组 —— 自己加的服务
   回到这一页就在名单里、删掉就收回去；没有 Key / 有 Key 两种状态下
   「当前：还没配，配了才看得到余额」↔「当前：已配置」和「现在配…」↔「换一个…」都对得上。
+- 实测：设置项搜索 + 空状态 `F:\Codex\work\test_console_search.py`（7 组 24 项全过）——
+  目录收进 12 页共 66 条设置项；敲「气泡」左边换成结果（找得到「气泡风格」）、
+  清空回分类；两词搜索「城市 手动」也对得上；搜不到时列表藏起来、换插图并写清搜的是啥；
+  点一条结果跳到「桌宠形象」页、**高亮框正好套着那一行**
+  （`QRect(12,73,660,38)` vs 那一行 `QRect(17,78,650,28)`）、闪完自己收干净；
+  搜索框里按 Esc 只清搜索、不关窗口；「应用联动」没配过出空状态、配过就收起来；
+  形象库空的那本右侧换成插图、预览那块藏起来。
+  截图 `F:\Codex\work\shot_search_results.png`、`shot_search_jump.png`、
+  `shot_search_empty.png`、`shot_search_emptylib.png`。
+- 实测：图标一套 `F:\Codex\work\test_icon_family.py`（5 组全过）——
+  **51 个 SVG 全是同一套线稿**（24 网格 / 线宽 1.75 / 单色 / 圆头圆角）；
+  代码里点名的图标都存在（38 个）；**瘦身版菜单 8/8、经典版 110/110 都有图标**；
+  没有躺着不用的死素材；每个都画得出东西（0 个空白）。
+  对照表 `F:\Codex\work\shot_icon_sheet_light.png` / `shot_icon_sheet_dark.png`，
+  菜单出图 `shot_menu_quick.png` / `shot_menu_classic.png` / `shot_menu_weather.png`。
+- 回归：菜单那几支用例照旧全过（`test_menu_no_adjust_line` / `test_menu_perf` /
+  `test_double_click_choice` / `test_mem_trim` 等）—— **菜单文字一个字没改**，只多了图标；
+  设置窗口那 8 支 + 桌宠本体那批也一起跑过。
 - 回归：桌宠本体那批用例一起跑了一遍 —— 歌词折行 / 歌词卡住与位置记忆 / 音频设备跟随、
   峰谷显示、余额逻辑、自定义台词与音效、大小五档与无级、锁定位置、吸附翻面、
   鼠标不动模式、音量透明度窗口、菜单性能、应用扫描、天气、回收内存：全过。
@@ -159,6 +203,35 @@
   还原走 `showNormal()` + `_finish_restore()`（它本身是幂等的收尾）。
   `console_page_anim` / `console_reduce_motion` 加进 `BACKDROP_DEFAULTS`，
   所以「全部恢复默认」也会把动效复位（`_sync_motion_switches()`）。
+- 图标（素材 `assets/icons`，51 个）：
+  - 新增 `page.exit` / `page.rescue` / `page.click` / `page.power` / `ui.quote` /
+    `page.pointer-off` + 三张空状态插图 `empty.skin` / `empty.search` / `empty.app`；
+    删掉没人用的 `nav.home` / `page.passthrough` / `page.volume-low` / `ui.back` /
+    `ui.cancel` / `ui.drag` / `ui.eye-off`。
+  - `ui_console.py`：`ICON_SM=16` / `ICON_CARD=17` / `ICON_MD=18` 三档常量，
+    全界面都从这儿取（原来是页面里现写 16 / 17 / 18）；`button_icon_color(style)`
+    统一按钮图标的颜色（主按钮=主色上的字、危险=危险色、普通=正文色）。
+  - `Page.buttons()` / `_text_button()` 都能带图标（`(文字, 回调, 样式[, 图标])`），
+    换主题时由 `repaint_cards()` / `apply_theme()` 重画；`Segmented` 支持第 3 项图标
+    （`(值, 文字[, 图标])`）+ `repaint_theme()`。
+  - `桌宠.py`：`MENU_ICONS`（前缀 → 图标）+ `MENU_ICON_CHILD`（子项跟父项不同图案的，
+    比如天气菜单下面的城市）+ `_menu_icon_name` / `_menu_icon_lookup` / `_iconize_menu`；
+    瘦身版和经典版**建完都刷一遍**（`_make_menu` 里也调一次，重复刷没副作用）。
+    颜色取 `menu.palette().WindowText` —— 菜单是系统画的，写死颜色总有一边看不清。
+- 设置项搜索（`ui_console.py`）：
+  - 目录：`Page._index`（`row()` / `slider()` / `buttons()` 各记一条）→
+    `ConsoleWindow._search_index`（在 `_build_main` 收口）。
+  - 界面：`#searchBox`（带 `ui.search` 前导图标、可清空）+ `nav_box` / `search_box`
+    两块互斥显示 + `#searchResults`（QSS 贴着侧边栏、不做成卡片）。
+  - 交互：`_on_search_text()`（多词 AND、跨标题/说明/页名）、`_on_search_hit()`
+    （`switch_page` → `ensureWidgetVisible` → `_flash_widget`）、
+    `_FlashBox` + `_flash_tick()`（自己画一圈主色边框、`FLASH_MS=900` 淡出，
+    **不用 QGraphicsOpacityEffect**）、`keyPressEvent` 里 Esc 清搜索 / Ctrl+F 聚焦搜索框。
+- 空状态（`EmptyState`）：`Page.empty(icon, 标题, 说明[, 尺寸][, layout])`，
+  换主题时跟卡片图标一起重画。用在：搜索无结果（侧边栏）、形象库那一本空着
+  （`SkinLibraryDialog.empty_mark`，空的那本隐藏预览、显示插图）、
+  「应用联动」没配过任何应用（`_sync_integration_empty`）。
+- `SkinEditDialog` 的「保存」按钮带上 `ui.save`（颜色取主题正文色，每次建对话框现算）。
 
 ## v1.1.1
 
