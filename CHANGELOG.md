@@ -1,5 +1,141 @@
 # 更新日志
 
+## v1.1.3
+
+### 用久了提醒：连续用一个应用太久，它主动喊你歇会儿
+
+- **「设置 → 应用联动」多了一张「用久了提醒」**（右键菜单「进程联动 → 用久了提醒…」也能开）：
+  挑一个应用 + 连续用满多少分钟，它就说一句；还能接着设"**之后每隔 N 分钟再说一次**"。
+- **自带几个默认**：Steam / WeGame / 英雄联盟（60~90 分钟）、原神（60 分钟）、抖音（40 分钟）、
+  VS Code（90 分钟）、ChatGPT（90 分钟）—— 都能改分钟数、改台词、单独关掉、直接删掉。
+- **没人在动键鼠的那段时间不算**：看电影、挂机、人走开十分钟以上，这段时间不累计，
+  不会被"你已经用了俩小时"冤枉；**换了别的应用就重新计时**。
+- 台词**一句一行、写多句就随机挑一句**；列表里加应用时能选本机扫出来的应用，
+  也可以自己敲进程名（例如 `notepad.exe`）。
+- **列表每条前面带应用自己的图标**（跟「扫描电脑应用并添加…」那个窗口一个口径）：
+  正在跑的和开始菜单里扫到的直接取 exe 的图标，没在跑的（比如没开着的 Steam）
+  从注册表 `App Paths` 里把 exe 找出来再取；实在找不到才退成一张通用文件图标。
+  图标旁边点「修改」存一次，这条规则就**顺便把 exe 的路径记下来**，下次不用再找。
+  「到点说一句」「全局快捷键」两本列表也各配了一颗同类的小图标（钟 / 键盘）。
+
+### 到点说一句：每天 / 每周固定的点，或者每隔一段时间
+
+- **「设置 → 应用联动」多了「到点说一句」**，三种触发方式：
+  **每天这个点**（默认自带一条「23:30 该睡了」）/ **每周选几天** / **每隔 N 分钟**。
+- 每条都能改时间、改台词、单独开关；卡片第一行是**总开关**，不想要就整个关掉。
+
+### 全局快捷键：按一下它就说一句，也能当"看一眼"的快捷键
+
+- 新加**全局快捷键**：**不管当时哪个窗口在前台，按一下都管用**。默认三个键 ——
+  **Ctrl+Alt+1** 夸你一句、**Ctrl+Alt+2** 安慰你一句、**Ctrl+Alt+3** 损你一句。
+- **按键和台词都能自己改**：点一下输入框，**直接按你要的那组键**就录进去了；
+  也能加新的、关掉某一条、删掉。
+- 按下之后干什么可选：**说一句 / 看一眼余额 / 看一眼天气 / 看一眼在放什么** ——
+  跟「快速双击」那四个动作是同一套，等于给桌宠又配了几个快捷键。
+- **键被别的程序占用了会明说**（设置页那行小字会点出来，换一个键就行），
+  不会按了半天没反应还不知道为什么；退出桌宠时会把键还给系统。
+
+### 触发类的话优先级最高：闲话会自动让位
+
+- **打开应用 / 用久了提醒 / 到点说一句 / 按快捷键 / 双击 / 点它拖它 / 换歌** 这些话
+  都是**最高优先级**：
+  - 它们在说的时候，**「闲着时自己冒话」不插嘴、也不会把它们盖掉** ——
+    以前偶尔会出现"刚冒出来的提醒被一句闲话顶掉"；
+  - 它们说完，闲话**自己接着冒**（不用管，也不是被永久静音）。
+- 反过来也一样：空闲时正在冒的闲话，**碰到触发类的话会当场让位**，触发的话正常显示。
+- **触发类的话不会因为"刚说过"被去重**：连按两下同一个快捷键，两句都会正常冒出来
+  （"同一句连着说就不重复"这条只对闲话生效）。
+- 换歌那句属于"自动冒的"，**前面有触发类的话在说时它会排在后面**，不打断。
+- **余额泡泡也一样**：余额每 60 秒自动刷一次，撞上触发类的话时**不会抢** ——
+  先记着，等那句话说完再顶上来；只有你自己点的"看一眼余额"（快速双击）才直接顶。
+
+- 实测：`F:\Codex\work\test_autosay.py`（63 项全过）——
+  **键的写法**：`Ctrl+Alt+1` / `Ctrl+Shift+F9` / `Ctrl+Meta+A` / `Ctrl+Alt+Space` 认得出来；
+  `Meta+A`（没带 Ctrl）、`Ctrl+Alt+;`（符号键）、`F9`（没修饰键）、`Ctrl+Alt+F99`、空字符串
+  一律不给过（宁可不注册，也不注册成一个按不出来的键）。
+  **用久了**：58 / 59 分钟不说、满 60 分钟说一句、`repeat=0` 之后不再说、
+  换应用重新计时、`repeat=30` 时 90 分钟先说再每 30 分钟一次、
+  键鼠静 900 秒挂机三小时不累计、总开关关着不说且打开后**不补旧的**、单条关掉 / 没台词都不说。
+  **到点**：23:29 不说、23:30 说、同一分钟不重复、第二天同一时刻再说、
+  周一 9:00 说而周二 9:00 不说、每隔的第一拍只记时间、过 31 分钟说、没过点不说、总开关关着不说。
+  **快捷键是真的注册**：`RegisterHotKey` 注册得上；**往主线程投一条 `WM_HOTKEY`(0x0312)，
+  Qt 的原生消息过滤器收到并转到桌宠**；撤销注册后这个键**还能再注册**（说明退出时真的还给了系统）。
+  另外还测了动作分发（说一句 / 看余额 / 看天气 / 在放什么）和按配置注册 / 撤销 / 总开关。
+- 实测：同一支脚本里的**优先级**那一组（15 项）——
+  触发类的话在说时，闲话那一拍**什么都不说**；触发类说完，闲话接着冒；
+  闲话正在说时触发类的话**当场盖掉**它；闲话同一句连着说会被去重、而触发类的话
+  一模一样也照常显示；换歌那句进的是"排队"，时间点确实排在触发类说完之后；
+  自动刷出来的余额泡泡同样让位（记着时间点、说完再顶），自己点的那种（force）直接顶。
+- 实测：`F:\Codex\work\test_autosay_ui.py`（31 项全过）——
+  「应用联动」页四张卡片都建得出来、三行小字读的是**当前真实的规则表**
+  （「现在管着 7 个应用」「现在有 1 条到点提醒」「现在有 3 个：Ctrl+Alt+1、Ctrl+Alt+2、Ctrl+Alt+3」）；
+  两个新图标（`ui.timer` / `ui.keyboard`）画得出东西、不是空白；
+  三种编辑器（用久了 / 到点 / 快捷键）都能建出来；**走一遍"填好 + 点保存"**：
+  规则真的写进配置、快捷键真的重新注册了一次、没写台词会拦下来不存；
+  列表里那行字对得上（「wechat.exe：连续用满 45 分钟，之后每 20 分钟再说一次 —— 歇会儿」）；
+  **列表图标**：记着路径的那条画出来是**真图标**（`QIcon` 非空）、找不到 exe 的那条有张通用图标、
+  到点 / 快捷键两本每条都有图标、`app_path_for()` 返回的路径全都真实存在（认不出来的老实返回空串）。
+- 回归：`test_icon_family.py`（含新增的 2 个图标，53 个 SVG 仍是同一套线稿 / 无空白）、
+  `test_console_page.py`（12 页切一遍不崩）、`test_console_search.py`、
+  `test_console_ui.py`、`test_console_live_refresh.py`、`test_new_features.py`（应用扫描）、
+  `test_lines_dialog.py`、`test_double_click_choice.py`、`test_mem_trim.py`、
+  `test_menu_no_adjust_line.py`；优先级改了 `say()` 之后又专门跑了一遍**跟说话有关的那几支**：
+  `test_line_freq.py`（语录频率）、`test_double_click_choice.py` / `test_double_click_peek.py`、
+  `test_custom_lines.py`（自定义台词）、`test_freq_lines_custom.py`、
+  `test_music_link.py`（换歌冒泡）、`test_peak_display.py`（跨时段提醒）、
+  `test_reduced_pet.py` —— 全过。
+
+### 维护者相关（发版 / 仓库，不写进 Release 说明）
+
+- `桌宠.py` 新增：
+  - 常量：`TIME_LINES`（内置"用久了"默认：进程名 → (分钟, 台词)）、`CLOCK_LINES_DEFAULT`、
+    `HOTKEYS_DEFAULT`、`HOTKEY_ACTS`、`HOTKEY_MODS` / `HOTKEY_SPECIAL` / `HOTKEY_BASE` /
+    `HOTKEY_NOREPEAT` / `HOTKEY_MIN_MODS`、`FG_IDLE_FREEZE`、`WEEKDAY_NAMES`；
+    小函数 `hotkey_parse()` / `hotkey_supported_hint()` / `idle_seconds()` /
+    `clone_rules()` / `app_time_default_rules()`。
+  - `HotkeyBridge(QAbstractNativeEventFilter)`：认 `WM_HOTKEY`(0x0312)，转 `pet._on_hotkey(id)`；
+    和 `MenuClickBridge` 一样在 `PetWindow.__init__` 里 `installNativeEventFilter`。
+  - `AutoSayDialog(QDialog)`：一套列表 + 编辑器管三种规则（`apptime` / `clock` / `hotkey`）；
+    规则读写全走桌宠那边的 `app_time_rules()` / `set_app_time_rules()` / `clock_rules()` /
+    `set_clock_rules()` / `hotkey_rules()` / `set_hotkey_rules()`。
+  - `PetWindow`：`_usage_rule()` / `_track_fg_usage()` / `app_time_dialog()`、
+    `check_timed_lines()` / `timed_lines_dialog()`、
+    `_register_hotkeys()` / `_unregister_hotkeys()` / `_on_hotkey()` / `hotkeys_dialog()`、
+    `set_app_time_on()` / `set_timed_on()` / `set_hotkeys_on()`。
+  - `app_path_for(exe)`：从 `HKLM` / `HKCU` 的 `App Paths` 里查 exe 完整路径
+    （**winreg 没有 `HKLM` / `HKCU` 这种简写，要写全名** —— 第一版就是栽在这儿，
+    查了个寂寞还查不出错）；`AutoSayDialog._row_icon()` 决定列表项那颗图标，
+    用久了那本的规则里会多存一个 `path` 字段（给下次画图标用）。
+  - **优先级**（主人点名：「这些应用触发双击触发快捷键触发等的语录都是优先级最高的……
+    优先这些语录正常显示，在显示其他语录」）：`say()` 多一个 `idle=False` 参数，
+    非闲话的调用会把 `_trigger_until` 记成"说到什么时候"；`_maybe_idle_action()` 里
+    那两处冒话改成 `idle=True`，并在冒话前加了一道
+    `if self._secs() < self._trigger_until: return`（触发类在说就让位）。
+    另外 `say()` 的"同一句连着说就不重复"现在**只对闲话生效**
+    （`if idle and text == self.last_line …`）—— 触发类的话一模一样也要正常显示。
+    新增 `_trigger_speaking()` / `_say_when_free()`，`_announce_song()`（换歌）
+    改走 `_say_when_free()`：前面有触发类的话在说时排队（复用 `_pending_bubbles`），
+    不打断。`show_balance_bubble(seconds, force=False)`：自动刷的那几处（`_apply_balance`）
+    撞上触发类的话就记进 `_bal_wait_until` / `_bal_wait_secs`，`tick()` 里到期再顶上来；
+    `_peek_balance()`（快速双击）传 `force=True`。`__init__` 里加
+    `self._trigger_until` / `self._bal_wait_until` / `self._bal_wait_secs`。
+  - `check_processes()` 里**先**调 `_track_fg_usage(name)`（这个跟"打开时冒泡"是两个开关），
+    `tick()` 里 `self.t % 50 == 0` 那格加 `check_timed_lines()`（和峰谷提醒同一拍），
+    `tick()` 里处理 `_app_time_queue`（后台扫到的应用列表 → 主线程开窗口），
+    `quit_app()` 开头 `_unregister_hotkeys()`（退出必须把键还给系统）。
+  - 配置键：`app_time_on` / `app_time_lines`、`timed_on` / `timed_lines`、
+    `hotkeys_on` / `hotkeys`（`cfg_defaults` 里给的内置默认；老的 `config.json`
+    靠 `setdefault` 自动补上）。老规则没写 `act` 时按 `"lines"` 处理，不会因为升级失效。
+- `ui_console.py`：`_page_integration()` 从 1 张卡变成 4 张（打开时冒泡 / 用久了提醒 /
+  到点说一句 / 全局快捷键），三个"配置…"按钮走 `_open_app_time` / `_open_timed` /
+  `_open_hotkeys`（关掉窗口顺手刷那行小字），`_app_time_text()` / `_timed_text()` /
+  `_hotkey_text()` / `_sync_autosay_texts()` 挂在 `_hook_page("integration", …)` 上现读；
+  `PAGES` 里「应用联动」的说明改成"开应用时冒泡、用久了提醒、到点说一句、快捷键"。
+  `APP_VERSION`：1.1.2 → **1.1.3**。
+- `assets/icons/`：新增 `ui.timer.svg`（用久了）、`ui.keyboard.svg`（快捷键），
+  都是 lucide 那套线稿（24 网格 / 线宽 1.75），跟 `test_icon_family.py` 的口径一致。
+- 岔开一句：`say()` 的 `again=True` 用在新快捷键上（连按两次同一句也得冒出来）。
+
 ## v1.1.2
 
 ### 设置窗口里的数字，不用重启就跟着变

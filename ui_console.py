@@ -54,7 +54,7 @@ except Exception:
 # 注意：**没推送就不算开新版本** —— 同一版里的返工都算在同一个号上
 # （2026-09-14 主人定的）。v1.1.1 已经推送过，所以这一版的改动是 1.1.2；
 # 之后再改还是 1.1.2，等推送那天才说下一版。
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 
 # 最小化动画时长（毫秒）：照着 Windows 那套"往任务栏收"的感觉来
 MINIMIZE_ANIM_MS = 190
@@ -1515,7 +1515,7 @@ class ConsoleWindow(QWidget):
         ("lines", "文案和语录", "闲着时说什么、高峰时段怎么显示",
          "nav.lines", "_page_lines"),
         ("sound", "音效", "按键音效、音量、自己加的音频", "nav.sound", "_page_sound"),
-        ("integration", "应用联动", "打开某些应用时它冒泡说话",
+        ("integration", "应用联动", "开应用时冒泡、用久了提醒、到点说一句、快捷键",
          "nav.integration", "_page_integration"),
         ("performance", "性能和工具", "流畅度、回收内存",
          "nav.performance", "_page_performance"),
@@ -3068,6 +3068,9 @@ class ConsoleWindow(QWidget):
                                   self._text_button("打开编辑器…",
                                                     self._open_lines_editor,
                                                     "primary"))
+        page.hint(card, "闲着冒的话会给「触发类」让位：打开应用、用久了、到点、"
+                        "按快捷键、双击、点它拖它、换歌 —— 这些说的时候闲话不插嘴，"
+                        "也不盖掉它；它们说完闲话再接着冒。")
         self._hook_page("lines", self._sync_lines_controls)
 
     def _lines_desc(self):
@@ -3154,6 +3157,77 @@ class ConsoleWindow(QWidget):
             "empty.app", "还没给任何应用配过台词",
             "点上面的「扫描电脑应用并添加…」挑一个", size=44, layout=card)
         self._hook_page("integration", self._sync_integration_empty)
+
+        card = page.card("用久了提醒", "连续用一个应用太久，它主动让你歇会儿",
+                         "ui.timer")
+        page.row(card, "用久了提醒", "连续在前台用满设定的分钟数就说一句",
+                 Switch(pet.cfg.get("app_time_on", True), pet.set_app_time_on))
+        page.buttons(card, [("配置哪些应用 / 说多久…",
+                             self._open_app_time, "primary", "ui.edit")])
+        self.app_time_hint = page.hint(card, self._app_time_text(), "muted")
+
+        card = page.card("到点说一句", "每天 / 每周固定的点，或者每隔一段时间",
+                         "page.clock")
+        page.row(card, "到点说一句", "到点了它主动冒一句",
+                 Switch(pet.cfg.get("timed_on", True), pet.set_timed_on))
+        page.buttons(card, [("配置时间点和台词…",
+                             self._open_timed, "primary", "ui.edit")])
+        self.timed_hint = page.hint(card, self._timed_text(), "muted")
+
+        card = page.card("全局快捷键", "按一下它就说一句（哪个窗口在前台都管用）",
+                         "ui.keyboard")
+        page.row(card, "全局快捷键", "自己设键，比如 Ctrl+Alt+1 让它夸你一句",
+                 Switch(pet.cfg.get("hotkeys_on", True), pet.set_hotkeys_on))
+        page.buttons(card, [("配置快捷键和台词…",
+                             self._open_hotkeys, "primary", "ui.edit")])
+        self.hotkey_hint = page.hint(card, self._hotkey_text(), "muted")
+        self._hook_page("integration", self._sync_autosay_texts)
+
+    # 三个"配置…"按钮：窗口关掉之后顺手把下面那行小字重读一遍
+    def _open_app_time(self):
+        self._run(self.pet.app_time_dialog)
+        self._sync_autosay_texts()
+
+    def _open_timed(self):
+        self._run(self.pet.timed_lines_dialog)
+        self._sync_autosay_texts()
+
+    def _open_hotkeys(self):
+        self._run(self.pet.hotkeys_dialog)
+        self._sync_autosay_texts()
+
+    def _app_time_text(self):
+        rules = [r for r in (self.pet.app_time_rules() or {}).values()
+                 if isinstance(r, dict) and r.get("on", True) and (r.get("lines") or [])]
+        return (f"现在管着 {len(rules)} 个应用（点开就能改说多久、说什么）。"
+                if rules else "还没配：点「配置哪些应用」加一条，或者删掉不想要的。")
+
+    def _timed_text(self):
+        rules = [r for r in self.pet.clock_rules()
+                 if r.get("on", True) and (r.get("lines") or [])]
+        return (f"现在有 {len(rules)} 条到点提醒。" if rules
+                else "还没有到点提醒：点「配置时间点和台词」加一条。")
+
+    def _hotkey_text(self):
+        rules = [r for r in self.pet.hotkey_rules()
+                 if r.get("on", True) and (r.get("lines") or [])]
+        if not rules:
+            return "还没设快捷键：点「配置快捷键和台词」加一条。"
+        text = "现在有 %d 个：%s。" % (len(rules),
+                                      "、".join(r.get("seq") or "?" for r in rules))
+        bad = self.pet.hotkey_failed_texts()
+        if bad:
+            text += f"（{'、'.join(bad)} 被别的程序占用了，按不出来，换一个键）"
+        return text
+
+    def _sync_autosay_texts(self):
+        """三张卡下面的那行小字：回到这一页时现读一遍。"""
+        for name, fn in (("app_time_hint", self._app_time_text),
+                         ("timed_hint", self._timed_text),
+                         ("hotkey_hint", self._hotkey_text)):
+            label = getattr(self, name, None)
+            if label is not None:
+                label.setText(fn())
 
     def _sync_integration_empty(self):
         """一个自定义 / 改写的应用都没有时，把那块空状态露出来。"""

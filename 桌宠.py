@@ -39,7 +39,7 @@ from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice
                             QEventLoop, QSize, QFileInfo, QEvent, QAbstractNativeEventFilter,
                             QObject)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
-                           QPolygonF, QImage, QCursor, QMouseEvent)
+                           QPolygonF, QImage, QCursor, QMouseEvent, QKeySequence)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
@@ -139,6 +139,36 @@ class MenuClickBridge(QAbstractNativeEventFilter):
         menu_debug(f"[原生] 拦截到落在子菜单上的点击（层级{getattr(menu, '_dfy_depth', '?')}）")
         if msg.message == self.UP:
             self.pet.activate_menu_item(menu)
+        return True, 0
+
+
+class HotkeyBridge(QAbstractNativeEventFilter):
+    """全局快捷键：Windows 把热键消息投给"注册它的那个线程"。
+
+    桌宠在主线程用 RegisterHotKey 注册（见 PetWindow._register_hotkeys），
+    按下时 Windows 往主线程消息队列里投一条 WM_HOTKEY；Qt 的事件循环
+    会先过一遍原生消息过滤器 —— 就在这儿认出来，转给桌宠说一句。
+    """
+
+    WM_HOTKEY = 0x0312
+
+    def __init__(self, pet):
+        super().__init__()
+        self.pet = pet
+
+    def nativeEventFilter(self, eventType, message):
+        try:
+            if bytes(eventType) not in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+                return False, 0
+            msg = ctypes.cast(int(message), ctypes.POINTER(_NativeMsg)).contents
+        except Exception:
+            return False, 0
+        if msg.message != self.WM_HOTKEY:
+            return False, 0
+        try:
+            self.pet._on_hotkey(int(msg.wParam or 0))
+        except Exception as exc:
+            print("快捷键处理失败:", exc)
         return True, 0
 
 
@@ -886,6 +916,172 @@ PROCESS_LINES = {
     "photoshop.exe": ["开始画图啦，画完给我看看", "修图还是摸鱼，我都支持"],
 }
 
+# ===== 自动说话：用久了 / 到点 / 快捷键 =====
+# 三条规则都住在 config.json 里（app_time_lines / timed_lines / hotkeys），
+# 下面这几个是"新装一份"时给的内置默认，主人可以在「设置 → 应用联动」里随便改、关、删。
+
+# 用久了提醒：连续在前台用满这些分钟就说一句（进程名小写）
+TIME_LINES = {
+    "steam.exe": (60, ["玩了一个多小时了吧？起来动动，眼睛也歇会儿",
+                       "一个小时了，这局打完就歇歇吧"]),
+    "wegame.exe": (60, ["一个小时了，别一直坐着，起来喝口水",
+                        "打了一个多小时了，腰还好吗"]),
+    "league of legends.exe": (90, ["一个半小时了，峡谷再好看也得歇歇",
+                                   "连打这么久了，赢了别再加一局，输了更别加"]),
+    "genshinimpact.exe": (60, ["玩了一个小时啦，眼睛离屏幕远一点",
+                               "一个小时了，该起来走两步了"]),
+    "douyin.exe": (40, ["刷了四十分钟了哦，抬头看看别的",
+                        "再刷下去天就黑了，真的"]),
+    "code.exe": (90, ["写了一个半小时代码了，喝口水，脖子也动动",
+                      "九十分钟啦，起来走两步再战"]),
+    "chatgpt.exe": (90, ["聊了一个半小时了，站起来伸伸懒腰",
+                         "一个半小时了，记得喝水"]),
+}
+
+# 到点说一句：daily=每天这个点 / weekly=每周这几天 / interval=每隔 N 分钟
+CLOCK_LINES_DEFAULT = [
+    {"id": "builtin-night", "when": "daily", "time": "23:30", "days": [],
+     "every": 0, "on": True,
+     "lines": ["23:30 了，早点睡吧，明天的事明天再说",
+               "都这个点了还不睡？眼睛也要下班"]},
+]
+
+# 全局快捷键：按一下它就说一句（键和台词都能改、能关、能删）
+HOTKEYS_DEFAULT = [
+    {"id": "builtin-praise", "seq": "Ctrl+Alt+1", "act": "lines", "on": True,
+     "lines": ["不错嘛，这一下有点东西！", "漂亮，我就知道你能行",
+               "这波操作我给你满分，真的", "厉害厉害，我在这儿都看呆了"]},
+    {"id": "builtin-cheer", "seq": "Ctrl+Alt+2", "act": "lines", "on": True,
+     "lines": ["别急，慢慢来，我陪着你", "加油，再撑一会儿就顺了",
+               "这会儿有点难是吧？歇口气再来"]},
+    {"id": "builtin-tease", "seq": "Ctrl+Alt+3", "act": "lines", "on": True,
+     "lines": ["就这？……好吧，其实还行", "又摸鱼？我可都记着呢",
+               "行吧，看在你这么认真的份上"]},
+]
+
+WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+# 快捷键按下之后干什么（跟「快速双击」那四个动作是一套）
+HOTKEY_ACTS = [("lines", "说一句（用下面写的台词）"),
+               ("balance", "看一眼余额"),
+               ("weather", "看一眼天气"),
+               ("music", "看一眼在放什么")]
+
+# 全局快捷键：修饰键表 + 认得的那些键
+HOTKEY_BASE = 0xA510          # 注册用的 id 从这儿开始（只在桌宠自己这儿用）
+HOTKEY_NOREPEAT = 0x4000      # 按住不放只算一次（不加会一直连发）
+HOTKEY_MODS = {"ctrl": 0x0002, "control": 0x0002, "alt": 0x0001,
+               "shift": 0x0004, "win": 0x0008, "meta": 0x0008}
+HOTKEY_SPECIAL = {
+    "space": 0x20, "tab": 0x09, "enter": 0x0D, "return": 0x0D, "esc": 0x1B,
+    "escape": 0x1B, "backspace": 0x08, "del": 0x2E, "delete": 0x2E,
+    "ins": 0x2D, "insert": 0x2D, "home": 0x24, "end": 0x23,
+    "pgup": 0x21, "pageup": 0x21, "pgdn": 0x22, "pagedown": 0x22,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+}
+HOTKEY_MIN_MODS = 0x0002      # 至少得带 Ctrl（单键 / 纯 Shift 太容易误触、也容易抢别人的键）
+FG_IDLE_FREEZE = 600          # 键鼠静了这么久（秒）就认为人不在："用久了"不累计也不提醒
+
+
+def clone_rules(rules):
+    """复制一份规则表：config 里的默认值不能和模块常量共用同一个 dict（改了会互相串）。"""
+    out = []
+    for rule in rules:
+        item = dict(rule)
+        item["lines"] = [str(t) for t in (rule.get("lines") or [])]
+        if "days" in rule:
+            item["days"] = list(rule.get("days") or [])
+        out.append(item)
+    return out
+
+
+def app_time_default_rules():
+    """内置的「用久了提醒」，每次调用给一份新的。"""
+    return {exe: {"minutes": mins, "repeat": 0, "on": True, "lines": list(lines)}
+            for exe, (mins, lines) in TIME_LINES.items()}
+
+
+def hotkey_parse(text):
+    """把 "Ctrl+Alt+1" 拆成 (修饰键, 虚拟键码)；认不出来 / 太危险就返回 None。
+
+    只认字母、数字、F1~F24 和 HOTKEY_SPECIAL 里那几张。别的符号（`-` `[` `;`）
+    Qt 的键值和 Windows 的虚拟键码不是一回事，宁可不注册，也别注册成一个按不出来的键。
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    mods, vk = 0, None
+    for raw in text.replace("＋", "+").replace(" ", "").split("+"):
+        token = raw.strip().lower()
+        if not token:
+            continue
+        if token in HOTKEY_MODS:
+            mods |= HOTKEY_MODS[token]
+        elif token in HOTKEY_SPECIAL:
+            vk = HOTKEY_SPECIAL[token]
+        elif len(token) == 1 and token.isalnum():
+            vk = ord(token.upper())
+        elif token.startswith("f") and token[1:].isdigit() and 1 <= int(token[1:]) <= 24:
+            vk = 0x70 + int(token[1:]) - 1
+        else:
+            return None
+    if vk is None or not (mods & HOTKEY_MIN_MODS):
+        return None
+    return mods, vk
+
+
+def hotkey_supported_hint():
+    """给对话框用的一句话：支持的写法。"""
+    return "支持的键：字母 / 数字 / F1~F24 / 空格、Tab、回车、Esc 这些；至少带 Ctrl。"
+
+
+def idle_seconds():
+    """键鼠多久没动过了（秒）；拿不到就返回 None。"""
+    try:
+        from ctypes import wintypes
+
+        class _LastInput(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        info = _LastInput()
+        info.cbSize = ctypes.sizeof(_LastInput)
+        if not ctypes.WinDLL("user32.dll").GetLastInputInfo(ctypes.byref(info)):
+            return None
+        tick = ctypes.WinDLL("kernel32.dll").GetTickCount()
+        return max(0.0, ((tick - info.dwTime) & 0xFFFFFFFF) / 1000.0)
+    except Exception:
+        return None
+
+
+def app_path_for(exe):
+    """从注册表 App Paths 里找这个 exe 的完整路径（找不到返回空串）。
+
+    「用久了提醒」那本列表要给每个应用画真图标 —— 扫到的应用（正在跑 + 开始菜单）
+    已经带路径了，剩下那些没在跑的（比如没开着的 Steam）就从这儿补一下。
+    """
+    exe = (exe or "").strip().lower()
+    if not exe.endswith(".exe"):
+        return ""
+    try:
+        import winreg
+    except Exception:
+        return ""
+    sub = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+    # 注意：winreg 没有 HKLM / HKCU 这种简写，得写全名
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, sub + "\\" + exe) as key:
+                path, _kind = winreg.QueryValueEx(key, "")
+        except OSError:
+            continue
+        except Exception:
+            continue
+        path = os.path.expandvars(str(path or "").strip().strip('"'))
+        if path and os.path.exists(path):
+            return path
+    return ""
+
+
 # 余额来源：目前只有 DeepSeek 和 OpenRouter 有公开的余额接口
 NO_BALANCE_SERVICES = ("openai", "chatgpt", "gpt")
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
@@ -1080,6 +1276,516 @@ class AppScanDialog(QDialog):
         self.tip.setText(f"已清掉 {exe} 的自定义文字")
         self._mark_item(self.listw.currentItem())
         self._refresh_buttons()
+
+
+class AutoSayDialog(QDialog):
+    """一张表管一类"自动说话"的规则：用久了 / 到点 / 快捷键。
+
+    kind：
+      apptime = 用久了提醒（某个应用连续在前台用满 N 分钟）
+      clock   = 到点说一句（每天 / 每周 / 每隔一段时间）
+      hotkey  = 全局快捷键（按一下就说一句）
+    规则都存在 config.json 里；这里只管增删改，改完立刻生效（快捷键会重新注册）。
+    """
+
+    KINDS = {
+        "apptime": ("用久了提醒",
+                    "连续在前台用满设定的分钟数，它就说一句。一句一行，写多句随机挑一句。\n"
+                    "没人在动键鼠的那段时间不算（看电影、挂机不会被冤枉）。"),
+        "clock": ("到点说一句",
+                  "到点了主动冒一句：每天固定时刻、每周选几天，或者每隔一段时间。"),
+        "hotkey": ("全局快捷键",
+                   "按一下这个键它就说一句（不管当时哪个窗口在前台）。\n"
+                   + hotkey_supported_hint()),
+    }
+
+    def __init__(self, owner, kind, apps=None):
+        super().__init__(None)
+        if ui_console:                      # 跟设置窗口用同一套配色
+            ui_console.style_dialog(self, BUNDLE_DIR)
+        self.owner = owner
+        self.kind = kind
+        self.apps = list(apps or [])
+        # 列表项前面那颗图标：用久了那本画应用的真图标（跟「扫描到的应用」一个口径），
+        # 到点 / 快捷键两本画同类的小图标。这里先把 exe → 完整路径 攒起来。
+        self._icons = QFileIconProvider()
+        self._paths = {}
+        if kind == "apptime":
+            for exe, _label, path in self.apps:
+                if exe and path:
+                    self._paths.setdefault(exe.lower(), path)
+            try:
+                for exe, path in running_processes():
+                    if exe and path:            # 正在跑的一般都能拿到真路径
+                        self._paths.setdefault(exe.lower(), path)
+            except Exception:
+                pass
+        title, tip = self.KINDS.get(kind, ("自动说话", ""))
+        self.setWindowTitle(title)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.resize(560, 520)
+
+        lay = QVBoxLayout(self)
+        head = QLabel(tip)
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        self.tip = QLabel("")
+        self.tip.setWordWrap(True)
+        self.tip.setObjectName("dim")
+        lay.addWidget(self.tip)
+
+        self.listw = QListWidget()
+        self.listw.setIconSize(QSize(24, 24))
+        lay.addWidget(self.listw, 1)
+
+        row = QHBoxLayout()
+        self.add_btn = QPushButton("添加一条")
+        self.edit_btn = QPushButton("修改")
+        self.del_btn = QPushButton("删除")
+        self.try_btn = QPushButton("试一句")
+        close_btn = QPushButton("关闭")
+        for btn in (self.add_btn, self.edit_btn, self.del_btn, self.try_btn):
+            row.addWidget(btn)
+        row.addStretch(1)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+
+        self.add_btn.clicked.connect(lambda: self._edit(None))
+        self.edit_btn.clicked.connect(lambda: self._edit(self._current()))
+        self.del_btn.clicked.connect(self._delete)
+        self.try_btn.clicked.connect(self._try)
+        close_btn.clicked.connect(self.accept)
+        self.listw.itemDoubleClicked.connect(lambda _i: self._edit(self._current()))
+        self.listw.currentItemChanged.connect(lambda *_: self._sync_buttons())
+        self._fill()
+
+    # ---------- 规则的读写（都走桌宠那边的接口）----------
+    def _entries(self):
+        """[(键, 规则)]。apptime 的键是 exe 名，另外两种是规则的 id。"""
+        if self.kind == "apptime":
+            return [(exe, dict(rule))
+                    for exe, rule in (self.owner.app_time_rules() or {}).items()]
+        rules = (self.owner.clock_rules() if self.kind == "clock"
+                 else self.owner.hotkey_rules())
+        out = []
+        for i, rule in enumerate(rules or []):
+            item = dict(rule)
+            item["id"] = item.get("id") or f"auto-{i}"
+            out.append((item["id"], item))
+        return out
+
+    def _store(self, entries):
+        if self.kind == "apptime":
+            box = {}
+            for key, rule in entries:
+                if key:
+                    box[key] = rule
+            self.owner.set_app_time_rules(box)
+        elif self.kind == "clock":
+            self.owner.set_clock_rules([rule for _key, rule in entries])
+        else:
+            self.owner.set_hotkey_rules([rule for _key, rule in entries])
+        self.owner.save_config()
+
+    def _new_id(self, prefix):
+        return f"{prefix}-{int(time.time() * 1000) % 100000000}"
+
+    @staticmethod
+    def _exe_from_text(text):
+        """下拉里选的是「微信（wechat.exe）」这种写法，也可能直接手敲一个 exe 名。"""
+        text = (text or "").strip()
+        if text.endswith("）") and "（" in text:
+            text = text.rsplit("（", 1)[1][:-1]
+        elif text.endswith(")") and "(" in text:
+            text = text.rsplit("(", 1)[1][:-1]
+        return text.strip().lower()
+
+    def _app_choices(self):
+        """[(exe, 显示文字)]：已经配过的 + 扫到的应用。"""
+        items, seen = [], set()
+        for exe, _rule in self._entries():
+            exe = (exe or "").lower()
+            if exe and exe not in seen:
+                seen.add(exe)
+                items.append((exe, exe))
+        for exe, label, _path in self.apps:
+            exe = (exe or "").lower()
+            if exe and exe not in seen:
+                seen.add(exe)
+                items.append((exe, f"{label}（{exe}）"))
+        return items
+
+    # ---------- 列表 ----------
+    def _row_icon(self, key, rule):
+        """列表项前面那颗图标。
+
+        用久了那本：exe 的**真图标**（规则里记着路径 → 扫到的路径 → 注册表 App Paths），
+        都找不到才退成一张通用文件图标。另外两本给个同类的小图标（钟 / 键盘）。
+        """
+        if self.kind != "apptime":
+            name = "page.clock" if self.kind == "clock" else "ui.keyboard"
+            try:
+                color = (ui_console.tokens().get("text_dim", "#7b8093")
+                         if ui_console else "#7b8093")
+                return ui_console.icon(name, color, 18) if ui_console else None
+            except Exception:
+                return None
+        exe = (key or "").lower()
+        path = rule.get("path") or self._paths.get(exe)
+        if not path and exe:                    # 没在跑、也不在开始菜单里：查注册表
+            path = app_path_for(exe)
+            if path:
+                self._paths[exe] = path
+        try:
+            if path and os.path.exists(path):
+                icon = self._icons.icon(QFileInfo(path))
+                if not icon.isNull():
+                    return icon
+        except Exception:
+            pass
+        try:
+            return self._icons.icon(QFileIconProvider.IconType.File)
+        except Exception:
+            return None
+
+    def _label(self, key, rule):
+        lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
+        if self.kind == "apptime":
+            head = f"{key}：连续用满 {int(rule.get('minutes') or 60)} 分钟"
+            repeat = int(rule.get("repeat") or 0)
+            if repeat:
+                head += f"，之后每 {repeat} 分钟再说一次"
+        elif self.kind == "clock":
+            when = (rule.get("when") or "daily").lower()
+            if when == "interval":
+                head = f"每隔 {int(rule.get('every') or 60)} 分钟"
+            elif when == "weekly":
+                days = "、".join(WEEKDAY_NAMES[d] for d in sorted(rule.get("days") or [])
+                                 if isinstance(d, int) and 0 <= d < 7)
+                head = f"每周 {days or '（没选星期）'} {rule.get('time') or ''}"
+            else:
+                head = f"每天 {rule.get('time') or ''}"
+        else:
+            head = rule.get("seq") or "（还没设键）"
+            act = rule.get("act") or "lines"
+            if act != "lines":
+                head += f"（{dict(HOTKEY_ACTS).get(act, act)}）"
+        if not rule.get("on", True):
+            head = "（已关）" + head
+        if not lines:
+            tail = ("（不带台词）" if self.kind == "hotkey"
+                    and (rule.get("act") or "lines") != "lines" else "（还没写台词）")
+        else:
+            tail = lines[0]
+        return f"{head} —— {tail}"
+
+    def _fill(self):
+        keep = None
+        cur = self._current()
+        if cur:
+            keep = cur[0]
+        self.listw.clear()
+        for key, rule in self._entries():
+            item = QListWidgetItem(self._label(key, rule))
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            icon = self._row_icon(key, rule)
+            if icon is not None:
+                item.setIcon(icon)
+            self.listw.addItem(item)
+        if self.listw.count():
+            row = self.listw.count() - 1
+            for i in range(self.listw.count()):
+                if self.listw.item(i).data(Qt.ItemDataRole.UserRole) == keep:
+                    row = i
+                    break
+            self.listw.setCurrentRow(row)
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        has = self._current() is not None
+        for btn in (self.edit_btn, self.del_btn, self.try_btn):
+            btn.setEnabled(has)
+
+    def _current(self):
+        item = self.listw.currentItem()
+        if item is None:
+            return None
+        key = item.data(Qt.ItemDataRole.UserRole)
+        for k, rule in self._entries():
+            if k == key:
+                return (k, rule)
+        return None
+
+    def _delete(self):
+        cur = self._current()
+        if not cur:
+            return
+        key, rule = cur
+        what = self._label(key, rule).split(" —— ")[0]
+        yes = QMessageBox.question(
+            self, "删除", f"删掉这一条？\n{what}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if yes != QMessageBox.StandardButton.Yes:
+            return
+        self._store([(k, r) for k, r in self._entries() if k != key])
+        self.tip.setText(f"已经删掉：{what}")
+        self._fill()
+
+    def _try(self):
+        cur = self._current()
+        if not cur:
+            return
+        if self.kind == "hotkey" and (cur[1].get("act") or "lines") != "lines":
+            self.tip.setText("这一条是动作快捷键，真按下去才看得到效果")
+            return
+        lines = [str(t) for t in (cur[1].get("lines") or []) if str(t).strip()]
+        if not lines:
+            self.tip.setText("这一条还没写台词，先点「修改」写两句")
+            return
+        self.owner.say(random.choice(lines), again=True, seconds=3.2)
+
+    # ---------- 编辑一条 ----------
+    def _edit(self, cur):
+        from PySide6.QtCore import QTime
+        from PySide6.QtWidgets import (QPlainTextEdit, QSpinBox, QTimeEdit,
+                                       QCheckBox, QKeySequenceEdit)
+        rule = dict(cur[1]) if cur else {}
+        old_key = cur[0] if cur else None
+        is_new = cur is None
+        title = self.KINDS.get(self.kind, ("自动说话", ""))[0]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(("添加 · " if is_new else "修改 · ") + title)
+        if ui_console:
+            ui_console.style_dialog(dlg, BUNDLE_DIR)
+        dlg.resize(460, 430)
+        lay = QVBoxLayout(dlg)
+        box = {}                      # 各种控件，保存时统一读
+
+        if self.kind == "apptime":
+            row = QHBoxLayout()
+            row.addWidget(QLabel("应用："))
+            combo = QComboBox()
+            combo.setEditable(True)
+            for exe, text in self._app_choices():
+                combo.addItem(text, exe)
+            want = (old_key or "").lower()
+            if want:
+                idx = combo.findData(want)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                else:
+                    combo.setEditText(want)
+            row.addWidget(combo, 1)
+            lay.addLayout(row)
+            box["exe"] = combo
+            hint = QLabel("列表里是已经配过的和刚扫到的应用，也可以自己敲进程名（例如 notepad.exe）。")
+            hint.setWordWrap(True)
+            hint.setObjectName("dim")
+            lay.addWidget(hint)
+
+            row2 = QHBoxLayout()
+            row2.addWidget(QLabel("连续用满："))
+            spin = QSpinBox()
+            spin.setRange(1, 600)
+            spin.setSuffix(" 分钟")
+            spin.setValue(int(rule.get("minutes") or 60))
+            row2.addWidget(spin)
+            row2.addSpacing(12)
+            row2.addWidget(QLabel("之后："))
+            rep = QSpinBox()
+            rep.setRange(0, 600)
+            rep.setSuffix(" 分钟")
+            rep.setSpecialValueText("不再提醒")
+            rep.setValue(int(rule.get("repeat") or 0))
+            row2.addWidget(rep)
+            row2.addStretch(1)
+            lay.addLayout(row2)
+            box["minutes"], box["repeat"] = spin, rep
+
+        elif self.kind == "clock":
+            row = QHBoxLayout()
+            row.addWidget(QLabel("什么时候说："))
+            mode = QComboBox()
+            mode.addItem("每天这个点", "daily")
+            mode.addItem("每周选几天", "weekly")
+            mode.addItem("每隔一段时间", "interval")
+            when = (rule.get("when") or "daily").lower()
+            idx = mode.findData(when)
+            mode.setCurrentIndex(idx if idx >= 0 else 0)
+            row.addWidget(mode, 1)
+            row.addWidget(QLabel("时刻："))
+            edit_time = QTimeEdit()
+            edit_time.setDisplayFormat("HH:mm")
+            hh, mm = 23, 30
+            try:
+                hh, mm = [int(x) for x in (rule.get("time") or "23:30").split(":")[:2]]
+            except Exception:
+                pass
+            edit_time.setTime(QTime(hh % 24, max(0, min(59, mm))))
+            row.addWidget(edit_time)
+            lay.addLayout(row)
+            box["when"], box["time"] = mode, edit_time
+
+            days_row = QWidget()
+            days_lay = QHBoxLayout(days_row)
+            days_lay.setContentsMargins(0, 0, 0, 0)
+            days_lay.addWidget(QLabel("哪几天："))
+            day_boxes = []
+            chosen = set(rule.get("days") or [])
+            for i, name in enumerate(WEEKDAY_NAMES):
+                cb = QCheckBox(name)
+                cb.setChecked(i in chosen)
+                days_lay.addWidget(cb)
+                day_boxes.append(cb)
+            days_lay.addStretch(1)
+            lay.addWidget(days_row)
+            box["days"] = day_boxes
+
+            every_row = QWidget()
+            every_lay = QHBoxLayout(every_row)
+            every_lay.setContentsMargins(0, 0, 0, 0)
+            every_lay.addWidget(QLabel("每隔："))
+            every = QSpinBox()
+            every.setRange(1, 1440)
+            every.setSuffix(" 分钟")
+            every.setValue(int(rule.get("every") or 60))
+            every_lay.addWidget(every)
+            every_lay.addStretch(1)
+            lay.addWidget(every_row)
+            box["every"] = every
+
+            def sync_clock_rows(_=None):
+                kind_now = mode.currentData()
+                days_row.setVisible(kind_now == "weekly")
+                every_row.setVisible(kind_now == "interval")
+                edit_time.setVisible(kind_now != "interval")
+
+            mode.currentIndexChanged.connect(sync_clock_rows)
+            sync_clock_rows()
+
+        else:
+            row = QHBoxLayout()
+            row.addWidget(QLabel("按键："))
+            seq = QKeySequenceEdit()
+            if rule.get("seq"):
+                seq.setKeySequence(QKeySequence(rule["seq"]))
+            row.addWidget(seq, 1)
+            lay.addLayout(row)
+            box["seq"] = seq
+            hint = QLabel(hotkey_supported_hint()
+                          + "（点一下右边的框，然后直接按你要的组合键）")
+            hint.setWordWrap(True)
+            hint.setObjectName("dim")
+            lay.addWidget(hint)
+            act_row = QHBoxLayout()
+            act_row.addWidget(QLabel("按下之后："))
+            act_box = QComboBox()
+            for value, label in HOTKEY_ACTS:
+                act_box.addItem(label, value)
+            ai = act_box.findData(rule.get("act") or "lines")
+            act_box.setCurrentIndex(ai if ai >= 0 else 0)
+            act_row.addWidget(act_box, 1)
+            lay.addLayout(act_row)
+            box["act"] = act_box
+
+        line_title = QLabel("它要说的话（一句一行）：")
+        lay.addWidget(line_title)
+        edit = QPlainTextEdit()
+        edit.setPlainText("\n".join(str(t) for t in (rule.get("lines") or [])))
+        lay.addWidget(edit, 1)
+        box["lines"] = edit
+        if self.kind == "hotkey":
+            def sync_act(_=None):
+                says = (box["act"].currentData() or "lines") == "lines"
+                line_title.setText("它要说的话（一句一行）：" if says
+                                   else "顺带再说一句（可以不写）：")
+            box["act"].currentIndexChanged.connect(sync_act)
+            sync_act()
+
+        on_box = QCheckBox("启用这一条")
+        on_box.setChecked(bool(rule.get("on", True)))
+        lay.addWidget(on_box)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        ok_btn = QPushButton("保存")
+        ok_btn.setObjectName("primary")
+        cancel_btn = QPushButton("取消")
+        btns.addWidget(ok_btn)
+        btns.addWidget(cancel_btn)
+        lay.addLayout(btns)
+
+        result = {}
+
+        def save():
+            lines = [t.strip() for t in box["lines"].toPlainText().splitlines() if t.strip()]
+            if self.kind != "hotkey" and not lines:
+                QMessageBox.information(dlg, "还差一句", "至少写一句台词吧。",
+                                        QMessageBox.StandardButton.Ok)
+                return
+            item = {"on": on_box.isChecked(), "lines": lines}
+            if self.kind == "apptime":
+                exe = self._exe_from_text(box["exe"].currentText())
+                if not exe:
+                    QMessageBox.information(dlg, "还没选应用",
+                                            "先选一个应用，或者敲一个进程名。",
+                                            QMessageBox.StandardButton.Ok)
+                    return
+                item["exe"] = exe
+                item["minutes"] = int(box["minutes"].value())
+                item["repeat"] = int(box["repeat"].value())
+                # 顺手把 exe 的完整路径记下来：下次打开这本列表不用再找一遍就能画图标
+                item["path"] = self._paths.get(exe) or rule.get("path") or ""
+                result["key"] = exe
+            elif self.kind == "clock":
+                when = box["when"].currentData()
+                item["when"] = when
+                item["time"] = box["time"].time().toString("HH:mm")
+                item["days"] = [i for i, cb in enumerate(box["days"]) if cb.isChecked()]
+                item["every"] = int(box["every"].value())
+                if when == "weekly" and not item["days"]:
+                    QMessageBox.information(dlg, "还没选星期", "「每周选几天」至少要勾一天。",
+                                            QMessageBox.StandardButton.Ok)
+                    return
+                item["id"] = (rule.get("id") if not is_new else None) or self._new_id("t")
+                result["key"] = item["id"]
+            else:
+                text = box["seq"].keySequence().toString()
+                if not text or hotkey_parse(text) is None:
+                    QMessageBox.information(
+                        dlg, "这个键不支持",
+                        hotkey_supported_hint() + "\n（例如 Ctrl+Alt+1、Ctrl+Shift+F9）",
+                        QMessageBox.StandardButton.Ok)
+                    return
+                act = box["act"].currentData() or "lines"
+                if act == "lines" and not lines:
+                    QMessageBox.information(dlg, "还差一句",
+                                            "选了「说一句」的话，至少写一句台词。",
+                                            QMessageBox.StandardButton.Ok)
+                    return
+                item["act"] = act
+                item["seq"] = text
+                item["id"] = (rule.get("id") if not is_new else None) or self._new_id("hk")
+                result["key"] = item["id"]
+            result["rule"] = item
+            dlg.accept()
+
+        ok_btn.clicked.connect(save)
+        cancel_btn.clicked.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted or "rule" not in result:
+            return
+        entries = [(k, r) for k, r in self._entries() if k != old_key]
+        entries.append((result["key"], result["rule"]))
+        self._store(entries)
+        self._fill()
+        if self.kind == "hotkey":
+            bad = self.owner.hotkey_failed_texts()
+            self.tip.setText("快捷键已生效，按一下试试"
+                             + (f"（这几个被别的程序占用了，按不出来：{'、'.join(bad)}）"
+                                if bad else ""))
+        else:
+            self.tip.setText("存好啦，马上生效")
 
 
 SKIN_KIND_LABELS = {"pet": "三维形象", "widget": "挂件形象"}
@@ -2952,6 +3658,14 @@ class PetWindow(QWidget):
             "layer": "top",
             "opacity": 1.0,
             "process_alerts": True,
+            # 自动说话（都在「设置 → 应用联动」里改）：
+            #   用久了提醒 / 到点说一句 / 全局快捷键
+            "app_time_on": True,
+            "app_time_lines": app_time_default_rules(),
+            "timed_on": True,
+            "timed_lines": clone_rules(CLOCK_LINES_DEFAULT),
+            "hotkeys_on": True,
+            "hotkeys": clone_rules(HOTKEYS_DEFAULT),
             "music_link": True,
             "music_lyrics": True,
             "perf_mode": True,
@@ -3021,6 +3735,9 @@ class PetWindow(QWidget):
         _app = QApplication.instance()
         if _app is not None:
             _app.installNativeEventFilter(self._click_bridge)
+            # 全局快捷键也走原生消息（WM_HOTKEY），跟菜单那套一样在过滤器里收
+            self._hotkey_bridge = HotkeyBridge(self)
+            _app.installNativeEventFilter(self._hotkey_bridge)
         self.setMouseTracking(True)      # 菜单开着时要靠这个收鼠标移动消息（见 _forward_mouse_to_menu）
         self.setWindowTitle("大肥鱼桌宠")
         
@@ -3098,6 +3815,19 @@ class PetWindow(QWidget):
         self._foreground_proc = None     # 上一次的前台应用
         self._proc_said_at = {}          # 每个应用上次吐槽的时间
 
+        # 用久了提醒：连续在前台待的时间（只在"有人在动键鼠"的时候累计）
+        self._fg_exe = None
+        self._fg_accum = 0.0             # 这一轮累计了多少秒（换应用就清零）
+        self._fg_clock = 0.0             # 上一次结算的时刻
+        self._fg_count = 0               # 这一轮已经提醒过几次
+        # 到点说一句：每条规则上次说的时刻（每天/每周记 "日期 时刻"，每隔记时间戳）
+        self._timed_last = {}
+        # 全局快捷键
+        self._hotkey_ids = []            # 已经注册上的热键 id
+        self._hotkey_slots = {}          # 热键 id → 那条规则（按键 / 动作 / 台词）
+        self._hotkey_failed = []         # 注册失败（被别的程序占用）的键
+        self._app_time_queue = []        # 扫到的应用列表（后台线程 → 主线程）
+
         # 音乐联动状态（QQ音乐 / 网易云）
         self.music_on = bool(self.cfg.get("music_link", True))
         self.music_lyrics = bool(self.cfg.get("music_lyrics", True))
@@ -3116,6 +3846,9 @@ class PetWindow(QWidget):
         self._key_hint_shown = False      # "没配 Key，双击看不了余额"这句每次启动只提醒一次
         self._last_click_ms = -99999     # 快速双击判定
         self._dc_hold_until = 0.0        # 双击之后这几秒不让自言自语插嘴（别盖住刚弹的那一眼）
+        self._trigger_until = 0.0        # 触发类的话说到什么时候：这段时间里闲话让位（见 say）
+        self._bal_wait_until = 0.0       # 余额泡泡等"触发类的话"说完再顶上来（见 show_balance_bubble）
+        self._bal_wait_secs = 0.0
         self._lyric_key = ""             # 当前歌「歌名|歌手」
         self._lyric_lines = []           # [(秒, 词)]
         self._lyric_words = {}           # {这句开始秒: [(字, 这个字的开始秒), ...]}（有逐字歌词时才有）
@@ -3311,6 +4044,9 @@ class PetWindow(QWidget):
         self.proc_timer = QTimer(self)
         self.proc_timer.timeout.connect(self.check_processes)
         self.proc_timer.start(2000)
+
+        # 全局快捷键：注册到主线程（按下时走 HotkeyBridge，见文件开头那个类）
+        self._register_hotkeys()
 
         # 音乐联动：定时看一眼 QQ音乐 / 网易云 在放什么（读取在后台线程，不卡界面）
         self.music_timer = QTimer(self)
@@ -3566,7 +4302,9 @@ class PetWindow(QWidget):
         if now - self._music_said_at < 6.0:
             return
         self._music_said_at = now
-        self.say(random.choice(self.lines_for("MUSIC_START_LINES")).format(song=self._song_label()))
+        # 换歌这句是"自动冒的"：正在说触发类的话时排在它后面，别打断
+        self._say_when_free(
+            random.choice(self.lines_for("MUSIC_START_LINES")).format(song=self._song_label()))
 
     def _start_lyric_fetch(self, key, info):
         self._lyric_fetching = key
@@ -3742,7 +4480,18 @@ class PetWindow(QWidget):
         eased = 1 - (1 - self.roll_t) ** 3
         return self.roll_from + (self.roll_to - self.roll_from) * eased
 
-    def show_balance_bubble(self, seconds=6.0):
+    def show_balance_bubble(self, seconds=6.0, force=False):
+        """把余额泡泡顶上来显示几秒。
+
+        **触发类的话正在说的时候不抢**（余额每 60 秒自动刷一次，撞上就会把
+        "用久了 / 到点 / 快捷键"那句顶掉）：先记着，等它说完再顶上来。
+        主人自己点的那种（快速双击看一眼余额）传 force=True，直接顶。
+        """
+        if not force and self._trigger_speaking():
+            self._bal_wait_until = self._trigger_until + 0.15
+            self._bal_wait_secs = seconds
+            return
+        self._bal_wait_until = 0.0
         self.bal_until = self._secs() + seconds
         # 收起普通气泡，避免两层叠在一起
         self.bubble_text = ""
@@ -3751,6 +4500,17 @@ class PetWindow(QWidget):
 
     def _say_later(self, seconds, text, inner=False):
         self._pending_bubbles.append((self._secs() + seconds, text, inner))
+
+    def _trigger_speaking(self):
+        """现在是不是"触发类"的话正在说（这段时间闲话让位，见 say）。"""
+        return self._secs() < getattr(self, "_trigger_until", 0.0)
+
+    def _say_when_free(self, text, inner=False):
+        """这句是自动冒的（比如换歌），但**别打断正在说的触发类的话**：排到它说完再说。"""
+        if not self._trigger_speaking():
+            self.say(text, inner=inner)
+            return
+        self._pending_bubbles.append((self._trigger_until + 0.25, text, inner))
 
     # ---------- 音效 / 形象 ----------
     @staticmethod
@@ -5047,6 +5807,7 @@ class PetWindow(QWidget):
 
         # 峰谷切换提醒：每秒看一次，跨进新时段就说一声
         if self.t % 50 == 0:
+            self.check_timed_lines()        # 到点说一句（每天 / 每周 / 每隔）
             peak_now = is_peak()
             if self._peak_now is None:
                 self._peak_now = peak_now
@@ -5089,6 +5850,8 @@ class PetWindow(QWidget):
         self._flush_pending_sounds()
 
         # 延迟气泡（每轮消耗等）
+        if self._bal_wait_until and self._secs() >= self._bal_wait_until:
+            self.show_balance_bubble(self._bal_wait_secs, force=True)
         if self._pending_bubbles:
             now_s = self._secs()
             due = [x for x in self._pending_bubbles if x[0] <= now_s]
@@ -5114,6 +5877,8 @@ class PetWindow(QWidget):
                 self._apply_city(dict(items)[pick])
         if self._app_queue:
             self._pick_app_dialog(self._app_queue.pop(0))
+        if self._app_time_queue:          # 「用久了提醒」扫到的应用列表
+            self.app_time_dialog(self._app_time_queue.pop(0))
         if self._mem_queue:
             self._mem_trim_done(self._mem_queue.pop(0))
 
@@ -5213,12 +5978,14 @@ class PetWindow(QWidget):
         QQ 也算数，不会像以前那样只有刚启动的 Steam 会触发。同一个应用
         10 分钟（ChatGPT 15 分钟）只吐槽一次，避免刷屏。
         """
-        if not self.process_alerts:
-            return
-        lines_map = self._process_lines_map()
         name = foreground_process_name()
         if not name:
             return
+        # 「用久了提醒」跟「打开时冒泡」是两个开关，各管各的
+        self._track_fg_usage(name)
+        if not self.process_alerts:
+            return
+        lines_map = self._process_lines_map()
         if name not in lines_map:
             self._foreground_proc = name
             return
@@ -5247,6 +6014,221 @@ class PetWindow(QWidget):
                 continue        # 内置应用只走 override，不在这里追加，避免"重复添加"
             merged[exe] = list(merged.get(exe, [])) + [t for t in lines if t]
         return merged
+
+    # ---------- 用久了提醒 ----------
+    def app_time_rules(self):
+        """{exe: {minutes, repeat, on, lines}}。规则表就在 config.json 里。"""
+        box = self.cfg.get("app_time_lines")
+        return dict(box) if isinstance(box, dict) else {}
+
+    def set_app_time_rules(self, rules):
+        self.cfg["app_time_lines"] = rules
+
+    def _usage_rule(self, exe):
+        """这个应用连续用满多久该说话？没配 / 已关 / 没台词都返回 None。"""
+        rule = self.app_time_rules().get((exe or "").lower())
+        if not isinstance(rule, dict) or not rule.get("on", True):
+            return None
+        lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
+        if not lines:
+            return None
+        try:
+            minutes = max(1, int(rule.get("minutes") or 60))
+        except (TypeError, ValueError):
+            minutes = 60
+        try:
+            repeat = max(0, int(rule.get("repeat") or 0))
+        except (TypeError, ValueError):
+            repeat = 0
+        return minutes, repeat, lines
+
+    def _track_fg_usage(self, name, now=None):
+        """记"这个应用连续在前台待了多久"，到点说一句。
+
+        只在**本人在用**的时候累计：连着 FG_IDLE_FREEZE 秒没人动键鼠
+        （看电影、挂机、人走开了），这段时间不算进去 —— 不然回来会被冤枉。
+        """
+        now = time.time() if now is None else now
+        if name != self._fg_exe:            # 换应用了：这一轮从头开始
+            self._fg_exe = name
+            self._fg_accum = 0.0
+            self._fg_clock = now
+            self._fg_count = 0
+            return
+        gap = now - self._fg_clock
+        self._fg_clock = now
+        idle = idle_seconds()
+        if idle is not None and idle > FG_IDLE_FREEZE:
+            return                          # 人没在用：不累计，也不提醒
+        if gap > 0:
+            self._fg_accum += gap
+        rule = self._usage_rule(name)
+        if rule is None:
+            return
+        minutes, repeat, lines = rule
+        used = self._fg_accum / 60.0
+        if used < minutes:
+            return
+        due = 1 if not repeat else 1 + int((used - minutes) // repeat)
+        if due <= self._fg_count:
+            return
+        self._fg_count = due                # 关着开关也记上：免得一打开就补一串旧提醒
+        if self.cfg.get("app_time_on", True):
+            self.say(random.choice(lines))
+
+    def app_time_dialog(self, apps=None):
+        """用久了提醒。第一次进来先把本机应用扫出来（后台扫，扫完自己弹）。"""
+        if apps is None:
+            self.say("我扫一下你电脑上的应用…")
+            threading.Thread(target=lambda: self._app_time_queue.append(scan_apps()),
+                             daemon=True).start()
+            return
+        if not apps:
+            apps = sorted((exe, exe, "") for exe in PROCESS_LINES)
+        with self._ui_guard():
+            AutoSayDialog(self, "apptime", apps).exec()
+        self._notify_console()
+
+    # ---------- 到点说一句 ----------
+    def clock_rules(self):
+        rules = self.cfg.get("timed_lines")
+        return [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+
+    def set_clock_rules(self, rules):
+        self.cfg["timed_lines"] = rules
+
+    def check_timed_lines(self):
+        """到点说一句。跟峰谷提醒同一个地方调（每秒看一次）。"""
+        if not self.cfg.get("timed_on", True):
+            return
+        now = datetime.now()
+        hm = now.strftime("%H:%M")
+        today = now.strftime("%Y-%m-%d")
+        stamp = time.time()
+        for i, rule in enumerate(self.clock_rules()):
+            if not rule.get("on", True):
+                continue
+            lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
+            if not lines:
+                continue
+            rid = rule.get("id") or f"#{i}"
+            when = (rule.get("when") or "daily").lower()
+            if when == "interval":          # 每隔 N 分钟
+                try:
+                    every = max(1, int(rule.get("every") or 60))
+                except (TypeError, ValueError):
+                    every = 60
+                last = self._timed_last.get(rid)
+                if last is None:
+                    self._timed_last[rid] = stamp     # 刚启动先记一笔，别一开桌宠就炸
+                elif stamp - last >= every * 60:
+                    self._timed_last[rid] = stamp
+                    self.say(random.choice(lines))
+                continue
+            if (rule.get("time") or "").strip() != hm:
+                continue
+            if when == "weekly":            # 每周：得今天正好勾上
+                try:
+                    days = {int(d) for d in (rule.get("days") or [])}
+                except (TypeError, ValueError):
+                    days = set()
+                if now.weekday() not in days:
+                    continue
+            mark = f"{today} {hm}"
+            if self._timed_last.get(rid) == mark:     # 这一分钟已经说过了
+                continue
+            self._timed_last[rid] = mark
+            self.say(random.choice(lines))
+
+    def timed_lines_dialog(self):
+        with self._ui_guard():
+            AutoSayDialog(self, "clock").exec()
+        self._notify_console()
+
+    # ---------- 全局快捷键 ----------
+    def hotkey_rules(self):
+        rules = self.cfg.get("hotkeys")
+        return [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+
+    def set_hotkey_rules(self, rules):
+        self.cfg["hotkeys"] = rules
+        self._register_hotkeys()          # 改了键 / 台词，立刻按新的注册
+
+    def hotkey_failed_texts(self):
+        return list(getattr(self, "_hotkey_failed", []))
+
+    def _unregister_hotkeys(self):
+        ids = list(getattr(self, "_hotkey_ids", []))
+        self._hotkey_ids = []
+        self._hotkey_slots = {}
+        if not ids:
+            return
+        try:
+            user32 = ctypes.WinDLL("user32.dll")
+            for hid in ids:
+                try:
+                    user32.UnregisterHotKey(None, hid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _register_hotkeys(self):
+        """按配置注册全局快捷键。注册不上（键被别的程序占用）的记在 _hotkey_failed 里。"""
+        self._unregister_hotkeys()
+        self._hotkey_failed = []
+        if not self.cfg.get("hotkeys_on", True):
+            return
+        try:
+            user32 = ctypes.WinDLL("user32.dll")
+        except Exception:
+            return
+        for i, rule in enumerate(self.hotkey_rules()):
+            if not rule.get("on", True):
+                continue
+            seq = (rule.get("seq") or "").strip()
+            parsed = hotkey_parse(seq)
+            lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
+            act = rule.get("act") or "lines"
+            if act == "lines" and not lines:
+                continue
+            if not parsed:
+                if seq:
+                    self._hotkey_failed.append(seq)
+                continue
+            mods, vk = parsed
+            hid = HOTKEY_BASE + i
+            try:
+                ok = bool(user32.RegisterHotKey(None, hid, mods | HOTKEY_NOREPEAT, vk))
+            except Exception:
+                ok = False
+            if ok:
+                self._hotkey_ids.append(hid)
+                self._hotkey_slots[hid] = dict(rule)
+            else:
+                self._hotkey_failed.append(seq)
+
+    def _on_hotkey(self, hid):
+        """原生消息里收到 WM_HOTKEY：按这条规则的动作来一下。"""
+        rule = (getattr(self, "_hotkey_slots", None) or {}).get(hid)
+        if not rule:
+            return
+        act = rule.get("act") or "lines"
+        if act == "balance":
+            self._double_click_balance()
+        elif act == "weather":
+            self._get_weather()
+        elif act == "music":
+            self.check_music_now()
+        else:
+            lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
+            if lines:
+                self.say(random.choice(lines), again=True, seconds=3.2)
+
+    def hotkeys_dialog(self):
+        with self._ui_guard():
+            AutoSayDialog(self, "hotkey").exec()
+        self._notify_console()
 
     def scan_apps_dialog(self):
         """扫描本机应用，然后让用户挑一个加"打开时触发的文字"。"""
@@ -5375,16 +6357,20 @@ class PetWindow(QWidget):
                     return      # 放歌时不插嘴，把位置让给歌词
                 if self._secs() < getattr(self, "_dc_hold_until", 0.0):
                     return      # 刚快速双击过：让它把选好的那一眼（余额/天气/台词）先说完
+                if self._secs() < getattr(self, "_trigger_until", 0.0):
+                    return      # 刚有触发类的话在说（开应用 / 用久了 / 到点 / 快捷键 / 回嘴…）：
+                                # 让它先把话说完，闲话等下再说，不许盖掉它
                 if self.t - self.last_speak_tick >= preset["cooldown"]:
                     self.last_speak_tick = self.t
                     if random.random() < 0.4:
-                        self.say(random.choice(self.lines_for("INNER_LINES")), inner=True)
+                        self.say(random.choice(self.lines_for("INNER_LINES")),
+                                 inner=True, idle=True)
                     else:
                         words = self.lines_for("LINES")
                         if not self._double_click_sees_balance():
                             # 双击已经不归余额管了：别让它嘴上还挂着"双击我给你看余额"
                             words = [w for w in words if w != DOUBLE_CLICK_HINT_LINE] or words
-                        self.say(random.choice(words))
+                        self.say(random.choice(words), idle=True)
 
     def _queue_say(self, text):
         """后台线程调用：只入队，由主线程 tick 统一弹出显示（线程安全）"""
@@ -5513,13 +6499,25 @@ class PetWindow(QWidget):
         with self._ui_guard():
             dlg.exec()
 
-    def say(self, text, inner=False, seconds=2.8, again=False):
-        if text == self.last_line and not again and not text.startswith("天气"):
+    def say(self, text, inner=False, seconds=2.8, again=False, idle=False):
+        """冒一句话。
+
+        `idle=True` 只有"闲着时自己冒话"会用（见 `_maybe_idle_action`）：
+        **触发类的话优先级最高** —— 开应用 / 用久了 / 到点 / 快捷键 / 双击 / 点它 / 拖它 /
+        换歌 / 各种操作提示，说的时候"闲话"不许插嘴、也不许盖掉它（说完闲话自己接着冒）；
+        反过来触发类的话可以立刻盖掉正在说的闲话（这条本来就该这样，主人点名要的）。
+        `idle` 还顺带绕开下面这条去重：触发类的话即使跟上一句一模一样也要正常显示，
+        不能因为"刚说过"就被憋回去（闲话才需要去重）。
+        """
+        if idle and text == self.last_line and not again and not text.startswith("天气"):
             return
         self.last_line = text
         self.bubble_inner = inner
         self.bubble_text = f"（{text}）" if inner else text
         self.bubble_until = self._secs() + seconds
+        if not idle:
+            # 这段时间归"触发类"的话：闲着冒话先憋着（见 _maybe_idle_action 里那个判断）
+            self._trigger_until = self._secs() + seconds
         self.update()
 
     # ---------- 鼠标事件 ----------
@@ -5692,7 +6690,7 @@ class PetWindow(QWidget):
 
     def _peek_balance(self, seconds=PEEK_SEC):
         """把余额泡泡临时顶上来显示几秒（快速双击用它；放歌时优先于歌词）。"""
-        self.show_balance_bubble(seconds)
+        self.show_balance_bubble(seconds, force=True)
         self._bal_peek_until = self._secs() + seconds
         self.action, self.action_t = random.choice(("sway", "stretch")), 1.0
         self.jump_t = max(self.jump_t, 0.6)
@@ -6029,6 +7027,13 @@ class PetWindow(QWidget):
         proc_menu.addAction("扫描电脑应用并添加…", self.scan_apps_dialog)
         if self.cfg.get("custom_process_lines") or self.cfg.get("default_line_overrides"):
             proc_menu.addAction("清理自定义 / 改写的文字…", self.remove_custom_app_dialog)
+        proc_menu.addSeparator()
+        proc_menu.addAction("用久了提醒…（连续用满多久说一句）",
+                            defer_dialog(self.app_time_dialog))
+        proc_menu.addAction("到点说一句…（每天 / 每周 / 每隔）",
+                            defer_dialog(self.timed_lines_dialog))
+        proc_menu.addAction("全局快捷键…（按一下就冒一句）",
+                            defer_dialog(self.hotkeys_dialog))
 
         # 音乐联动：QQ音乐 / 网易云 放歌时看歌词
         music_menu = m.addMenu("音乐联动")
@@ -7698,6 +8703,27 @@ class PetWindow(QWidget):
         if on:
             self.say("好嘞，你开什么我都盯着")
 
+    def set_app_time_on(self, on):
+        """用久了提醒的总开关（每个应用具体说多久、说什么在 app_time_lines 里）。"""
+        self.cfg["app_time_on"] = bool(on)
+        if on:
+            self.say("好，用久了我会喊你歇会儿")
+
+    def set_timed_on(self, on):
+        """到点说一句的总开关。"""
+        self.cfg["timed_on"] = bool(on)
+        if on:
+            self.say("到点我会吱一声")
+
+    def set_hotkeys_on(self, on):
+        """全局快捷键的总开关（关掉就把已经注册的键还给系统）。"""
+        self.cfg["hotkeys_on"] = bool(on)
+        self._register_hotkeys()
+        if on:
+            bad = self.hotkey_failed_texts()
+            self.say("快捷键好了，按一下试试" if not bad
+                     else f"快捷键里这几个被占用了：{'、'.join(bad)}")
+
     def set_perf_mode(self, on):
         """性能模式：动画优先，开设置菜单也不掉帧；休闲模式：省 CPU，可掉一点帧。
 
@@ -7979,6 +9005,7 @@ class PetWindow(QWidget):
             self.raise_()
 
     def quit_app(self):
+        self._unregister_hotkeys()        # 全局快捷键要还给系统，不然退出后这个键就废了
         self.cfg["x"], self.cfg["y"] = self.x(), self.y()
         self.save_config()
         if getattr(self, "_console", None) is not None:
