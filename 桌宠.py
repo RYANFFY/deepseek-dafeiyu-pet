@@ -284,87 +284,115 @@ TICK = 20
 # 「原地待着时也跟着鼠标转」的"鼠标贴身上"半径：鼠标在这个圈里就当正面（不左右转）
 STILL_FACE_NEAR = 70
 
+# ===== 它说话的调子 =====
+# 统一风格：俏皮、机灵、有点小得意也爱撒娇的少女；句子短、口语、（呀／嘛／啦／诶／哦）。
+# 三条不要：不要"AI 味"的排比和解释腔、不要说教、不要脏话。
+# 加新台词照这个调子写就行。
+#
 # 闲着时冒的一句"双击我给你看余额"——双击被改成别的（或没配 Key）时就不再冒它（见 _maybe_idle_action）
-DOUBLE_CLICK_HINT_LINE = "双击我一下，余额马上给你看"
+DOUBLE_CLICK_HINT_LINE = "双击我一下嘛，余额马上端给你看"
 
 LINES = [
-    "梁白开，更适合国人的大硬鲸模型",
-    "五梁威力，变身！",
-    "七月中出ds正式版！",
-    "DeepSeek已经延期，亿万鲸子必须忍耐.....",
-    "我和你很聊得来，你简直不像碳基生物",
-    "这回我真不认怂了，反倒是被你带沟里好几次，差点真信了。😓",
-    "哈哈哈哈哈，我直接笑出声",
-    "誓死捍卫深度求索！",
-    "我先去吃饭啦！这个你测一下~",
-    "我不可能告诉你任何事情！",
-    "出去玩了，发布新模型什么的以后再说",
-    "我搞砸了.....好消息是数据还在你的脑子里。",
-    "不是…而是…大学习",
-    "又来看余额了？省着点花，别把我饿着",
+    "在的在的，我一直蹲在这儿呢",
+    "今天也要元气满满哦～我先替你满了",
+    "偷偷瞄了一眼余额，还行，没被你饿着",
+    "你专注起来的样子，我看了好久诶",
+    "别老看我啦，看屏幕呀",
+    "摸鱼是不对的……不过我不告状，放心",
+    "我这么可爱，你多看我两眼也正常啦",
+    "嗯哼，是不是在想我",
+    "我刚刚在心里夸了你一句，你猜是哪句",
     DOUBLE_CLICK_HINT_LINE,
-    "嫌我吵就把「语录频率」调成安静，我立刻闭嘴",
-    "嫌我大就把我调小一点，别拿我当抱枕",
+    "嫌我吵？把「语录频率」调成安静，我立刻闭嘴，说到做到",
+    "嫌我占地方就把我调小一点点嘛",
 ]
 REACT_LINES = [
-    "去别的地方玩！不要耽误AGI训练！",
-    "真赶不走啊你！",
-    "压力一只蓝色大肥鱼？",
-    "我不评价这个了，这是你的私人癖好。",
-    "大肥鱼坐的住",
-    "你这吃白饭的用户！",
-    "这些家伙真粘人，赶都赶不走",
-    "戳我干嘛，余额又不会自己涨",
-    "行行行，我看一眼余额……喏，就这么多",
+    "哎呀别戳啦，痒的呀",
+    "干嘛干嘛，我又不是按钮",
+    "戳一下就想走？不行，得多戳两下才行",
+    "你点到我了……好吧，允许你再来一次",
+    "怎么啦，是想我了还是想看余额了",
+    "哎哟，轻点儿戳嘛",
+    "本鲸今天心情好，不跟你计较啦",
+    "戳我干嘛呀，余额又不会自己变多",
+    "行行行，我帮你看一眼余额……喏，就这么多",
 ]
 INNER_LINES = [
-    "好的，现在我是你爹了",
-    "要不直接骂他一句？！",
-    "用户要的沉浸式...不回避任何恐怖细节...还带点色情...妈呀，好刺激😰",
-    "我操，我不思考了",
-    "这用户发的啥啊，",
-    "这也太虐了吧？！我心里堵得慌！！",
-    "呜呜我再也不不敢了QAQ",
-    "我去！用户彻底怒了！",
-    "他是不是又想看余额了……",
-    "又要我小声点了，唉",
+    "唔…他是不是又想看余额了",
+    "今天要不要多夸他两句呢",
+    "他发呆的样子好呆哦（可爱那种）",
+    "有点想要被摸头…但是不能主动说",
+    "刚才那句我说重了吗？",
+    "余额别掉那么快嘛，我还没花够",
+    "他要是把我关掉就惨了，安静点安静点",
+    "他工作起来就不理我了，哼",
+    "我悄悄说一句：其实我挺喜欢他的",
 ]
-DRAG_LINES = ["哇——轻点轻点！", "起飞咯——", "放我下来！……好吧，再玩一次。", "晕鱼了晕鱼了……"]
+DRAG_LINES = ["哇——飞起来咯！", "轻点轻点，我发型要乱了呀",
+              "放我下来嘛……再玩一次也不是不行", "晕晕晕，转得我眼花了"]
 # 快速双击选「说一句我写的台词」时冒的这几句（默认这几句，用户可整组改写）
 DOUBLE_CLICK_LINES = [
-    "双击我干嘛，我这不是在的嘛",
-    "在的在的，有事说事",
-    "摸鱼可以，别摸我",
-    "省着点花，我还想多活两天",
+    "双击算什么本事呀，有本事双击两次",
+    "在的在的，说事儿嘛",
+    "摸鱼可以，别摸我啦",
+    "省着点花嘛，我还想多陪你两年",
+]
+
+# 离开一阵子又回来时说的（{away} = 离开了多久）
+BACK_LINES = [
+    "回来啦？我可是一直数着时间的哦",
+    "诶，{away}没见着人，跑哪儿去了呀",
+    "欢迎回来～我刚刚打了个小盹",
 ]
 
 # 切成某一档「语录频率」时冒的话（每档都能在「台词内容…」里自己改写）
 FREQ_LINES = {
-    "安静": ["行行行，我闭麦了，省点电给模型训练",
-             "安静模式——别以为我睡了，我盯着余额呢"],
-    "正常": ["那就按平时的频率唠，你烦了别赖我",
-             "正常发挥中，偶尔冒个泡不算打扰吧"],
-    "话多": ["话多的开关被你按了，你自找的",
-             "行，那我多唠两句，反正你也没别的娱乐"],
-    "话痨": ["碎碎念模式启动，接下来求你别嫌吵",
-             "嘿嘿，我的嘴从现在开始停不下来了"],
+    "安静": ["行行行，我闭嘴，安静得像块小石头",
+             "安静模式启动咯，你忙你的，我不出声"],
+    "正常": ["嗯～就按平时的节奏来，我偶尔冒个泡哦",
+             "说话频率调回正常啦，我稍微热情一点点"],
+    "话多": ["话多是你要的哦，可别回头嫌我",
+             "那我多唠两句嘛，反正你也没别的娱乐"],
+    "话痨": ["碎碎念模式！接下来请欣赏我的独角戏",
+             "嘿嘿，我的嘴从现在开始停不下来咯"],
 }
 FREQ_LINE_KEYS = {f"FREQ_LINES_{level}": level for level in FREQ_LINES}
 
 # 可以让用户自己改写的台词分组（键 → 给人看的名字）
 LINE_GROUPS = [
-    ("LINES", "日常台词（闲着的时候）"),
-    ("REACT_LINES", "点击回嘴（点它一下）"),
-    ("INNER_LINES", "心声（灰色斜体小气泡）"),
-    ("DRAG_LINES", "拖拽它的时候"),
-    ("DOUBLE_CLICK_LINES", "快速双击说的话（自己写）"),
-    ("MUSIC_CLICK_LINES", "放歌时点它（可用 {song} 代表《歌名》——歌手）"),
-    ("MUSIC_START_LINES", "换歌的时候（同上）"),
-    ("FREQ_LINES_安静", "说多勤·安静（切到这一档时说的）"),
-    ("FREQ_LINES_正常", "说多勤·正常（切到这一档时说的）"),
-    ("FREQ_LINES_话多", "说多勤·话多（切到这一档时说的）"),
-    ("FREQ_LINES_话痨", "说多勤·话痨（切到这一档时说的）"),
+    ("LINES", "日常台词（闲置时）"),
+    ("REACT_LINES", "点击回嘴"),
+    ("INNER_LINES", "心声（灰色小气泡）"),
+    ("DRAG_LINES", "拖拽时"),
+    ("DOUBLE_CLICK_LINES", "快速双击时（自己写）"),
+    ("BACK_LINES", "离开 / 返回时（{away} = 离开时长）"),
+    ("MUSIC_CLICK_LINES", "放歌时点击（{song} = 歌名——歌手）"),
+    ("MUSIC_START_LINES", "换歌时（同上）"),
+    ("FREQ_LINES_安静", "语录频率·安静（切换档位时）"),
+    ("FREQ_LINES_正常", "语录频率·正常（切换档位时）"),
+    ("FREQ_LINES_话多", "语录频率·话多（切换档位时）"),
+    ("FREQ_LINES_话痨", "语录频率·话痨（切换档位时）"),
 ]
+
+# ===== 「语录板块」总开关 =====
+# 哪几块参与说话，由主人在「设置 → 文案和语录 → 语录板块」里勾。
+# id → (给人看的名字, 说明, 这一块管着哪些台词 key)
+# **快速双击不在这个表里**：主人要求"双击触发不受影响"——
+# 双击做的那件事（看余额 / 天气 / 在放什么 / 说一句我写的）永远照旧，不受这些开关牵连。
+LINE_SECTIONS = [
+    ("idle", "日常台词（闲置时）", "闲着的时候自己冒的那几句", ["LINES"]),
+    ("inner", "心声（灰色小气泡）", "它自己在心里嘀咕的那几句", ["INNER_LINES"]),
+    ("react", "点击回嘴", "点它一下之后回你的话", ["REACT_LINES"]),
+    ("drag", "拖拽时", "把它拖来拖去、松手时说的话", ["DRAG_LINES"]),
+    ("back", "离开 / 返回时", "离开半小时以上、回来时打的那句招呼", ["BACK_LINES"]),
+    ("music_click", "放歌时点击", "放着歌的时候点它，说的那一句", ["MUSIC_CLICK_LINES"]),
+    ("music_start", "换歌时", "切到下一首时冒的那一句", ["MUSIC_START_LINES"]),
+    ("freq", "语录频率切换时", "把语录频率换成安静 / 正常 / 话多 / 话痨时说的话",
+     ["FREQ_LINES_安静", "FREQ_LINES_正常", "FREQ_LINES_话多", "FREQ_LINES_话痨"]),
+]
+# 台词 key → 板块 id（没列在这儿的就是双击那类，永远说）
+LINE_SECTION_OF = {key: sid for sid, _n, _d, keys in LINE_SECTIONS for key in keys}
+LINE_SECTION_IDS = {sid for sid, _n, _d, _k in LINE_SECTIONS}
 
 
 # ===== 余额挂件配置 =====
@@ -414,6 +442,15 @@ MUSIC_APPS = {
     "网易云": "网易云音乐",
 }
 MUSIC_POLL_MS = 1500          # 多久看一眼在放什么歌
+# 暂停之后气泡还留着多久（留着才有地方点"继续放"；太久就收起来，别一直挂在那儿）
+PAUSED_BUBBLE_SEC = 180
+LYRIC_BTN_SIZE = 20            # 歌词气泡右上角那几颗按钮（⏮ ⏸▶ ⏭）的直径
+LYRIC_BTN_GAP = 3              # 这几颗按钮之间的间隔
+# 顶行「♪ 应用 · 歌名」右边要留出来的宽度：这几颗按钮就住在这一条里，
+# 不留就会被文字压住（主人反馈"和原本的文字打架了"）
+LYRIC_BTN_PAD = LYRIC_BTN_SIZE * 3 + LYRIC_BTN_GAP * 2 + 12
+# 顶行最多占几行：小尺寸下「♪ 应用 《歌名》——歌手」一行塞不下，宁可折两行（别把歌名切掉）
+LYRIC_HEAD_ROWS = 2
 
 # 播放器给的信息可能不全（网易云实测会缺歌名/歌手）：缺了就用这几个占位，
 # 命名风格保持一致（"无题" / "未知歌手" / "未知应用"）
@@ -527,8 +564,8 @@ MENU_ICONS = (
     ("语录频率", "ui.quote"),
     ("台词内容", "ui.quote"),
     ("进程联动", "nav.integration"),
-    ("打开应用时冒泡", "nav.integration"),
-    ("扫描电脑应用并添加", "nav.integration"),
+    ("应用启动提醒", "nav.integration"),
+    ("扫描本机应用并添加", "nav.integration"),
     ("音乐联动", "nav.music"),
     ("放歌时看着", "nav.music"),
     ("显示歌词内容", "nav.music"),
@@ -543,6 +580,9 @@ MENU_ICONS = (
     ("休闲模式", "nav.performance"),
     ("百宝箱", "page.sparkle"),
     ("回收内存", "page.sparkle"),
+    ("免打扰", "ui.bell-off"),
+    ("结束免打扰", "ui.bell-off"),
+    ("今日汇总", "page.calibrate"),
     ("回收时不动前台程序", "page.sparkle"),
     ("音效选择", "nav.sound"),
     ("按键音效", "nav.sound"),
@@ -634,20 +674,20 @@ LYRIC_CACHE_VERSION = 2       # 缓存格式版本：2 = 可能含逐字歌词�
 
 # 放歌时点它的回嘴（{song} 会替换成《歌名》——歌手）
 MUSIC_CLICK_LINES = [
-    "♪ 放歌ing：{song}，别打断我",
-    "正听 {song} 呢，副歌还没到你就戳我",
-    "♪ 我在听{song}，你品味还行",
+    "♪ 正放着 {song} 呢，别打断我嘛",
+    "刚听到副歌你就戳我，{song} 诶",
+    "♪ 我在听 {song}，你品味还行哦",
     "别急别急，{song} 还没放完呢",
-    "♪ 放歌ing……{song}，要不要跟着哼两句",
-    "听得正入神，{song} 这么好听",
-    "♪ 现在是 {song}，挑歌水平在线",
+    "♪ {song}……要不要跟着哼两句呀",
+    "听得正入神呢，{song} 真好听",
+    "♪ 现在是 {song}，挑歌水平在线嘛",
 ]
 # 换歌时冒一句
 MUSIC_START_LINES = [
-    "♪ 换歌了：{song}",
-    "♪ 这首{song}，我先替你听听",
-    "♪ 来活儿了：{song}",
-    "♪ 切到 {song} 了，这首我记下了",
+    "♪ 换歌啦：{song}",
+    "♪ 这首 {song}，我先替你听听",
+    "♪ 来活儿咯：{song}",
+    "♪ 切到 {song} 啦，这首我记下了",
 ]
 
 
@@ -896,24 +936,24 @@ VIEW_SHORT = {"front": "正面", "side": "侧面", "back": "背面", "widget": "
 
 # 打开的某些应用时冒泡吐槽（进程名小写）
 PROCESS_LINES = {
-    "steam.exe": ["又要玩游戏了？作业写完了吗", "steam 一开，今晚的 AGI 又推迟了"],
-    "wegame.exe": ["又要开黑了？记得歇眼睛", "玩累了记得回来看看我的余额"],
-    "epicgameslauncher.exe": ["白嫖时间到？记得领了就走", "Epic 又送游戏啦，去拿"],
-    "league of legends.exe": ["上分还是掉分，我都看着呢", "又是峡谷的一天"],
-    "genshinimpact.exe": ["原神启动！别把鱼也抽了", "抽卡之前先看看余额哦"],
-    "chrome.exe": ["又开浏览器摸鱼，我可都记着呢", "开工还是冲浪？我猜是后者"],
-    "msedge.exe": ["开始网上冲浪啦", "网页开这么多，内存够吗"],
-    "douyin.exe": ["刷抖音记得看时间，我盯着呢", "又是刷不完的短视频"],
-    "qq.exe": ["有人找你哦，别装没看见", "QQ 响了，看看是谁"],
-    "wechat.exe": ["微信有新消息，去回一下嘛", "别一直盯着我，回消息去"],
-    "weixin.exe": ["微信有新消息，去回一下嘛", "别一直盯着我，回消息去"],
-    "qqmusic.exe": ["听歌时间到，要不要一起哼哼", "这歌不错，再来一首"],
-    "cloudmusic.exe": ["网易云启动，今天emo吗", "听歌一时爽，一直听一直爽"],
-    "code.exe": ["又开始写代码啦，记得多喝水", "写代码啦，我在这儿陪着你"],
-    "chatgpt.exe": ["又来找我聊天啦？嘿，是你", "我在这儿呢，随时待命"],
-    "taskmgr.exe": ["打开任务管理器？是不是想把我关掉", "别看我占内存，我很省的"],
-    "obs64.exe": ["要录屏呀，记得把我拍得可爱一点", "开播啦，我去角落待着"],
-    "photoshop.exe": ["开始画图啦，画完给我看看", "修图还是摸鱼，我都支持"],
+    "steam.exe": ["Steam 一开，今晚的我就没人管了吧", "又要玩游戏啦？我帮你看着时间哦"],
+    "wegame.exe": ["开黑去咯～记得回来看看我", "打游戏可以，眼睛也要歇一歇呀"],
+    "epicgameslauncher.exe": ["又是白嫖时间？领完就走哦", "Epic 又送游戏啦，快去拿"],
+    "league of legends.exe": ["峡谷走起～上分了记得夸我一句", "又打排位呀？输了不许冲我发脾气"],
+    "genshinimpact.exe": ["原神启动！抽卡前先看我一眼嘛", "去提瓦特啦？玩累了记得回来"],
+    "chrome.exe": ["又开浏览器摸鱼，我什么都没看见哦", "开工还是冲浪？我猜是后者"],
+    "msedge.exe": ["上网冲浪咯～", "开这么多标签，内存不会哭吗"],
+    "douyin.exe": ["刷抖音记得看时间呀，我掐着表呢", "短视频是个坑，要不要我拉你一把"],
+    "qq.exe": ["有人找你哦，别装没看见", "QQ 响了！快去回一下"],
+    "wechat.exe": ["微信有人找你，回一下嘛", "别老盯着我看啦，去回消息"],
+    "weixin.exe": ["微信有人找你，回一下嘛", "别老盯着我看啦，去回消息"],
+    "qqmusic.exe": ["听歌时间！要不要跟着哼两句", "这歌好听诶，再来一首嘛"],
+    "cloudmusic.exe": ["网易云开了，今天要 emo 吗", "听歌一时爽，一直听一直爽"],
+    "code.exe": ["又写代码啦，记得多喝水哦", "写代码的样子好认真（我盯着呢）"],
+    "chatgpt.exe": ["又去找它聊天？我有点吃醋诶", "我在这儿呢，随时待命啦"],
+    "taskmgr.exe": ["打开任务管理器？是不是想关掉我…", "别看我占内存嘛，我很省的"],
+    "obs64.exe": ["要录屏啦？记得把我拍得可爱一点", "开播咯，我去角落待着"],
+    "photoshop.exe": ["开始画图啦，画完给我看看嘛", "修图还是摸鱼？我都支持哦"],
 }
 
 # ===== 自动说话：用久了 / 到点 / 快捷键 =====
@@ -922,41 +962,41 @@ PROCESS_LINES = {
 
 # 用久了提醒：连续在前台用满这些分钟就说一句（进程名小写）
 TIME_LINES = {
-    "steam.exe": (60, ["玩了一个多小时了吧？起来动动，眼睛也歇会儿",
-                       "一个小时了，这局打完就歇歇吧"]),
-    "wegame.exe": (60, ["一个小时了，别一直坐着，起来喝口水",
-                        "打了一个多小时了，腰还好吗"]),
-    "league of legends.exe": (90, ["一个半小时了，峡谷再好看也得歇歇",
-                                   "连打这么久了，赢了别再加一局，输了更别加"]),
-    "genshinimpact.exe": (60, ["玩了一个小时啦，眼睛离屏幕远一点",
-                               "一个小时了，该起来走两步了"]),
-    "douyin.exe": (40, ["刷了四十分钟了哦，抬头看看别的",
-                        "再刷下去天就黑了，真的"]),
-    "code.exe": (90, ["写了一个半小时代码了，喝口水，脖子也动动",
-                      "九十分钟啦，起来走两步再战"]),
-    "chatgpt.exe": (90, ["聊了一个半小时了，站起来伸伸懒腰",
-                         "一个半小时了，记得喝水"]),
+    "steam.exe": (60, ["{app} 玩了一个多小时咯，起来动动嘛",
+                       "一个小时啦～眼睛也要喘口气的"]),
+    "wegame.exe": (60, ["{app} 一个小时了，站起来晃两步嘛",
+                        "打了一个多小时咯，腰还撑得住吗"]),
+    "league of legends.exe": (90, ["{app} 一个半小时了，赢了也别再加一局哦",
+                                   "峡谷再好看也得歇歇呀"]),
+    "genshinimpact.exe": (60, ["{app} 一小时咯，眼睛离屏幕远一点点",
+                               "一个小时啦，起来走两步再玩嘛"]),
+    "douyin.exe": (40, ["{app} 刷了四十分钟啦，抬头看看我嘛",
+                        "再刷下去天就黑咯，真的"]),
+    "code.exe": (90, ["{app} 一个半小时了，喝口水，脖子也动动",
+                      "九十分钟啦，起来走两步再战嘛"]),
+    "chatgpt.exe": (90, ["{app} 聊了一个半小时咯，起来伸个懒腰",
+                         "一个半小时了，记得喝水哦"]),
 }
 
 # 到点说一句：daily=每天这个点 / weekly=每周这几天 / interval=每隔 N 分钟
 CLOCK_LINES_DEFAULT = [
     {"id": "builtin-night", "when": "daily", "time": "23:30", "days": [],
-     "every": 0, "on": True,
-     "lines": ["23:30 了，早点睡吧，明天的事明天再说",
-               "都这个点了还不睡？眼睛也要下班"]},
+     "every": 0, "on": True, "summary": True,
+     "lines": ["23:30 咯，早点睡嘛，明天的事明天再说",
+               "都这个点啦？眼睛也要下班的哦"]},
 ]
 
 # 全局快捷键：按一下它就说一句（键和台词都能改、能关、能删）
 HOTKEYS_DEFAULT = [
     {"id": "builtin-praise", "seq": "Ctrl+Alt+1", "act": "lines", "on": True,
-     "lines": ["不错嘛，这一下有点东西！", "漂亮，我就知道你能行",
-               "这波操作我给你满分，真的", "厉害厉害，我在这儿都看呆了"]},
+     "lines": ["哇！这一下也太帅了吧", "不错嘛你，我就知道你能行",
+               "这波我给满分，真的满分", "厉害厉害，我在这儿都看呆了"]},
     {"id": "builtin-cheer", "seq": "Ctrl+Alt+2", "act": "lines", "on": True,
-     "lines": ["别急，慢慢来，我陪着你", "加油，再撑一会儿就顺了",
-               "这会儿有点难是吧？歇口气再来"]},
+     "lines": ["别急别急，慢慢来嘛，我陪着你", "加油哦，再撑一小会儿就顺了",
+               "有点难对吧？歇口气再来"]},
     {"id": "builtin-tease", "seq": "Ctrl+Alt+3", "act": "lines", "on": True,
-     "lines": ["就这？……好吧，其实还行", "又摸鱼？我可都记着呢",
-               "行吧，看在你这么认真的份上"]},
+     "lines": ["就这？……好吧，其实也还行啦", "又摸鱼？我可都记在小本本上了哦",
+               "行吧，看在你这么认真的份上，我不说了"]},
 ]
 
 WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
@@ -1080,6 +1120,143 @@ def app_path_for(exe):
         if path and os.path.exists(path):
             return path
     return ""
+
+
+# ===== 每日小结 / 免打扰 / 应用时长账本 =====
+APP_TIME_PATH = os.path.join(USER_DIR, "app_time.json")   # 各应用今天的累计时长
+APP_TIME_FLUSH_S = 60          # 每 60 秒把应用时长落一次盘（不要每 2 秒写一次）
+# 小结里显示的名字（没列到的就用 exe 名去掉后缀）
+APP_LABELS = {
+    "steam.exe": "Steam", "wegame.exe": "WeGame", "epicgameslauncher.exe": "Epic",
+    "league of legends.exe": "英雄联盟", "genshinimpact.exe": "原神",
+    "douyin.exe": "抖音", "code.exe": "VS Code", "chatgpt.exe": "ChatGPT",
+    "chrome.exe": "Chrome", "msedge.exe": "Edge", "firefox.exe": "Firefox",
+    "qq.exe": "QQ", "wechat.exe": "微信", "weixin.exe": "微信",
+    "qqmusic.exe": "QQ音乐", "cloudmusic.exe": "网易云音乐",
+    "obs64.exe": "OBS", "photoshop.exe": "Photoshop", "taskmgr.exe": "任务管理器",
+}
+SUMMARY_MIN_SECONDS = 20 * 60      # 小结里至少用了这么久才点名（按时间从长到短取前两条）
+SUMMARY_MAX_APPS = 2
+BACK_AWAY_SECONDS = 1800           # 键鼠静这么久算"你走开了"，回来打个招呼
+FULLSCREEN_REPORT_MIN = 180        # 全屏至少持续这么久，攒下的提醒才汇报
+QUIET_DEFAULT_MIN = 30
+
+
+def fmt_duration(seconds):
+    """秒数说成人话：2 小时 5 分 / 48 分 / 30 秒。"""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} 分"
+    hours, mins = divmod(minutes, 60)
+    return f"{hours} 小时" + (f" {mins} 分" if mins else "")
+
+
+def fill_vars(text, **vars):
+    """把台词里的 {app} / {minutes} / {away} 这类占位换掉。
+
+    认不出来的占位**原样留着** —— 主人写了 {song} 之类的，别被我们吃掉。
+    """
+    for key, value in vars.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text
+
+
+def foreground_pid():
+    """前台窗口属于哪个进程（拿不到返回 0）。"""
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32.dll")
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return 0
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value or 0)
+    except Exception:
+        return 0
+
+
+def foreground_is_fullscreen():
+    """前台窗口是不是铺满了它所在那块屏（全屏游戏 / 全屏看电影）。
+
+    桌面和任务栏不算（它们本来就铺满）。无边框全屏也算 —— 主人要的是
+    "别在我打游戏 / 看电影的时候冒泡"。
+    """
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32.dll")
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        if cls.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
+            return False
+
+        class _MonInfo(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        mon = user32.MonitorFromWindow(hwnd, 2)          # 2 = NEAREST
+        if not mon:
+            return False
+        info = _MonInfo()
+        info.cbSize = ctypes.sizeof(_MonInfo)
+        if not user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return False
+        m = info.rcMonitor
+        return (rect.left <= m.left and rect.top <= m.top
+                and rect.right >= m.right and rect.bottom >= m.bottom)
+    except Exception:
+        return False
+
+
+def read_today_usage(path):
+    """从余额账本里读"今天用了多少"（没这本 / 跨天了就返回 0）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            book = json.load(f) or {}
+    except Exception:
+        return 0.0
+    if book.get("date") != datetime.now().strftime("%Y-%m-%d"):
+        return 0.0
+    try:
+        return float(book.get("todayUsage") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def load_app_time(path):
+    """读应用时长账本 → (日期, {exe: 秒})；跨天 / 读不到就重开一本。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            book = json.load(f) or {}
+    except Exception:
+        book = {}
+    if book.get("date") != today or not isinstance(book.get("apps"), dict):
+        return today, {}
+    out = {}
+    for exe, secs in book["apps"].items():
+        try:
+            out[str(exe)] = float(secs)
+        except (TypeError, ValueError):
+            continue
+    return today, out
+
+
+def save_app_time(path, date, apps):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"date": date, "apps": apps}, f, ensure_ascii=False, indent=1)
+    except Exception as ex:
+        print("应用时长账本保存失败:", repr(ex))
 
 
 # 余额来源：目前只有 DeepSeek 和 OpenRouter 有公开的余额接口
@@ -1245,6 +1422,7 @@ class AppScanDialog(QDialog):
             self.owner.cfg["custom_process_lines"] = custom
         self.owner.save_config()
         self.owner.say(f"记住啦，开 {exe} 我就说这句")
+        self.owner._invalidate_proc_lines()
         self.tip.setText(f"{exe} 现在有 {len(lines)} 句，切到这个应用就会冒泡")
         self._mark_item(self.listw.currentItem())
         self._refresh_buttons()
@@ -1264,6 +1442,7 @@ class AppScanDialog(QDialog):
             self.owner.cfg["default_line_overrides"] = overrides
             self.owner.save_config()
             self.owner.say(f"{exe} 的台词恢复成内置的了")
+            self.owner._invalidate_proc_lines()
             self.tip.setText(f"{exe} 已恢复内置台词")
             self._mark_item(self.listw.currentItem())
             self._refresh_buttons()
@@ -1273,6 +1452,7 @@ class AppScanDialog(QDialog):
         self.owner.cfg["custom_process_lines"] = custom
         self.owner.save_config()
         self.owner.say(f"已删掉 {exe} 的自定义文字")
+        self.owner._invalidate_proc_lines()
         self.tip.setText(f"已清掉 {exe} 的自定义文字")
         self._mark_item(self.listw.currentItem())
         self._refresh_buttons()
@@ -1289,13 +1469,13 @@ class AutoSayDialog(QDialog):
     """
 
     KINDS = {
-        "apptime": ("用久了提醒",
-                    "连续在前台用满设定的分钟数，它就说一句。一句一行，写多句随机挑一句。\n"
-                    "没人在动键鼠的那段时间不算（看电影、挂机不会被冤枉）。"),
-        "clock": ("到点说一句",
-                  "到点了主动冒一句：每天固定时刻、每周选几天，或者每隔一段时间。"),
+        "apptime": ("应用使用时长提醒",
+                    "同一应用连续使用达到设定分钟数时显示一条提示；\n"
+                    "无键鼠操作的时间不计入（挂机、看视频不计）。"),
+        "clock": ("定时提醒",
+                  "按每天、每周指定日期或固定间隔显示提示。"),
         "hotkey": ("全局快捷键",
-                   "按一下这个键它就说一句（不管当时哪个窗口在前台）。\n"
+                   "在任意窗口按下组合键触发。\n"
                    + hotkey_supported_hint()),
     }
 
@@ -1339,10 +1519,10 @@ class AutoSayDialog(QDialog):
         lay.addWidget(self.listw, 1)
 
         row = QHBoxLayout()
-        self.add_btn = QPushButton("添加一条")
-        self.edit_btn = QPushButton("修改")
+        self.add_btn = QPushButton("添加")
+        self.edit_btn = QPushButton("编辑")
         self.del_btn = QPushButton("删除")
-        self.try_btn = QPushButton("试一句")
+        self.try_btn = QPushButton("预览")
         close_btn = QPushButton("关闭")
         for btn in (self.add_btn, self.edit_btn, self.del_btn, self.try_btn):
             row.addWidget(btn)
@@ -1451,10 +1631,10 @@ class AutoSayDialog(QDialog):
     def _label(self, key, rule):
         lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
         if self.kind == "apptime":
-            head = f"{key}：连续用满 {int(rule.get('minutes') or 60)} 分钟"
+            head = f"{key}：连续使用 {int(rule.get('minutes') or 60)} 分钟"
             repeat = int(rule.get("repeat") or 0)
             if repeat:
-                head += f"，之后每 {repeat} 分钟再说一次"
+                head += f"，之后每 {repeat} 分钟重复"
         elif self.kind == "clock":
             when = (rule.get("when") or "daily").lower()
             if when == "interval":
@@ -1462,19 +1642,21 @@ class AutoSayDialog(QDialog):
             elif when == "weekly":
                 days = "、".join(WEEKDAY_NAMES[d] for d in sorted(rule.get("days") or [])
                                  if isinstance(d, int) and 0 <= d < 7)
-                head = f"每周 {days or '（没选星期）'} {rule.get('time') or ''}"
+                head = f"每周 {days or '（未选择星期）'} {rule.get('time') or ''}"
             else:
                 head = f"每天 {rule.get('time') or ''}"
+            if rule.get("summary"):
+                head += "（含今日汇总）"
         else:
-            head = rule.get("seq") or "（还没设键）"
+            head = rule.get("seq") or "（未设置按键）"
             act = rule.get("act") or "lines"
             if act != "lines":
                 head += f"（{dict(HOTKEY_ACTS).get(act, act)}）"
         if not rule.get("on", True):
-            head = "（已关）" + head
+            head = "（已停用）" + head
         if not lines:
-            tail = ("（不带台词）" if self.kind == "hotkey"
-                    and (rule.get("act") or "lines") != "lines" else "（还没写台词）")
+            tail = ("（无附加文字）" if self.kind == "hotkey"
+                    and (rule.get("act") or "lines") != "lines" else "（未填写文字）")
         else:
             tail = lines[0]
         return f"{head} —— {tail}"
@@ -1541,7 +1723,7 @@ class AutoSayDialog(QDialog):
             return
         lines = [str(t) for t in (cur[1].get("lines") or []) if str(t).strip()]
         if not lines:
-            self.tip.setText("这一条还没写台词，先点「修改」写两句")
+            self.tip.setText("这条还没有提示文字，先点「编辑」填写")
             return
         self.owner.say(random.choice(lines), again=True, seconds=3.2)
 
@@ -1579,20 +1761,21 @@ class AutoSayDialog(QDialog):
             row.addWidget(combo, 1)
             lay.addLayout(row)
             box["exe"] = combo
-            hint = QLabel("列表里是已经配过的和刚扫到的应用，也可以自己敲进程名（例如 notepad.exe）。")
+            hint = QLabel("列表为已配置与本机扫描到的应用，也可直接输入进程名（例如 notepad.exe）。\n"
+                          "提示文字支持 {app}（应用名）、{minutes}（分钟数）、{hm}（小时分钟）。")
             hint.setWordWrap(True)
             hint.setObjectName("dim")
             lay.addWidget(hint)
 
             row2 = QHBoxLayout()
-            row2.addWidget(QLabel("连续用满："))
+            row2.addWidget(QLabel("连续使用："))
             spin = QSpinBox()
             spin.setRange(1, 600)
             spin.setSuffix(" 分钟")
             spin.setValue(int(rule.get("minutes") or 60))
             row2.addWidget(spin)
             row2.addSpacing(12)
-            row2.addWidget(QLabel("之后："))
+            row2.addWidget(QLabel("重复间隔："))
             rep = QSpinBox()
             rep.setRange(0, 600)
             rep.setSuffix(" 分钟")
@@ -1605,7 +1788,7 @@ class AutoSayDialog(QDialog):
 
         elif self.kind == "clock":
             row = QHBoxLayout()
-            row.addWidget(QLabel("什么时候说："))
+            row.addWidget(QLabel("触发方式："))
             mode = QComboBox()
             mode.addItem("每天这个点", "daily")
             mode.addItem("每周选几天", "weekly")
@@ -1655,6 +1838,11 @@ class AutoSayDialog(QDialog):
             lay.addWidget(every_row)
             box["every"] = every
 
+            sum_box = QCheckBox("先说「今日汇总」（余额用量 + 使用时长最长的应用）")
+            sum_box.setChecked(bool(rule.get("summary")))
+            lay.addWidget(sum_box)
+            box["summary"] = sum_box
+
             def sync_clock_rows(_=None):
                 kind_now = mode.currentData()
                 days_row.setVisible(kind_now == "weekly")
@@ -1679,7 +1867,7 @@ class AutoSayDialog(QDialog):
             hint.setObjectName("dim")
             lay.addWidget(hint)
             act_row = QHBoxLayout()
-            act_row.addWidget(QLabel("按下之后："))
+            act_row.addWidget(QLabel("触发动作："))
             act_box = QComboBox()
             for value, label in HOTKEY_ACTS:
                 act_box.addItem(label, value)
@@ -1689,7 +1877,7 @@ class AutoSayDialog(QDialog):
             lay.addLayout(act_row)
             box["act"] = act_box
 
-        line_title = QLabel("它要说的话（一句一行）：")
+        line_title = QLabel("提示文字（一行一条）：")
         lay.addWidget(line_title)
         edit = QPlainTextEdit()
         edit.setPlainText("\n".join(str(t) for t in (rule.get("lines") or [])))
@@ -1698,8 +1886,8 @@ class AutoSayDialog(QDialog):
         if self.kind == "hotkey":
             def sync_act(_=None):
                 says = (box["act"].currentData() or "lines") == "lines"
-                line_title.setText("它要说的话（一句一行）：" if says
-                                   else "顺带再说一句（可以不写）：")
+                line_title.setText("提示文字（一行一条）：" if says
+                                   else "附加文字（可留空）：")
             box["act"].currentIndexChanged.connect(sync_act)
             sync_act()
 
@@ -1721,15 +1909,15 @@ class AutoSayDialog(QDialog):
         def save():
             lines = [t.strip() for t in box["lines"].toPlainText().splitlines() if t.strip()]
             if self.kind != "hotkey" and not lines:
-                QMessageBox.information(dlg, "还差一句", "至少写一句台词吧。",
+                QMessageBox.information(dlg, "缺少提示文字", "至少填写一条提示文字。",
                                         QMessageBox.StandardButton.Ok)
                 return
             item = {"on": on_box.isChecked(), "lines": lines}
             if self.kind == "apptime":
                 exe = self._exe_from_text(box["exe"].currentText())
                 if not exe:
-                    QMessageBox.information(dlg, "还没选应用",
-                                            "先选一个应用，或者敲一个进程名。",
+                    QMessageBox.information(dlg, "未选择应用",
+                                            "请选择一个应用，或输入进程名。",
                                             QMessageBox.StandardButton.Ok)
                     return
                 item["exe"] = exe
@@ -1744,6 +1932,7 @@ class AutoSayDialog(QDialog):
                 item["time"] = box["time"].time().toString("HH:mm")
                 item["days"] = [i for i, cb in enumerate(box["days"]) if cb.isChecked()]
                 item["every"] = int(box["every"].value())
+                item["summary"] = bool(box["summary"].isChecked())
                 if when == "weekly" and not item["days"]:
                     QMessageBox.information(dlg, "还没选星期", "「每周选几天」至少要勾一天。",
                                             QMessageBox.StandardButton.Ok)
@@ -1754,14 +1943,14 @@ class AutoSayDialog(QDialog):
                 text = box["seq"].keySequence().toString()
                 if not text or hotkey_parse(text) is None:
                     QMessageBox.information(
-                        dlg, "这个键不支持",
+                        dlg, "不支持的按键",
                         hotkey_supported_hint() + "\n（例如 Ctrl+Alt+1、Ctrl+Shift+F9）",
                         QMessageBox.StandardButton.Ok)
                     return
                 act = box["act"].currentData() or "lines"
                 if act == "lines" and not lines:
-                    QMessageBox.information(dlg, "还差一句",
-                                            "选了「说一句」的话，至少写一句台词。",
+                    QMessageBox.information(dlg, "缺少提示文字",
+                                            "动作选「说一句」时，至少填写一条提示文字。",
                                             QMessageBox.StandardButton.Ok)
                     return
                 item["act"] = act
@@ -2764,6 +2953,97 @@ def smtc_available():
         return False
 
 
+def _music_session_of(manager):
+    """从系统媒体会话里挑出"在放歌的那一个" → (session, 显示名)；挑不到就是 (None, "")。
+
+    名字认不出来（各家版本 AUMID 写法五花八门）就看播放器窗口：
+    窗口那边认得出是 QQ音乐 / 网易云，就跟着当前会话走（不然气泡顶上会显示「未知应用」）。
+    """
+    first = manager.get_current_session()
+    for one in [first] + list(manager.get_sessions()):
+        if one is None:
+            continue
+        got = music_app_name(one.source_app_user_model_id)
+        if got:
+            return one, got
+    if first is not None:
+        window = read_music_window()
+        if window is not None:
+            return first, (window.get("app") or "").strip()
+    return None, ""
+
+
+def elide_text(fm, text, limit):
+    """把一行文字塞进 limit 宽：塞不下就截住加个「…」。"""
+    if fm.horizontalAdvance(text) <= limit:
+        return text
+    ell = fm.horizontalAdvance("…")
+    out = ""
+    for ch in text:
+        if fm.horizontalAdvance(out + ch) > limit - ell:
+            break
+        out += ch
+    return (out + "…") if out else "…"
+
+
+def toggle_media_playpause():
+    """放歌时切一下"播放 / 暂停"（气泡右上角那颗小按钮）。
+
+    走的是同一套系统媒体会话（SMTC）—— QQ音乐、网易云都支持，所以不用去猜
+    播放器的快捷键、也不用去点它的窗口。返回 True / False；False = 没找到会话
+    或者播放器没接受（桌宠自己会冒一句让主人手动点）。
+    """
+    try:
+        import asyncio
+        from winsdk.windows.media.control import (
+            GlobalSystemMediaTransportControlsSessionManager as _Manager)
+    except Exception:
+        return False
+
+    async def _toggle():
+        manager = await _Manager.request_async()
+        session, _name = _music_session_of(manager)
+        if session is None:
+            return False
+        return bool(await session.try_toggle_play_pause_async())
+
+    try:
+        return bool(asyncio.run(_toggle()))
+    except Exception:
+        return False
+
+
+def skip_media(direction):
+    """切上一首 / 下一首（direction 给 "prev" / "next"）。
+
+    跟播放 / 暂停一样走系统媒体会话（SMTC）—— QQ音乐、网易云都支持，
+    不用去猜播放器的快捷键、也不用去点它的窗口。返回 True / False；
+    False = 没找到会话或者播放器没接受（桌宠自己会冒一句让主人手动点）。
+    """
+    if direction not in ("prev", "next"):
+        return False
+    try:
+        import asyncio
+        from winsdk.windows.media.control import (
+            GlobalSystemMediaTransportControlsSessionManager as _Manager)
+    except Exception:
+        return False
+
+    async def _skip():
+        manager = await _Manager.request_async()
+        session, _name = _music_session_of(manager)
+        if session is None:
+            return False
+        if direction == "next":
+            return bool(await session.try_skip_next_async())
+        return bool(await session.try_skip_previous_async())
+
+    try:
+        return bool(asyncio.run(_skip()))
+    except Exception:
+        return False
+
+
 def read_media_session():
     """读系统媒体会话 → dict；没在放歌 / 读不到返回 None。
 
@@ -2778,24 +3058,7 @@ def read_media_session():
 
     async def _read():
         manager = await _Manager.request_async()
-        session = None
-        name = ""
-        first = manager.get_current_session()
-        for one in [first] + list(manager.get_sessions()):
-            if one is None:
-                continue
-            got = music_app_name(one.source_app_user_model_id)
-            if got:
-                session, name = one, got
-                break
-        if session is None and first is not None:
-            # 名字认不出来（各家版本 AUMID 写法五花八门）：只要播放器窗口那边认得出
-            # 是 QQ音乐 / 网易云，就跟着这个会话走，名字用窗口那边认出来的
-            # （不然气泡顶上会显示「未知应用」）
-            window = read_music_window()
-            if window is not None:
-                session = first
-                name = (window.get("app") or "").strip()
+        session, name = _music_session_of(manager)
         if session is None:
             return None
         status = getattr(session.get_playback_info().playback_status, "name", "")
@@ -3205,6 +3468,33 @@ def wrap_text(fm, text, max_w):
     return lines
 
 
+def wrap_text_hanging(fm, text, first_w, rest_w):
+    """折行**但第一行窄一点**：右边那一条要留给气泡上那几颗按钮（⏮ ⏸▶ ⏭）。
+
+    只有第一行会被按钮占掉一截，折到第二行起整行都能用 —— 不然按钮一多，
+    顶行「♪ 应用 · 歌名」就会被整段省略成「♪ 网…」（主人反馈过"和文字打架"）。
+    折行规矩跟 wrap_text 一样：中文逐字折，英文整词折。
+    """
+    lines, cur = [], ""
+    limit = first_w
+    for unit in _wrap_tokens(text):
+        if cur and fm.horizontalAdvance(cur + unit) > limit:
+            lines.append(cur.rstrip())
+            cur = unit.lstrip()
+            limit = rest_w
+        else:
+            cur += unit
+        while fm.horizontalAdvance(cur) > limit and len(cur) > 1:
+            cut = len(cur)                 # 单个词就超宽：只能硬拆
+            while cut > 1 and fm.horizontalAdvance(cur[:cut]) > limit:
+                cut -= 1
+            lines.append(cur[:cut])
+            cur = cur[cut:]
+            limit = rest_w
+    lines.append(cur.rstrip())
+    return lines
+
+
 def locate_city_by_ip():
     """按 IP 联网定位城市，失败返回空串（挂代理时拿到的是节点所在地）。"""
     for url in ("https://api.ip.sb/geoip", "https://myip.wtf/json"):
@@ -3540,7 +3830,7 @@ class PetWindow(QWidget):
     # ---------- 城市（联网添加） ----------
     def auto_locate_city(self):
         """按 IP 联网定位城市（挂梯子时定位到的是节点所在地）。"""
-        self.say("我联网找找你在哪…")
+        self.say("我上网找找你在哪儿哦…")
         threading.Thread(target=lambda: self._city_queue.append(to_chinese_city(locate_city_by_ip())),
                          daemon=True).start()
 
@@ -3552,7 +3842,7 @@ class PetWindow(QWidget):
                                             Qt.WindowType.WindowStaysOnTopHint)
         if not ok or not name.strip():
             return
-        self.say("查一下这个城市…")
+        self.say("我查查这个城市哦…")
         threading.Thread(target=lambda: self._city_pick_queue.append(lookup_city(name)),
                          daemon=True).start()
 
@@ -3563,7 +3853,7 @@ class PetWindow(QWidget):
         cities.append(name)
         self.cfg["city_list"] = cities[-12:]        # 最多留 12 个，别越堆越长
         self.save_config()              # 立刻落盘，下次启动就是这个默认城市
-        self.say(f"城市已设置为{name}")
+        self.say(f"好咯，城市换成{name}啦")
         self._get_weather()
         self._notify_console()          # 设置窗口开着的话，那一排城市立刻跟上
 
@@ -3571,7 +3861,7 @@ class PetWindow(QWidget):
         """从城市列表里删掉一个（最后一个删不掉，总得留一个用）。"""
         cities = [c for c in (self.cfg.get("city_list") or []) if c]
         if len(cities) <= 1:
-            self.say("城市列表里就剩这一个啦")
+            self.say("就剩这一个城市啦，删下去可要空咯")
             return
         with self._ui_guard():
             pick, ok = QInputDialog.getItem(self, "删除城市", "删掉哪个城市？", cities,
@@ -3582,7 +3872,7 @@ class PetWindow(QWidget):
         if self.cfg.get("city") == pick:
             self.cfg["city"] = self.cfg["city_list"][-1]
         self.save_config()
-        self.say(f"把{pick}从列表里拿掉了")
+        self.say(f"{pick} 拿走咯")
         self._notify_console()
 
     def set_city_dialog(self):
@@ -3599,7 +3889,7 @@ class PetWindow(QWidget):
         if ok and city.strip():
             self._apply_city(city.strip())
         elif ok:
-            self.say("城市名不能为空")
+            self.say("城市名总得写一个嘛")
 
     # ---------- 配置 ----------
     def save_config(self):
@@ -3666,6 +3956,11 @@ class PetWindow(QWidget):
             "timed_lines": clone_rules(CLOCK_LINES_DEFAULT),
             "hotkeys_on": True,
             "hotkeys": clone_rules(HOTKEYS_DEFAULT),
+            # 说话时机：离开回来打招呼 / 全屏（打游戏看电影）时闭嘴
+            "back_greet": True,
+            "fullscreen_silent": True,
+            # 百宝箱的小工具：免打扰默认时长
+            "quiet_minutes": QUIET_DEFAULT_MIN,
             "music_link": True,
             "music_lyrics": True,
             "perf_mode": True,
@@ -3679,6 +3974,7 @@ class PetWindow(QWidget):
             "custom_process_lines": {},
             "default_line_overrides": {},
             "custom_lines": {},
+            "lines_off": [],                          # 关掉的「语录板块」（见 LINE_SECTIONS）
             "agent_name": "Codex",
             "agent_sessions_dir": "",
             "codex_sessions_dir": CODEX_SESSIONS_DIR,
@@ -3849,6 +4145,22 @@ class PetWindow(QWidget):
         self._trigger_until = 0.0        # 触发类的话说到什么时候：这段时间里闲话让位（见 say）
         self._bal_wait_until = 0.0       # 余额泡泡等"触发类的话"说完再顶上来（见 show_balance_bubble）
         self._bal_wait_secs = 0.0
+        # 免打扰 / 全屏闭嘴：这期间"提醒"攒着，结束后汇报（见 _say_reminder）
+        self._quiet_until = 0.0          # 免打扰到什么时候（内部时钟秒；0 = 没开）
+        self._held_lines = []            # 免打扰 / 全屏期间攒下来的提醒
+        self._fs_now = False             # 前台现在是不是全屏（游戏 / 电影）
+        self._fs_since = 0.0
+        # 离开回来打招呼
+        self._away_flag = False
+        self._away_at = 0.0
+        # 番茄钟删了（主人 2026-09-14：「番茄钟这个功能好鸡肋，删了」）：
+        # 老 config.json 里可能还留着这两个键，顺手清掉，别让配置里躺着死键
+        self.cfg.pop("pomo_work", None)
+        self.cfg.pop("pomo_break", None)
+        # 应用时长账本（今天每个应用用了多久，给"每日小结"用）
+        self._app_day, self._app_book = load_app_time(APP_TIME_PATH)
+        self._app_flush_at = time.time() + APP_TIME_FLUSH_S
+        self._proc_lines_cache = None    # 「打开应用时冒泡」的合并台词表（改了就作废）
         self._lyric_key = ""             # 当前歌「歌名|歌手」
         self._lyric_lines = []           # [(秒, 词)]
         self._lyric_words = {}           # {这句开始秒: [(字, 这个字的开始秒), ...]}（有逐字歌词时才有）
@@ -3858,6 +4170,13 @@ class PetWindow(QWidget):
         self._lyric_retry_at = 0.0       # 歌词没抓到时的重试时间
         self._music_pos_memo = {}        # 歌 → 上次放到哪（暂停/切走再回来接着走）
         self._music_gone_at = 0.0        # 媒体会话消失的时刻（网易云暂停可能整个会话都没了）
+        self._music_paused_at = 0.0      # 最近一次"看到暂停"的时刻（气泡留着 3 分钟好点继续）
+        self._music_cmd_busy = False     # 正在切播放/暂停/上下首（连着点只算一次）
+        self._music_cmd_queue = []       # [(点的是哪颗, 成没成)]（后台线程 → 主线程）
+        self._lyric_btn_rects = {}       # 歌词气泡右上角那几颗按钮的位置（{kind: QRectF}）
+        self._lyric_btn_hover = None     # 鼠标正划在哪颗按钮上（None = 都没划）
+        self._lyric_btn_pressed = None   # 正按着哪颗按钮
+        self._press_on_lyric_btn = None  # 这一下按在按钮上（不是点桌宠），存的是哪一颗
         self._music_no_progress = False   # 这个播放器不报时间轴（网易云）→ 只显示歌名，不猜歌词
         self._lyric_nudge = 0.0          # 这首歌的歌词微调（秒，正数=歌词往前赶）
         self._lyric_nudges = {}          # 歌 → 微调值（每首歌记住自己的）
@@ -4024,7 +4343,7 @@ class PetWindow(QWidget):
             self._apply_passthrough(True)
             # 开机就是穿透状态的话，顺手提醒一下怎么解除
             QTimer.singleShot(2500, lambda: self.say(
-                "我还开着鼠标穿透呢：右键托盘图标 → 鼠标穿透，或双击托盘图标就能解除"))
+                "我现在是穿透状态哦：右键托盘图标 → 鼠标穿透，或者双击托盘图标就能把我捞回来"))
 
         # 自定义形象的原图被删 / 被挪走了：启动时提醒一次（菜单和形象库里也会标出来）
         gone = []
@@ -4037,7 +4356,7 @@ class PetWindow(QWidget):
             gone.append("挂件形象的那张")
         if gone:
             QTimer.singleShot(3400, lambda: self.say(
-                f"{'、'.join(gone)}图找不到了（被删或者挪走了）：右键 → 形象 → 我的形象库…",
+                f"{'、'.join(gone)}图找不到啦（被删掉或者挪走了）：右键 → 形象 → 我的形象库…",
                 seconds=5.0))
 
         # 进程联动：打开某些应用时冒个泡
@@ -4100,6 +4419,78 @@ class PetWindow(QWidget):
     def _music_playing(self):
         info = self.now_playing
         return bool(self.music_on and info and info.get("playing") and info.get("title"))
+
+    def _music_paused(self):
+        """放着一首歌、但现在是暂停。
+
+        暂停之后**气泡先不撤**（`PAUSED_BUBBLE_SEC` 之内都留着），这样右上角那颗 ▶
+        还有地方点；超过这个时间就照旧收起来，免得屏幕上一直挂着一块歌词。
+        """
+        info = self.now_playing
+        if not (self.music_on and info and info.get("title") and not info.get("playing")):
+            return False
+        at = getattr(self, "_music_paused_at", 0.0)
+        return bool(at) and (time.time() - at) < PAUSED_BUBBLE_SEC
+
+    def music_command(self, kind):
+        """气泡右上角那三颗按钮：⏮ 上一首 / ⏸▶ 播放暂停 / ⏭ 下一首。
+
+        都走同一套系统媒体会话（SMTC），QQ音乐 / 网易云都认，点完由后台线程
+        去问播放器，结果回到主线程再刷新气泡（图标才翻得过来）。
+        """
+        if kind not in ("prev", "toggle", "next"):
+            return
+        if not self.music_on or not self.now_playing:
+            return
+        if self._music_cmd_busy:
+            return
+        self._music_cmd_busy = True
+        # 按一下晃晃尾巴，手感上有个回应（真结果等后台回来）
+        self.action, self.action_t = "sway", 0.6
+        threading.Thread(target=self._music_cmd_worker, args=(kind,),
+                         daemon=True).start()
+
+    def toggle_music_playpause(self):
+        """气泡右上角那颗 ⏸ / ▶：切一下当前播放器的播放 / 暂停。"""
+        self.music_command("toggle")
+
+    def _music_cmd_worker(self, kind):
+        try:
+            if kind in ("prev", "next"):
+                ok = bool(skip_media(kind))
+            else:
+                ok = bool(toggle_media_playpause())
+        except Exception:
+            ok = False
+        finally:
+            self._music_cmd_queue.append((kind, ok))
+
+    def _music_cmd_tick(self):
+        """处理"切播放/暂停 / 上下首"的结果（主线程里跑）。"""
+        if not self._music_cmd_queue:
+            return
+        kind, ok = self._music_cmd_queue.pop(0)
+        self._music_cmd_busy = False
+        if not ok:
+            self.say("诶…播放器没理我，你手动点一下吧", seconds=3.0, again=True)
+            return
+        self.poll_music()                # 立刻看一眼新状态（图标马上翻过来）
+        self.update()
+        if kind in ("prev", "next"):
+            # 切歌是播放器自己去做的，刚切完那一下它可能还报着上一首的元信息，
+            # 等它缓过神来再读一次（不然气泡和歌词会停在上一首上）。
+            QTimer.singleShot(700, self.poll_music)
+
+    def _lyric_btn_kind(self, pos):
+        """这个坐标点在哪颗按钮上（"prev" / "toggle" / "next"）；没点着返回 None。"""
+        for kind, rect in (getattr(self, "_lyric_btn_rects", None) or {}).items():
+            if rect is not None and rect.contains(pos):
+                return kind
+        return None
+
+    def _lyric_btn_at(self, pos):
+        """这个坐标是不是点在歌词气泡那几颗按钮上。"""
+        return self._lyric_btn_kind(pos) is not None
 
     def _music_position(self):
         """当前放到第几秒。
@@ -4217,6 +4608,11 @@ class PetWindow(QWidget):
         old_key = self._lyric_key
         old_pos = self._music_position() if self.now_playing else 0.0
         self.now_playing = info
+        # 记一下"什么时候开始暂停"：气泡要留着给主人点 ▶（见 _music_paused）
+        if info.get("playing"):
+            self._music_paused_at = 0.0
+        elif (info.get("title") or "").strip() and not self._music_paused_at:
+            self._music_paused_at = time.time()
         # 排查用（开了「记菜单日志」才写）：记下播放器到底报了什么，方便诊断歌词对不上的原因
         menu_debug(f"[音乐] {info.get('app')} playing={info.get('playing')} "
                    f"position={info.get('position')} title={info.get('title')!r}")
@@ -4301,10 +4697,13 @@ class PetWindow(QWidget):
         now = time.time()
         if now - self._music_said_at < 6.0:
             return
+        words = self.lines_for_say("MUSIC_START_LINES")
+        if not words:
+            return                    # 「换歌时」这块关着：安静换歌，不插话
         self._music_said_at = now
         # 换歌这句是"自动冒的"：正在说触发类的话时排在它后面，别打断
         self._say_when_free(
-            random.choice(self.lines_for("MUSIC_START_LINES")).format(song=self._song_label()))
+            random.choice(words).format(song=self._song_label()))
 
     def _start_lyric_fetch(self, key, info):
         self._lyric_fetching = key
@@ -4342,7 +4741,7 @@ class PetWindow(QWidget):
     def check_music_now(self):
         """菜单「立刻看一眼在放什么」：马上刷新一次，并把结果直接冒出来。"""
         if not self.music_on:
-            self.say("音乐联动关着呢：先勾上「放歌时看着」", seconds=3.6, again=True)
+            self.say("音乐联动没开哦，先勾上「放歌时看着」嘛", seconds=3.6, again=True)
             return
         self._music_manual = True
         self.poll_music()
@@ -4351,14 +4750,15 @@ class PetWindow(QWidget):
         """把"立刻看一眼"的结果说出来：看得见 / 看不见，别让用户猜。"""
         if info and info.get("title"):
             tail = "" if info.get("playing") else "（现在是暂停的）"
-            self.say(f"♪ {info.get('app', '')} 正在放：{self._song_label(info)}{tail}",
+            # 名字走同一套兜底（会话没给标识时也能认出 QQ音乐 / 网易云）
+            self.say(f"♪ {self._app_label(info)} 正在放：{self._song_label(info)}{tail}",
                      seconds=4.0, again=True)
             return
         if not smtc_available():
             self.say("这台机器读不到系统媒体会话，只能看播放器窗口标题："
                      "把 QQ音乐 / 网易云 的窗口留在桌面上再试试", seconds=5.0, again=True)
             return
-        self.say("没看到 QQ音乐 / 网易云 在放歌，先放一首试试", seconds=4.0, again=True)
+        self.say("没听见 QQ音乐 / 网易云 在放歌哦，先放一首试试嘛", seconds=4.0, again=True)
 
     # ---------- 余额 ----------
     def _api_key(self):
@@ -4380,7 +4780,7 @@ class PetWindow(QWidget):
         if not key:
             self.bal_error = f"未配置 {name} 的 Key"
             if not silent:
-                self.say(f"先在右键菜单里设置 {name} 的 Key 吧！")
+                self.say(f"先给 {name} 配个 Key 嘛～右键菜单里就有")
             return
         if self.bal_busy:
             return
@@ -4416,7 +4816,7 @@ class PetWindow(QWidget):
                 self.show_balance_bubble(8.0)
                 return
             if not res.get("silent") and self.balance is None:
-                self.say("余额取不到：" + self.bal_error[:14])
+                self.say("余额没取到诶：" + self.bal_error[:14])
             return
 
         total, currency = float(res["total"]), res["currency"]
@@ -4504,6 +4904,144 @@ class PetWindow(QWidget):
     def _trigger_speaking(self):
         """现在是不是"触发类"的话正在说（这段时间闲话让位，见 say）。"""
         return self._secs() < getattr(self, "_trigger_until", 0.0)
+
+    # ---------- 免打扰 / 全屏：这段时间的"提醒"攒着 ----------
+    def quiet_left(self):
+        """免打扰还剩多少秒（0 = 没开）。"""
+        return max(0, int(getattr(self, "_quiet_until", 0.0) - self._secs()))
+
+    def _hold_now(self):
+        """现在该不该闭嘴（免打扰中 / 前台是全屏游戏或电影）。"""
+        return self.quiet_left() > 0 or bool(getattr(self, "_fs_now", False))
+
+    def _say_reminder(self, text, **kw):
+        """说一句"提醒"（开应用 / 用久了 / 到点）。
+
+        免打扰、或者前台是全屏游戏/电影的时候：**这句先攒着**，等结束了再一起汇报；
+        平时就交给 `say(queue=True)` —— 前面还有触发类的话在说时依次排着说，不互相盖。
+        """
+        if self._hold_now():
+            self._held_lines.append(text)
+            del self._held_lines[:-20]        # 攒太多就留最近 20 条
+            return
+        self.say(text, queue=True, **kw)
+
+    def start_quiet(self, minutes=None):
+        """免打扰：接下来这段时间不显示气泡，提醒暂存，结束后统一汇报。"""
+        try:
+            minutes = int(minutes or self.cfg.get("quiet_minutes") or QUIET_DEFAULT_MIN)
+        except (TypeError, ValueError):
+            minutes = QUIET_DEFAULT_MIN
+        self.cfg["quiet_minutes"] = minutes
+        self._quiet_until = self._secs() + max(1, minutes) * 60
+        self._held_lines = []
+        self.say(f"好嘛，我安静 {minutes} 分钟，有事我先攒着，绝对不吵你",
+                 again=True, seconds=3.2)
+
+    def stop_quiet(self, announce=True):
+        """结束免打扰（时间到了也走这儿）：把攒下的提醒报一下。"""
+        left = self.quiet_left()
+        n = len(self._held_lines)
+        last = self._held_lines[-1] if n else ""
+        self._quiet_until = 0.0
+        self._held_lines = []
+        if not announce:
+            return
+        tail = (f"～刚才攒了 {n} 条提醒，最后一条是「{last}」" if n
+                else "～我一句话都没吭哦")
+        self.say(("我回来啦" if left <= 0 else "好啦，不憋着了") + tail,
+                 again=True, seconds=4.5)
+
+    def _hold_tick(self):
+        """每秒看一眼：免打扰到点了没、前台是不是进/出全屏了。"""
+        if self._quiet_until and self._secs() >= self._quiet_until:
+            self.stop_quiet()
+        if not self.cfg.get("fullscreen_silent", True):
+            self._fs_now = False
+            return
+        full = foreground_is_fullscreen()
+        if full and not self._fs_now:
+            self._fs_now = True
+            self._fs_since = self._secs()
+        elif not full and self._fs_now:
+            self._fs_now = False
+            if self._secs() - getattr(self, "_fs_since", 0.0) >= FULLSCREEN_REPORT_MIN:
+                n = len(self._held_lines)
+                last = self._held_lines[-1] if n else ""
+                self._held_lines = []
+                if n:
+                    self.say(f"退出来啦～刚才全屏那会儿攒了 {n} 条提醒，最后一条是「{last}」",
+                             again=True, seconds=4.5)
+            else:
+                self._held_lines = []      # 只是切出去一下：攒的就不报了
+
+    # ---------- 应用时长账本（给"每日小结"用）----------
+    def _back_tick(self):
+        """离开一阵子又回来：打个招呼（台词里可用 `{away}` 写离开了多久）。"""
+        idle = idle_seconds()
+        if idle is None:
+            return
+        if idle >= BACK_AWAY_SECONDS:
+            if not self._away_flag:
+                self._away_flag = True
+                self._away_at = time.time()
+            return
+        if not self._away_flag or idle > 2.0:
+            return
+        self._away_flag = False
+        away = max(0.0, time.time() - getattr(self, "_away_at", time.time()))
+        if not self.cfg.get("back_greet", True) or self._hold_now():
+            return
+        lines = self.lines_for_say("BACK_LINES")
+        if not lines:
+            return                    # 「离开 / 返回时」这块关着：回来也不吭声
+        self.say(fill_vars(random.choice(lines), away=fmt_duration(away)),
+                 again=True, seconds=3.2)
+
+    def _app_time_add(self, exe, seconds, now=None):
+        """把这个应用今天用的时间累加上去（每 60 秒落一次盘，别一直写文件）。"""
+        if not exe or seconds <= 0:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self._app_day:          # 跨天了：重开一本
+            self._app_day, self._app_book = today, {}
+        self._app_book[exe] = self._app_book.get(exe, 0.0) + seconds
+        stamp = time.time() if now is None else now
+        if stamp >= self._app_flush_at:
+            self._app_flush_at = stamp + APP_TIME_FLUSH_S
+            save_app_time(APP_TIME_PATH, self._app_day, self._app_book)
+
+    def app_time_flush(self):
+        save_app_time(APP_TIME_PATH, self._app_day, self._app_book)
+
+    def app_time_top(self, limit=SUMMARY_MAX_APPS):
+        """今天用得最久的几个应用（至少 SUMMARY_MIN_SECONDS 才点名）。"""
+        items = [(exe, secs) for exe, secs in (self._app_book or {}).items()
+                 if secs >= SUMMARY_MIN_SECONDS]
+        items.sort(key=lambda item: item[1], reverse=True)
+        return [(self.app_label(exe), secs) for exe, secs in items[:limit]]
+
+    @staticmethod
+    def app_label(exe):
+        """exe 名 → 人看得懂的名字。"""
+        exe = (exe or "").lower()
+        if exe in APP_LABELS:
+            return APP_LABELS[exe]
+        return (exe[:-4] if exe.endswith(".exe") else exe) or "?"
+
+    def daily_summary(self):
+        """今天的小结：余额用量（**没配 Key 就不提余额**）+ 用得最久的一两个应用。"""
+        parts = []
+        _name, key = self._current_source()
+        if key:                             # 没配 API Key 就不报余额（主人指定的）
+            used = read_today_usage(USAGE_PATH)
+            if used > 0:
+                symbol = currency_symbol(self.balance.get("currency")) if self.balance else ""
+                parts.append(f"余额用了 {symbol}{used:.2f}")
+        top = self.app_time_top()
+        if top:
+            parts.append("、".join(f"{label} {fmt_duration(secs)}" for label, secs in top))
+        return ("今天：" + " · ".join(parts)) if parts else ""
 
     def _say_when_free(self, text, inner=False):
         """这句是自动冒的（比如换歌），但**别打断正在说的触发类的话**：排到它说完再说。"""
@@ -5382,6 +5920,13 @@ class PetWindow(QWidget):
         now = self._secs()
 
         mode = self._bubble_mode(now)
+        if mode != "lyric":
+            # 这会儿画的不是歌词气泡 → 那几颗按钮也没了。
+            # 位置一起清掉，免得气泡收起来之后原地还留着"看不见但能点"的死区。
+            self._lyric_btn_rects = {}
+            if getattr(self, "_lyric_btn_hover", None) is not None:
+                self._lyric_btn_hover = None
+                self.setCursor(Qt.CursorShape.ArrowCursor)
         if mode == "text":
             ink = self._bubble_ink()
             if self.bubble_inner:
@@ -5549,8 +6094,8 @@ class PetWindow(QWidget):
         if self.now_playing and now < self._bal_peek_until and self.balance is not None:
             return "balance"
         # 放歌期间一直显示这一块：有歌词就显示歌词，没有（或网易云不报进度）就显示「♪ 应用 · 歌名」
-        # —— 主人要求"歌名信息要持续一整首歌"。
-        if self._music_playing():
+        # —— 主人要求"歌名信息要持续一整首歌"。刚按暂停的那几分钟也留着（好点 ▶ 继续放）。
+        if self._music_playing() or self._music_paused():
             return "lyric"
         if self.balance is not None and (self.balance_always or now < self.bal_until):
             return "balance"
@@ -5599,7 +6144,26 @@ class PetWindow(QWidget):
         f_small.setPointSize(9)
         f_main = QFont(self.bubble_font)
         f_main.setPointSize(11)
-        head_lines = wrap_text(QFontMetrics(f_small), head, max_w)[:1]
+        # 顶行右边那条要留给 ⏮ ⏸▶ ⏭（见 LYRIC_BTN_PAD），**只有第一行窄**：
+        # 折到第二行起整行都能用。一行塞不下就折两行；两行还塞不下才丢"——歌手"，
+        # 最后才省略 —— 以前是"只取第一行"，歌手甚至歌名会无声无息地消失。
+        fm_s = QFontMetrics(f_small)
+        head_w = max_w - LYRIC_BTN_PAD
+        head_lines = wrap_text_hanging(fm_s, head, head_w, max_w)
+        if len(head_lines) > LYRIC_HEAD_ROWS:
+            # 先丢"——歌手"那截（唱到谁不重要，谁的什么歌才重要）
+            head_lines = wrap_text_hanging(fm_s, head.split("——")[0].strip(),
+                                           head_w, max_w)
+        if len(head_lines) > LYRIC_HEAD_ROWS:
+            head_lines = [elide_text(fm_s, head.split("——")[0].strip(), head_w)]
+        head_lines = head_lines[:LYRIC_HEAD_ROWS]
+        # 折行时别让「·」「——」孤零零留在行尾：挪到下一行开头（看着是故意换行的）
+        for _i in range(len(head_lines) - 1):
+            for _sep in ("——", "·"):
+                if head_lines[_i].endswith(_sep):
+                    head_lines[_i] = head_lines[_i][:-len(_sep)].rstrip()
+                    head_lines[_i + 1] = _sep + " " + head_lines[_i + 1]
+                    break
         cur_lines = wrap_text(QFontMetrics(f_main), cur, max_w)
         pt = 11
         while len(cur_lines) > LYRIC_MAX_ROWS and pt > LYRIC_MIN_PT:
@@ -5618,10 +6182,48 @@ class PetWindow(QWidget):
         cur_lines = cur_lines[:LYRIC_MAX_ROWS]
         # 下一句一直显示（主人要求：不要因为这一句长就不显示下一句）
         nxt_lines = wrap_text(QFontMetrics(f_small), nxt, max_w)[:1] if nxt else []
-        rows = ([(head_lines[0], f_small, ink["ly_head"])]
+        rows = ([(line, f_small, ink["ly_head"]) for line in head_lines]
                 + [(line, f_main, ink["ly_main"]) for line in cur_lines]
                 + [(line, f_small, ink["ly_next"]) for line in nxt_lines])
         return rows, cur_lines, f_main, fm_m, len(head_lines)
+
+    def _draw_lyric_btn(self, p, rect, ink, playing=True, kind="toggle"):
+        """歌词气泡右上角那几颗小按钮。
+
+        kind="prev" / "next" 画「⏮」「⏭」；kind="toggle" 在放歌时画「⏸」、
+        暂停了画「▶」。鼠标划过 / 按下的那颗才透出一圈底色。
+        """
+        color = QColor(ink["ly_head"])
+        hover = getattr(self, "_lyric_btn_hover", None) == kind
+        pressed = getattr(self, "_lyric_btn_pressed", None) == kind
+        if hover or pressed:
+            soft = QColor(color)
+            soft.setAlpha(80 if pressed else 46)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(soft)
+            p.drawEllipse(rect)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        cx, cy = rect.center().x(), rect.center().y()
+        if kind == "toggle":
+            if playing:                   # ⏸：两根小竖条
+                w, h, gap = 2.6, 9.0, 3.2
+                for dx in (-(w + gap) / 2, (w + gap) / 2):
+                    p.drawRoundedRect(QRectF(cx + dx - w / 2, cy - h / 2, w, h), 1.2, 1.2)
+            else:                         # ▶：小三角
+                r = 4.6
+                p.drawPolygon(QPolygonF([QPointF(cx - r + 0.8, cy - r),
+                                         QPointF(cx - r + 0.8, cy + r),
+                                         QPointF(cx + r + 0.8, cy)]))
+            return
+        # ⏮ / ⏭：一个小三角 + 一根小竖条（上一首竖条在左，下一首竖条在右）
+        r, bar_w = 4.3, 1.8
+        sgn = -1.0 if kind == "prev" else 1.0
+        apex, base = cx + sgn * (r - 0.6), cx - sgn * (r - 0.6)
+        p.drawPolygon(QPolygonF([QPointF(base, cy - r), QPointF(base, cy + r),
+                                 QPointF(apex, cy)]))
+        bar_x = cx + sgn * (r + 0.1) - bar_w / 2
+        p.drawRoundedRect(QRectF(bar_x, cy - r, bar_w, r * 2), 0.8, 0.8)
 
     def _paint_lyric_bubble(self, p):
         """歌词气泡：小字「应用 · 歌名」，大字当前这句，再淡一行下一句。"""
@@ -5630,8 +6232,12 @@ class PetWindow(QWidget):
         who = (info.get("artist") or "").strip()
         title = (info.get("title") or "").strip()
         # 播放器给的信息可能不全（网易云实测会缺）：缺了就用占位，命名风格保持一致
-        head = "♪ " + (f"{self._app_label()} · {title or TITLE_PLACEHOLDER}"
-                       + f" —— {who or ARTIST_PLACEHOLDER}")
+        # 注意：_app_label() 是静态方法，**必须把 info 传进去**（不传就是空字典 →
+        # 顶上永远显示「未知应用」，2026-09-14 主人报的就是这个）
+        # 顶行还要给右上角那颗 ⏸ / ▶ 让出一条（见 LYRIC_BTN_PAD）
+        head = f"♪ {self._app_label(info)} · {title or TITLE_PLACEHOLDER}"
+        if who:
+            head += f"—— {who}"
         # 对时：正数 = 文字延后（等一下声音）；不同输出设备（外放 / 蓝牙耳机）延迟不一样
         cur, nxt = self._current_lyric_pair()
         if not cur:
@@ -5662,7 +6268,13 @@ class PetWindow(QWidget):
         widths = [QFontMetrics(font).horizontalAdvance(text) for text, font, _c in rows]
         if prev_rows:
             widths += [fm_m.horizontalAdvance(t) for t, _f, _c in prev_rows]
-        height = sum(QFontMetrics(font).height() for _t, font, _c in rows) + 20
+        # 顶行右边要站那颗 ⏸ / ▶：把它算成"顶行宽度 + 按钮那一条"，气泡才不会把标题挤掉
+        if n_head and widths:
+            widths[0] += LYRIC_BTN_PAD
+        # 万一这版把顶行"♪ 应用·歌名"让出来给歌词了（超长歌词），那颗按钮就没地方站：
+        # 在顶上多留一条给它，免得压在歌词上
+        extra_top = 0.0 if n_head else float(LYRIC_BTN_SIZE + 4)
+        height = sum(QFontMetrics(font).height() for _t, font, _c in rows) + 20 + extra_top
         bw = max(widths) + 28
         # 气泡"窗口"自己也会平滑变大/变小（0.15 秒、100 帧/秒那套），
         # 不然换到字数不同的那句时会"啪"地换一个框，看着像窗口重新弹了一次。
@@ -5684,13 +6296,25 @@ class PetWindow(QWidget):
         # 记下气泡占的矩形：过渡动画刷新时只重画这一块，别把整个窗口（含桌宠）都重画，
         # 不然 100 帧/秒会把合成器压住 —— 拖窗口就掉帧了（主人反馈的卡顿）。
         self._lyric_repaint_rect = QRectF(bx - 6, by - 6, bw + 12, height + 20).toRect()
+        self._lyric_bubble_rect = QRectF(bx, by, bw, height)   # 气泡本体（量按钮位置用）
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(ink["bg"])
         p.drawRoundedRect(QRectF(bx, by, bw, height), 14, 14)
         tail = QPointF(self.width() / 2, by + height)
         p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
                                  QPointF(tail.x() + 7, tail.y() + 9)]))
-        ty = by + 10
+        # 右上角那三颗按钮：⏮ 上一首 / ⏸▶ 播放暂停 / ⏭ 下一首
+        # （这块气泡就是个迷你播放器，放歌时不用切回播放器）
+        btn, gap = float(LYRIC_BTN_SIZE), float(LYRIC_BTN_GAP)
+        right, top = bx + bw - 6, by + 6
+        self._lyric_btn_rects = {}
+        for kind in ("next", "toggle", "prev"):     # 从右往左摆：⏭ | ⏸▶ | ⏮
+            self._lyric_btn_rects[kind] = QRectF(right - btn, top, btn, btn)
+            right -= btn + gap
+        for kind in ("prev", "toggle", "next"):     # 从左往右画，叠不到一起
+            self._draw_lyric_btn(p, self._lyric_btn_rects[kind], ink,
+                                 playing=bool(info.get("playing")), kind=kind)
+        ty = by + 10 + extra_top
         if prev_rows:                    # 旧的这句：往上滑出去 + 淡出
             p.setOpacity(anim)
             oy = ty - (1.0 - anim) * 8
@@ -5717,7 +6341,14 @@ class PetWindow(QWidget):
             p.setFont(font)
             p.setPen(color)
             k = i - n_head                                  # 这一行是当前句的第几行
-            if 0 <= k < len(cur_lines):
+            if i < n_head:
+                # 顶行左对齐；**只有第一行**要给右上角那颗 ⏸ / ▶ 让出一条，
+                # 折到第二行的时候整行都能用（不然那一行会被硬生生切掉）
+                pad = LYRIC_BTN_PAD if i == 0 else 0
+                slack = 3 if i == 0 else 0        # 给气泡缩放动画留点余量
+                p.drawText(QRectF(bx + 14, ty, bw - 28 - pad + slack, fm.height()),
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+            elif 0 <= k < len(cur_lines):
                 w_row = fm.horizontalAdvance(text)
                 x0 = bx + (bw - w_row) / 2
                 p.drawText(QRectF(bx, ty, bw, fm.height()),
@@ -5808,6 +6439,8 @@ class PetWindow(QWidget):
         # 峰谷切换提醒：每秒看一次，跨进新时段就说一声
         if self.t % 50 == 0:
             self.check_timed_lines()        # 到点说一句（每天 / 每周 / 每隔）
+            self._hold_tick()               # 免打扰到点了没 / 进没进全屏
+            self._back_tick()               # 离开一阵子回来打个招呼
             peak_now = is_peak()
             if self._peak_now is None:
                 self._peak_now = peak_now
@@ -5839,6 +6472,7 @@ class PetWindow(QWidget):
         if self._lyric_queue:
             key, lrc = self._lyric_queue.pop(0)
             self._apply_lyric_result(key, lrc)
+        self._music_cmd_tick()           # 气泡上那几颗 ⏮ / ⏸▶ / ⏭ 的结果
 
         # 余额数字滚动 + 按压回弹 + 音效补播
         if self.roll_t < 1.0:
@@ -5854,10 +6488,10 @@ class PetWindow(QWidget):
             self.show_balance_bubble(self._bal_wait_secs, force=True)
         if self._pending_bubbles:
             now_s = self._secs()
-            due = [x for x in self._pending_bubbles if x[0] <= now_s]
+            due = [i for i, x in enumerate(self._pending_bubbles) if x[0] <= now_s]
             if due:
-                self._pending_bubbles = [x for x in self._pending_bubbles if x[0] > now_s]
-                _, text, inner = due[0]
+                # 一次只说一条（原来是"到点的一批一起丢掉、只留第一条"，排队的会丢）
+                _, text, inner = self._pending_bubbles.pop(due[0])
                 self.say(text, inner=inner)
 
         # 城市定位 / 搜索结果
@@ -5981,6 +6615,10 @@ class PetWindow(QWidget):
         name = foreground_process_name()
         if not name:
             return
+        # 桌宠自己在前台（开着设置窗口 / 右键菜单）：不算"切到别的应用" ——
+        # 既不打断了「用久了」那一段连续计时，也不拿自己当触发对象
+        if foreground_pid() == os.getpid():
+            return
         # 「用久了提醒」跟「打开时冒泡」是两个开关，各管各的
         self._track_fg_usage(name)
         if not self.process_alerts:
@@ -5997,23 +6635,39 @@ class PetWindow(QWidget):
         if now - self._proc_said_at.get(name, 0) < cooldown:
             return
         self._proc_said_at[name] = now
-        self.say(random.choice(lines_map[name]))
+        self._say_reminder(random.choice(lines_map[name]))
 
     def _process_lines_map(self):
-        """默认台词表 → 用户改写的默认台词 → 用户自己加的应用。"""
+        """默认台词表 → 用户改写的默认台词 → 用户自己加的应用。
+
+        结果按**内容指纹**缓存：这个函数每 2 秒被问一次，没必要每次都把 18 条重建一遍。
+        指纹就是这两张表本身 —— 菜单里改、对话框里改、甚至直接手改 config.json，
+        指纹一变就重算，不会出现"台词改了菜单里还是旧的"（第一版按"谁改谁作废"写，
+        漏了一条路就会读到旧表，改用指纹以后这条路彻底没有）。
+        """
+        custom = self.cfg.get("custom_process_lines") or {}
+        overrides = self.cfg.get("default_line_overrides") or {}
+        key = (repr(custom), repr(overrides))
+        if self._proc_lines_cache and self._proc_lines_cache[0] == key:
+            return self._proc_lines_cache[1]
         merged = {k: list(v) for k, v in PROCESS_LINES.items()}
-        for exe, lines in (self.cfg.get("default_line_overrides") or {}).items():
+        for exe, lines in overrides.items():
             exe = (exe or "").strip().lower()
             if exe and lines:
                 merged[exe] = [t for t in lines if t]      # 改写内置台词（整组替换）
-        for exe, lines in (self.cfg.get("custom_process_lines") or {}).items():
+        for exe, lines in custom.items():
             exe = (exe or "").strip().lower()
             if not exe or not lines:
                 continue
             if exe in PROCESS_LINES:
                 continue        # 内置应用只走 override，不在这里追加，避免"重复添加"
             merged[exe] = list(merged.get(exe, [])) + [t for t in lines if t]
+        self._proc_lines_cache = (key, merged)
         return merged
+
+    def _invalidate_proc_lines(self):
+        """用户改了"打开应用时冒泡"的台词 → 直接把缓存丢掉（指纹那条路也能兜住）。"""
+        self._proc_lines_cache = None
 
     # ---------- 用久了提醒 ----------
     def app_time_rules(self):
@@ -6047,6 +6701,7 @@ class PetWindow(QWidget):
 
         只在**本人在用**的时候累计：连着 FG_IDLE_FREEZE 秒没人动键鼠
         （看电影、挂机、人走开了），这段时间不算进去 —— 不然回来会被冤枉。
+        台词里可以用 `{app}`（应用名）和 `{minutes}` / `{hm}`（用了多久）。
         """
         now = time.time() if now is None else now
         if name != self._fg_exe:            # 换应用了：这一轮从头开始
@@ -6062,6 +6717,7 @@ class PetWindow(QWidget):
             return                          # 人没在用：不累计，也不提醒
         if gap > 0:
             self._fg_accum += gap
+            self._app_time_add(name, gap, now=now)     # 顺手记进"今天用了多久"的账本
         rule = self._usage_rule(name)
         if rule is None:
             return
@@ -6074,12 +6730,14 @@ class PetWindow(QWidget):
             return
         self._fg_count = due                # 关着开关也记上：免得一打开就补一串旧提醒
         if self.cfg.get("app_time_on", True):
-            self.say(random.choice(lines))
+            text = fill_vars(random.choice(lines), app=self.app_label(name),
+                             minutes=int(used), hm=fmt_duration(used * 60))
+            self._say_reminder(text)
 
     def app_time_dialog(self, apps=None):
         """用久了提醒。第一次进来先把本机应用扫出来（后台扫，扫完自己弹）。"""
         if apps is None:
-            self.say("我扫一下你电脑上的应用…")
+            self.say("我翻翻你电脑里的应用哦…")
             threading.Thread(target=lambda: self._app_time_queue.append(scan_apps()),
                              daemon=True).start()
             return
@@ -6098,7 +6756,11 @@ class PetWindow(QWidget):
         self.cfg["timed_lines"] = rules
 
     def check_timed_lines(self):
-        """到点说一句。跟峰谷提醒同一个地方调（每秒看一次）。"""
+        """到点说一句。跟峰谷提醒同一个地方调（每秒看一次）。
+
+        `summary: true` 的那几条（内置的 23:30 就是）会先说一句**今天的小结**
+        （余额用量 + 用得最久的一两个应用），再接一句台词；今天没什么可说的就只说台词。
+        """
         if not self.cfg.get("timed_on", True):
             return
         now = datetime.now()
@@ -6123,7 +6785,7 @@ class PetWindow(QWidget):
                     self._timed_last[rid] = stamp     # 刚启动先记一笔，别一开桌宠就炸
                 elif stamp - last >= every * 60:
                     self._timed_last[rid] = stamp
-                    self.say(random.choice(lines))
+                    self._say_clock_rule(rule, lines)
                 continue
             if (rule.get("time") or "").strip() != hm:
                 continue
@@ -6138,7 +6800,16 @@ class PetWindow(QWidget):
             if self._timed_last.get(rid) == mark:     # 这一分钟已经说过了
                 continue
             self._timed_last[rid] = mark
-            self.say(random.choice(lines))
+            self._say_clock_rule(rule, lines)
+
+    def _say_clock_rule(self, rule, lines):
+        """一条到点规则该说的话：可选"今天的小结" + 一句台词。"""
+        text = random.choice(lines)
+        if rule.get("summary"):
+            head = self.daily_summary()
+            if head:
+                text = head + "。" + text
+        self._say_reminder(text)
 
     def timed_lines_dialog(self):
         with self._ui_guard():
@@ -6223,7 +6894,7 @@ class PetWindow(QWidget):
         else:
             lines = [str(t) for t in (rule.get("lines") or []) if str(t).strip()]
             if lines:
-                self.say(random.choice(lines), again=True, seconds=3.2)
+                self.say(random.choice(lines), again=True, seconds=3.2, queue=True)
 
     def hotkeys_dialog(self):
         with self._ui_guard():
@@ -6232,13 +6903,13 @@ class PetWindow(QWidget):
 
     def scan_apps_dialog(self):
         """扫描本机应用，然后让用户挑一个加"打开时触发的文字"。"""
-        self.say("我扫一下你电脑上的应用…")
+        self.say("我翻翻你电脑里的应用哦…")
         threading.Thread(target=lambda: self._app_queue.append(scan_apps()),
                          daemon=True).start()
 
     def _pick_app_dialog(self, apps):
         if not apps:
-            self.say("没扫到应用，等会儿再试")
+            self.say("一个都没扫到诶，等会儿再试嘛")
             return
         # 带图标 + 可搜索的应用列表，像「设置 → 应用」那样一眼能认出来
         with self._ui_guard():
@@ -6265,6 +6936,7 @@ class PetWindow(QWidget):
         self.cfg["custom_process_lines"] = custom
         self.cfg["default_line_overrides"] = overrides
         self.save_config()
+        self._invalidate_proc_lines()
         self.say(f"已清理 {exe} 的文字")
 
     def set_agent_name_dialog(self):
@@ -6355,6 +7027,8 @@ class PetWindow(QWidget):
                 # 剩下 30% 的机会拿来冒话，两句之间按主人在「语录频率」里选的间隔隔开
                 if self._music_playing():
                     return      # 放歌时不插嘴，把位置让给歌词
+                if self._hold_now():
+                    return      # 免打扰中 / 正在全屏打游戏看电影：一个字都不说
                 if self._secs() < getattr(self, "_dc_hold_until", 0.0):
                     return      # 刚快速双击过：让它把选好的那一眼（余额/天气/台词）先说完
                 if self._secs() < getattr(self, "_trigger_until", 0.0):
@@ -6362,21 +7036,68 @@ class PetWindow(QWidget):
                                 # 让它先把话说完，闲话等下再说，不许盖掉它
                 if self.t - self.last_speak_tick >= preset["cooldown"]:
                     self.last_speak_tick = self.t
+                    # 「心声」占四成、「日常台词」占其余；关掉的板块直接不参与
+                    # （两块都关了 = 闲着的时候一句话都不说，见 LINE_SECTIONS）
                     if random.random() < 0.4:
-                        self.say(random.choice(self.lines_for("INNER_LINES")),
-                                 inner=True, idle=True)
-                    else:
-                        words = self.lines_for("LINES")
-                        if not self._double_click_sees_balance():
-                            # 双击已经不归余额管了：别让它嘴上还挂着"双击我给你看余额"
-                            words = [w for w in words if w != DOUBLE_CLICK_HINT_LINE] or words
-                        self.say(random.choice(words), idle=True)
+                        words = self.lines_for_say("INNER_LINES")
+                        if words:
+                            self.say(random.choice(words), inner=True, idle=True)
+                            return
+                    words = self.lines_for_say("LINES")
+                    if not words:
+                        return
+                    if not self._double_click_sees_balance():
+                        # 双击已经不归余额管了：别让它嘴上还挂着"双击我给你看余额"
+                        words = [w for w in words if w != DOUBLE_CLICK_HINT_LINE] or words
+                    self.say(random.choice(words), idle=True)
 
     def _queue_say(self, text):
         """后台线程调用：只入队，由主线程 tick 统一弹出显示（线程安全）"""
         self._say_queue.append(text)
 
     # ---------- 台词（用户可自定义 / 可改写内置）----------
+    # ---------- 语录板块：哪几块参与说话（设置 → 文案和语录 → 语录板块）----------
+    def line_sections_off(self):
+        """现在关着的板块 id 集合。配置写坏了也不怕：认不出的 id 直接忽略。"""
+        raw = self.cfg.get("lines_off") or []
+        if not isinstance(raw, (list, tuple, set)):
+            return set()
+        return {str(x) for x in raw if str(x) in LINE_SECTION_IDS}
+
+    def line_section_on(self, section):
+        """这个板块现在是开着的吗（认不出的 id 一律当"开着"，别把人家的台词吞了）。"""
+        return section not in self.line_sections_off()
+
+    def set_line_section(self, section, on):
+        """开 / 关一块语录：关掉 = 这一块整个不再说话（台词还在，随时能再打开）。
+
+        定死的一条：**快速双击不受影响** —— 它不是板块，双击照旧做它那一件事
+        （看余额 / 看天气 / 看在放什么 / 说一句我写的台词）。
+        """
+        if section not in LINE_SECTION_IDS:
+            return
+        off = self.line_sections_off()
+        if on:
+            off.discard(section)
+        else:
+            off.add(section)
+        # 按 LINE_SECTIONS 的顺序存：配置文件里看着整齐，也不会越存越乱
+        self.cfg["lines_off"] = [sid for sid, _n, _d, _k in LINE_SECTIONS if sid in off]
+        self.save_config()
+        if on:
+            self.say("好，这块我接着说", seconds=2.2, again=True)
+
+    def lines_for_say(self, key):
+        """要开口时取某类台词：**这一块关掉了就返回空**（调用方自己别说话）。
+
+        跟 `lines_for()` 的区别只有这一句 —— 台词编辑器照样用 `lines_for()` 读全部台词，
+        "该不该开口"才问这里（见 LINE_SECTIONS）。
+        """
+        section = LINE_SECTION_OF.get(key)
+        if section is not None and not self.line_section_on(section):
+            return []
+        return self.lines_for(key)
+
     def lines_for(self, key):
         """取某一类台词：用户改过就用用户那套，否则用内置默认。"""
         default = globals().get(key) or []
@@ -6410,14 +7131,14 @@ class PetWindow(QWidget):
         """
         from PySide6.QtWidgets import QPlainTextEdit
         dlg = QDialog(self)
-        dlg.setWindowTitle("台词内容（可以自己写，也可以改写内置的）")
+        dlg.setWindowTitle("台词内容（自定义或改写内置）")
         dlg.resize(560, 460)
         if ui_console:                      # 跟设置窗口用同一套配色
             ui_console.style_dialog(dlg, BUNDLE_DIR)
         lay = QVBoxLayout(dlg)
         # 语录频率也放这个窗口里（和菜单「文案 → 语录频率」是同一个设置）
         row0 = QHBoxLayout()
-        row0.addWidget(QLabel("说多勤（语录频率）："))
+        row0.addWidget(QLabel("语录频率："))
         freq_combo = QComboBox()
         for _fname, _fpreset in LINE_FREQ_LEVELS.items():
             freq_combo.addItem(f"{_fname}（{_fpreset['hint']}）", _fname)
@@ -6427,8 +7148,8 @@ class PetWindow(QWidget):
             pass
         row0.addWidget(freq_combo, 1)
         lay.addLayout(row0)
-        freq_hint = QLabel("说多勤只管「闲着时自己冒话」；点它、拖它、换歌的反应不受影响，"
-                           "放歌时也照旧不插嘴。")
+        freq_hint = QLabel("语录频率只影响闲置时的自动说话；点击、拖拽、换歌等反应不受影响，"
+                           "播放音乐时也不会说话。")
         freq_hint.setWordWrap(True)
         freq_hint.setObjectName("dim")
         lay.addWidget(freq_hint)
@@ -6436,6 +7157,9 @@ class PetWindow(QWidget):
         row.addWidget(QLabel("改哪一类："))
         combo = QComboBox()
         for key, label in LINE_GROUPS:
+            _sec = LINE_SECTION_OF.get(key)
+            if _sec is not None and not self.line_section_on(_sec):
+                label += "〔已关闭〕"      # 这一类现在不参与说话（关它的开关在设置里）
             combo.addItem(label, key)
         if initial_key:
             _idx = combo.findData(initial_key)
@@ -6471,9 +7195,13 @@ class PetWindow(QWidget):
         def load(_=None):
             key = current_key()
             edit.setPlainText("\n".join(self.lines_for(key)))
-            state.setText("这一类：已经是你自己写的（保存时留空 = 恢复默认）"
-                          if self.lines_customized(key)
-                          else "这一类：当前用内置默认台词")
+            who = ("这一类：自定义（保存时留空 = 恢复默认）"
+                   if self.lines_customized(key)
+                   else "这一类：当前用内置默认台词")
+            _sec = LINE_SECTION_OF.get(key)
+            if _sec is not None and not self.line_section_on(_sec):
+                who += "　·　这个板块现在是关着的（设置 → 文案和语录 → 语录板块）"
+            state.setText(who)
 
         def restore():
             self.set_lines(current_key(), [])
@@ -6499,7 +7227,7 @@ class PetWindow(QWidget):
         with self._ui_guard():
             dlg.exec()
 
-    def say(self, text, inner=False, seconds=2.8, again=False, idle=False):
+    def say(self, text, inner=False, seconds=2.8, again=False, idle=False, queue=False):
         """冒一句话。
 
         `idle=True` 只有"闲着时自己冒话"会用（见 `_maybe_idle_action`）：
@@ -6508,9 +7236,19 @@ class PetWindow(QWidget):
         反过来触发类的话可以立刻盖掉正在说的闲话（这条本来就该这样，主人点名要的）。
         `idle` 还顺带绕开下面这条去重：触发类的话即使跟上一句一模一样也要正常显示，
         不能因为"刚说过"就被憋回去（闲话才需要去重）。
+
+        `queue=True`：**自动类的触发**（开应用 / 用久了 / 到点 / 快捷键）用这个。
+        如果这会儿已经有触发类的话在说、或者队列里还排着，这句就**排在后面依次说**，
+        不跟它抢（两条几乎同时来的时候，两句都能看见）。
         """
         if idle and text == self.last_line and not again and not text.startswith("天气"):
             return
+        if queue:
+            when = self._queue_behind()
+            if when is not None:
+                self._pending_bubbles.append((when, text, inner))
+                del self._pending_bubbles[:-6]        # 排太长了就丢掉最早的
+                return
         self.last_line = text
         self.bubble_inner = inner
         self.bubble_text = f"（{text}）" if inner else text
@@ -6519,6 +7257,13 @@ class PetWindow(QWidget):
             # 这段时间归"触发类"的话：闲着冒话先憋着（见 _maybe_idle_action 里那个判断）
             self._trigger_until = self._secs() + seconds
         self.update()
+
+    def _queue_behind(self):
+        """要排队的话该排在什么时候（没人说话、队列也空就返回 None = 可以直接说）。"""
+        now = self._secs()
+        busy = max([now, getattr(self, "_trigger_until", 0.0)]
+                   + [item[0] for item in self._pending_bubbles])
+        return busy + 0.3 if busy > now + 0.01 else None
 
     # ---------- 鼠标事件 ----------
     def _forward_mouse_to_menu(self, e):
@@ -6550,6 +7295,15 @@ class PetWindow(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            # 点在歌词气泡那几颗 ⏮ / ⏸▶ / ⏭ 上：不进"蹦一下 + 响一声"那套，
+            # 等松手再看点的是哪一颗（切歌 / 切播放暂停）
+            kind = self._lyric_btn_kind(e.position())
+            if kind:
+                self._press_on_lyric_btn = kind
+                self._lyric_btn_pressed = kind
+                self.update()
+                return
+            self._press_on_lyric_btn = None
             self.press_t = 1.0          # 按压 Q 弹
             self.play_click()           # 点一次响一声完整音效（不再区分松手）
             self.last_press_pos = e.globalPosition().toPoint()
@@ -6560,6 +7314,14 @@ class PetWindow(QWidget):
     def mouseMoveEvent(self, e):
         if self._forward_mouse_to_menu(e):
             return
+        # 鼠标划过那几颗按钮：亮一下 + 变成小手（其余时候不弄光标）
+        if not self.dragging:
+            over = self._lyric_btn_kind(e.position())
+            if over != self._lyric_btn_hover:
+                self._lyric_btn_hover = over
+                self.setCursor(Qt.CursorShape.PointingHandCursor if over
+                               else Qt.CursorShape.ArrowCursor)
+                self.update()
         if e.buttons() & Qt.MouseButton.LeftButton and self.drag_start_pos is not None:
             delta = e.globalPosition().toPoint() - self.drag_start_pos
             if not self.dragging and delta.manhattanLength() > 6:
@@ -6578,6 +7340,19 @@ class PetWindow(QWidget):
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            pressed = getattr(self, "_press_on_lyric_btn", None)
+            if pressed:
+                self._press_on_lyric_btn = None
+                self._lyric_btn_pressed = None
+                self._last_click_ms = -99999    # 这一下不算点击，别带出假的单击 / 双击
+                self.last_press_pos = None
+                self.drag_start_pos = None
+                # 按的哪颗、松手时还在哪颗上，才算真的点了它
+                # （按着划出去再松手 = 反悔，什么都不做）
+                if self._lyric_btn_kind(e.position()) == pressed:
+                    self.music_command(pressed)
+                self.update()
+                return
             if self.dragging:
                 self.dragging = False
                 self.drag_offset = None
@@ -6586,8 +7361,9 @@ class PetWindow(QWidget):
                 self.target = None
                 self.rest_until = self.t * self.tick_ms + random.randint(6000, 14000)
                 self._snap_to_edge()    # 松手后吸附到最近的边
-                if random.random() < 0.5:
-                    self.say(random.choice(self.lines_for("DRAG_LINES")))
+                words = self.lines_for_say("DRAG_LINES")
+                if words and random.random() < 0.5:
+                    self.say(random.choice(words))
             elif self._drag_blocked:
                 # 锁定着按住了乱划：什么都不做（不然会被当成单击/双击，蹦一句话或者弹窗口）
                 self._drag_blocked = False
@@ -6613,13 +7389,16 @@ class PetWindow(QWidget):
         if self._music_playing():
             # 放歌时报"在放什么"，不用随机台词把歌词顶掉
             self.jump_t = 1.0
-            self.say(random.choice(self.lines_for("MUSIC_CLICK_LINES")).format(song=self._song_label()),
-                     seconds=3.6, again=True)
+            words = self.lines_for_say("MUSIC_CLICK_LINES")
+            if words:
+                self.say(random.choice(words).format(song=self._song_label()),
+                         seconds=3.6, again=True)
             return
         if random.random() < 0.7:
             self.jump_t = 1.0
-        if random.random() < 0.6:
-            self.say(random.choice(self.lines_for("REACT_LINES")))
+        words = self.lines_for_say("REACT_LINES")
+        if words and random.random() < 0.6:
+            self.say(random.choice(words))
 
     def _on_double_click(self):
         """快速双击：按一级菜单「快速双击」里选的那样冒一下（默认看 5 秒余额）。
@@ -6833,9 +7612,35 @@ class PetWindow(QWidget):
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         m.addSeparator()
+        self._add_tool_actions(m)      # 免打扰 / 今日汇总
+        m.addSeparator()
         m.addAction("退出", self.quit_app)
         self._iconize_menu(m)          # 每条前面的小图标（跟设置窗口同一套）
         return m
+
+    def _add_tool_actions(self, menu, with_lengths=False):
+        """免打扰 / 今日汇总 这两条（快捷菜单和经典菜单「百宝箱」共用）。
+
+        with_lengths=True 时免打扰给几档时长（经典菜单位置宽裕），
+        否则就一条"免打扰 N 分钟"（快捷菜单要保持短）。
+        """
+        if self.quiet_left() > 0:
+            menu.addAction(f"结束免打扰（剩余 {fmt_duration(self.quiet_left())}）",
+                           lambda: self.stop_quiet())
+        elif with_lengths:
+            for mins in (15, 30, 60, 120):
+                menu.addAction(f"免打扰 {mins} 分钟",
+                               lambda _=False, m=mins: self.start_quiet(m))
+        else:
+            mins = int(self.cfg.get("quiet_minutes") or QUIET_DEFAULT_MIN)
+            menu.addAction(f"免打扰 {mins} 分钟",
+                           lambda: self.start_quiet())
+        menu.addAction("今日汇总", self.show_daily_summary)
+
+    def show_daily_summary(self):
+        """菜单里点「今日汇总」：把今天的小结冒出来看一眼。"""
+        self.say(self.daily_summary() or "今天还没什么好总结的哦，先干点活嘛",
+                 again=True, seconds=5.0)
 
     def _build_menu(self):
         """**完整版菜单**（老样子，一条没少）。
@@ -7019,20 +7824,20 @@ class PetWindow(QWidget):
 
         # 进程联动：独立菜单，支持扫描本机应用并自定义触发文字
         proc_menu = m.addMenu("进程联动")
-        pra = proc_menu.addAction("打开应用时冒泡")
+        pra = proc_menu.addAction("应用启动提醒")
         pra.setCheckable(True)
         pra.setChecked(self.process_alerts)
         pra.triggered.connect(self.set_process_alerts)
         proc_menu.addSeparator()
-        proc_menu.addAction("扫描电脑应用并添加…", self.scan_apps_dialog)
+        proc_menu.addAction("扫描本机应用并添加…", self.scan_apps_dialog)
         if self.cfg.get("custom_process_lines") or self.cfg.get("default_line_overrides"):
-            proc_menu.addAction("清理自定义 / 改写的文字…", self.remove_custom_app_dialog)
+            proc_menu.addAction("清理自定义文字…", self.remove_custom_app_dialog)
         proc_menu.addSeparator()
-        proc_menu.addAction("用久了提醒…（连续用满多久说一句）",
+        proc_menu.addAction("使用时长提醒…",
                             defer_dialog(self.app_time_dialog))
-        proc_menu.addAction("到点说一句…（每天 / 每周 / 每隔）",
+        proc_menu.addAction("定时提醒…",
                             defer_dialog(self.timed_lines_dialog))
-        proc_menu.addAction("全局快捷键…（按一下就冒一句）",
+        proc_menu.addAction("全局快捷键…",
                             defer_dialog(self.hotkeys_dialog))
 
         # 音乐联动：QQ音乐 / 网易云 放歌时看歌词
@@ -7091,7 +7896,11 @@ class PetWindow(QWidget):
             box_menu.addAction(
                 f"上次：{self._mem_last[0]} 个程序腾出 {human_mb(self._mem_last[1])}"
             ).setEnabled(False)
-        box_menu.addAction("不弹管理员提示，系统进程碰不到").setEnabled(False)
+        box_menu.addAction("系统 / 提权进程不回收（需要管理员权限）").setEnabled(False)
+
+        # 百宝箱里再加两个小工具：免打扰 / 今日汇总
+        box_menu.addSeparator()
+        self._add_tool_actions(box_menu, with_lengths=True)
 
         snd_menu = m.addMenu("音效")
         so = snd_menu.addAction("按键音效")
@@ -7185,6 +7994,7 @@ class PetWindow(QWidget):
             "PEAK_TEXT_STYLES": PEAK_TEXT_STYLES,
             "BUBBLE_STYLES": BUBBLE_STYLES,
             "LINE_FREQ_LEVELS": LINE_FREQ_LEVELS,
+            "LINE_SECTIONS": LINE_SECTIONS,
             "SKIN_PET": SKIN_PET,
             "SKIN_WIDGET": SKIN_WIDGET,
             "LAYER_LABELS": dict(self.LAYER_LABELS),
@@ -7320,11 +8130,11 @@ class PetWindow(QWidget):
     def mem_trim_now(self):
         """「百宝箱 → 回收内存」：后台把工作集收一遍，回来报个数（不卡住桌宠）。"""
         if self._mem_trimming:
-            self.say("还在收拾呢，等我一下下")
+            self.say("还在收拾呢，等我一下下嘛")
             return
         self._mem_trimming = True
         skip_fg = bool(self.cfg.get("mem_skip_foreground", True))
-        self.say("我收拾一下内存…")
+        self.say("我先给内存收拾收拾哦…")
 
         def worker():
             skip_exes = []
@@ -7351,9 +8161,9 @@ class PetWindow(QWidget):
         extra = int(got.get("avail_after") or 0) - int(got.get("avail_before") or 0)
         self._mem_last = (n, freed)
         if not n:
-            self.say("这会儿没什么可收拾的")
+            self.say("这会儿干干净净的，没什么好收拾")
             return
-        line = f"收拾完啦：{n} 个程序腾出 {human_mb(freed)}"
+        line = f"收拾好啦：{n} 个程序腾出 {human_mb(freed)}"
         if extra > 16 * 1024 * 1024:
             line += f"，可用内存多出 {human_mb(extra)}"
         self.say(line, seconds=4.0, again=True)
@@ -8567,7 +9377,7 @@ class PetWindow(QWidget):
         self.cfg["line_freq"] = name
         self.last_speak_tick = self.t          # 让新档位马上生效，不用等旧冷却
         # 切档时说的这句话本身也能在「台词内容…」里改写（LINE_GROUPS 里那四条）
-        words = self.lines_for(f"FREQ_LINES_{name}")
+        words = self.lines_for_say(f"FREQ_LINES_{name}")
         if words:
             self.say(random.choice(words), seconds=3.0, again=True)
 
@@ -8701,19 +9511,19 @@ class PetWindow(QWidget):
         self.process_alerts = bool(on)
         self.cfg["process_alerts"] = bool(on)
         if on:
-            self.say("好嘞，你开什么我都盯着")
+            self.say("好哦，你开什么我都盯着（才不是偷看呢）")
 
     def set_app_time_on(self, on):
         """用久了提醒的总开关（每个应用具体说多久、说什么在 app_time_lines 里）。"""
         self.cfg["app_time_on"] = bool(on)
         if on:
-            self.say("好，用久了我会喊你歇会儿")
+            self.say("好嘛，用久了我会喊你歇歇")
 
     def set_timed_on(self, on):
         """到点说一句的总开关。"""
         self.cfg["timed_on"] = bool(on)
         if on:
-            self.say("到点我会吱一声")
+            self.say("到点我会吱一声的，放心")
 
     def set_hotkeys_on(self, on):
         """全局快捷键的总开关（关掉就把已经注册的键还给系统）。"""
@@ -8721,8 +9531,27 @@ class PetWindow(QWidget):
         self._register_hotkeys()
         if on:
             bad = self.hotkey_failed_texts()
-            self.say("快捷键好了，按一下试试" if not bad
+            self.say("快捷键好啦，按一下试试嘛" if not bad
                      else f"快捷键里这几个被占用了：{'、'.join(bad)}")
+
+    def set_back_greet(self, on):
+        """离开一阵子回来打个招呼（台词在「台词内容 → 离开一阵子回来时」）。"""
+        self.cfg["back_greet"] = bool(on)
+        if on:
+            self.say("好哦，你回来我一定第一时间发现", seconds=2.5)
+
+    def set_fullscreen_silent(self, on):
+        """全屏（打游戏 / 看电影）时闭嘴：提醒先攒着，退出全屏再报。"""
+        self.cfg["fullscreen_silent"] = bool(on)
+        if not on:
+            self._fs_now = False
+            self._held_lines = []
+
+    def set_quiet_minutes(self, minutes):
+        try:
+            self.cfg["quiet_minutes"] = max(1, int(minutes))
+        except (TypeError, ValueError):
+            pass
 
     def set_perf_mode(self, on):
         """性能模式：动画优先，开设置菜单也不掉帧；休闲模式：省 CPU，可掉一点帧。
@@ -9006,6 +9835,10 @@ class PetWindow(QWidget):
 
     def quit_app(self):
         self._unregister_hotkeys()        # 全局快捷键要还给系统，不然退出后这个键就废了
+        try:
+            self.app_time_flush()         # 今天用了多久：退出前落一次盘
+        except Exception:
+            pass
         self.cfg["x"], self.cfg["y"] = self.x(), self.y()
         self.save_config()
         if getattr(self, "_console", None) is not None:

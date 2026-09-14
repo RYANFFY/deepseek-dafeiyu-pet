@@ -1,6 +1,7 @@
 # 运行时生成
 config.json
 usage.json
+app_time.json
 lyrics_cache.json
 menu-debug.log
 *.probe-backup

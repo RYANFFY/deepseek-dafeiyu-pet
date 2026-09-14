@@ -53,7 +53,10 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "startmenu"; Description: "创建开始菜单快捷方式"; GroupDescription: "附加任务："
 
 [Files]
-Source: "dist\大肥鱼桌宠.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 目录版（onedir）：整个文件夹装进去（含 _internal 那一堆依赖）。
+; 以前是单文件 exe，每次启动都要先解压 100 多 MB 到临时目录，启动慢；
+; 改成文件夹版之后启动快很多，用户那边还是双击同一个快捷方式。
+Source: "dist\大肥鱼桌宠\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\大肥鱼桌宠"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenu

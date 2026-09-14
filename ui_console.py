@@ -54,7 +54,7 @@ except Exception:
 # 注意：**没推送就不算开新版本** —— 同一版里的返工都算在同一个号上
 # （2026-09-14 主人定的）。v1.1.1 已经推送过，所以这一版的改动是 1.1.2；
 # 之后再改还是 1.1.2，等推送那天才说下一版。
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 
 # 最小化动画时长（毫秒）：照着 Windows 那套"往任务栏收"的感觉来
 MINIMIZE_ANIM_MS = 190
@@ -1366,7 +1366,16 @@ class Page(QScrollArea):
         # 填超了上下限也没关系 —— QInputDialog 自己就夹在 range 里，而且只收整数。
         show = QPushButton(f"{value}{unit}")
         show.setObjectName("numBox")
-        show.setFixedSize(54, 24)
+        # 宽度跟着文字走：以前写死 54px，像「30 分钟」这种四五个字就装不下、会被切掉
+        # （v1.1.4 免打扰那行"30 分钟"只剩半截就是这个原因）
+
+        def fit_box(text):
+            show.setFixedSize(max(54, show.fontMetrics().horizontalAdvance(text) + 18), 24)
+
+        # 按**这一行最大能出现的数字**定宽：「30 分钟」放得下，拖到 180 也不会跳
+        # （"100%" 这种还是原来的 54px，别的页一点没变）
+        fit_box(max((f"{low}{unit}", f"{high}{unit}"),
+                    key=lambda t: show.fontMetrics().horizontalAdvance(t)))
         show.setCursor(Qt.CursorShape.PointingHandCursor)
         show.setToolTip(f"点一下直接填（{low} ~ {high}，整数）")
         bar = QSlider(Qt.Orientation.Horizontal)
@@ -1515,7 +1524,7 @@ class ConsoleWindow(QWidget):
         ("lines", "文案和语录", "闲着时说什么、高峰时段怎么显示",
          "nav.lines", "_page_lines"),
         ("sound", "音效", "按键音效、音量、自己加的音频", "nav.sound", "_page_sound"),
-        ("integration", "应用联动", "开应用时冒泡、用久了提醒、到点说一句、快捷键",
+        ("integration", "应用联动", "应用启动 / 使用时长 / 定时提醒、全局快捷键",
          "nav.integration", "_page_integration"),
         ("performance", "性能和工具", "流畅度、回收内存",
          "nav.performance", "_page_performance"),
@@ -2487,7 +2496,7 @@ class ConsoleWindow(QWidget):
         self.bal_note = QLabel("")
         self.bal_note.setObjectName("muted")
         card.addWidget(self.bal_note)
-        page.row(card, "余额常显", "不收起余额气泡，一直挂着",
+        page.row(card, "余额常显", "余额气泡常驻显示",
                  Switch(pet.balance_always, pet.set_balance_always))
         page.buttons(card, [
             ("刷新", lambda: pet.refresh_balance(silent=False), "primary", "ui.refresh"),
@@ -2512,7 +2521,7 @@ class ConsoleWindow(QWidget):
         ])
         self._hook_page("balance", self._sync_source_controls)
 
-        card = page.card("今日已用怎么算", "按余额差值算出来的，跟平台可能对不上",
+        card = page.card("今日已用怎么算", "按余额差值算，可能和平台对不上",
                          "page.calibrate")
         page.row(card, f"每轮对话后显示消耗（当前：{pet.agent_name}）",
                  f"读 {pet.agent_name} 的会话日志，算这一轮用掉多少",
@@ -2587,8 +2596,8 @@ class ConsoleWindow(QWidget):
         # 这一行只有"列表里不止一个城市"时才露出来 —— 建的时候先放着，靠 sync 显隐
         self.city_del_row = page.buttons(card, [
             ("从列表里删掉城市…", self._remove_city, "danger", "ui.delete")])
-        page.hint(card, "挂梯子时按 IP 定位会不准，最好手动填。"
-                        "想看一眼现在几度：右键桌宠 →「查看天气」。")
+        page.hint(card, "挂梯子时 IP 定位不准，建议手动填。"
+                        "想看一眼天气：右键 →「查看天气」。")
         self._hook_page("weather", self._sync_weather_controls)
         self._sync_weather_controls()
 
@@ -2630,17 +2639,17 @@ class ConsoleWindow(QWidget):
     # ---------------- 音乐与歌词 ----------------
     def _page_music(self, page):
         pet = self.pet
-        card = page.card("联动", "放歌时桌宠会看着", "nav.music")
-        page.row(card, "放歌时看着", "放 QQ音乐 / 网易云 时联动",
+        card = page.card("联动", "播放音乐时的联动", "nav.music")
+        page.row(card, "放歌时看着", "QQ音乐 / 网易云 播放时联动",
                  Switch(pet.music_on, pet.set_music_link))
         page.row(card, "显示歌词内容", "关掉只报歌名",
                  Switch(pet.music_lyrics, pet.set_music_lyrics))
         # 网易云那个播放器拿不到歌词（只有歌名），别让人一直等歌词
-        page.hint(card, "网易云暂不支持歌词显示（只有 QQ音乐 能看到歌词）。")
-        page.hint(card, "想看一眼在放什么：右键桌宠 →「看一眼在放什么」。")
+        page.hint(card, "网易云不报播放进度，所以只能显示歌名。")
+        page.hint(card, "想看一眼在放什么：右键 →「看一眼在放什么」。")
 
         card = page.card("歌词对不上？", "跟播放器显示的时间对齐最准", "page.clock")
-        page.combo(card, "歌词比音乐早还是晚", "对不上就先在这儿选一档",
+        page.combo(card, "歌词比音乐早还是晚", "不同步时先选择一档",
                    [(off, label) for label, off
                     in (self.ctx.get("LYRIC_OFFSET_LEVELS") or [])],
                    pet.lyric_offset,
@@ -2684,7 +2693,7 @@ class ConsoleWindow(QWidget):
         # 档位和滑块是同一个大小：点档位 → 滑块跳过去；拖滑块停在哪一档 → 那一档点亮
         self.size_seg = Segmented([(mult, label) for label, mult in levels],
                                   current_level, self._on_size_level)
-        page.row(card, "档位", "常用五档，点一下滑块就跟着跳过去",
+        page.row(card, "档位", "五档预设，选择后滑块同步",
                  self.size_seg)
         lo = self._size_pct(self.ctx.get("SIZE_MIN", 0.30))
         hi = self._size_pct(self.ctx.get("SIZE_MAX", 1.20))
@@ -2694,7 +2703,7 @@ class ConsoleWindow(QWidget):
             lo, hi, min(max(now, lo), hi), "%", self._on_size_percent)
 
         card = page.card("外观", "", "page.opacity")
-        page.slider(card, "透明度", "拖太低就快看不见了", 20, 100,
+        page.slider(card, "透明度", "过低会难以看清", 20, 100,
                     int(pet.opacity * 100), "%",
                     lambda v: self._run(pet.set_opacity, v / 100.0))
         # 气泡（语录 / 余额 / 歌词）用哪套配色：默认跟着上面那套界面主题的亮暗走，
@@ -2705,10 +2714,10 @@ class ConsoleWindow(QWidget):
             lambda name: self._run(pet.set_bubble_style, name))
         page.row(card, "气泡风格", "语录、余额、歌词三种气泡一起换",
                  self.bubble_seg)
-        page.row(card, "窗口层级", "跟别的窗口谁在前", self._layer_combo())
-        page.row(card, "拖拽吸附四边", "拖到屏幕边上自己贴住",
+        page.row(card, "窗口层级", "相对其他窗口的层级", self._layer_combo())
+        page.row(card, "拖拽吸附四边", "拖到屏幕边缘时自动吸附",
                  Switch(pet.snap_on, pet.set_snap))
-        page.row(card, "左吸附时翻面", "贴在左边时面朝屏幕里",
+        page.row(card, "左吸附时翻面", "吸附左侧时朝向屏幕内侧",
                  Switch(pet.flip_on_left, pet.set_flip_on_left))
 
     def _skin_lib_text(self):
@@ -3018,17 +3027,17 @@ class ConsoleWindow(QWidget):
     # ---------------- 行为与互动 ----------------
     def _page_behavior(self, page):
         pet = self.pet
-        card = page.card("模式", "它平时怎么动", "nav.behavior")
-        page.row(card, "怎么走", "",
+        card = page.card("模式", "桌宠的移动方式", "nav.behavior")
+        page.row(card, "移动方式", "",
                  Segmented([("wander", "自由散步"), ("follow", "跟随鼠标"),
                             ("still", "原地待着")],
                            pet.mode, lambda key: self._run(pet.set_mode, key)))
-        page.row(card, "原地待着时也跟着鼠标转", "只转头、不挪窝",
+        page.row(card, "原地待着时跟随鼠标转向", "仅改变朝向，不移动位置",
                  Switch(pet.still_face_cursor, pet.set_still_face_cursor))
 
         card = page.card("快速双击", "双击它一下会做什么", "page.click")
         choices = list(self.ctx.get("DOUBLE_CLICK_CHOICES") or [])
-        page.combo(card, "双击效果", "没配 Key 时选不了「看一眼余额」",
+        page.combo(card, "双击效果", "未配置 Key 时不能选择「看一眼余额」",
                    [(k, label) for k, label in choices],
                    pet._double_click_choice(),
                    lambda key: self._run(pet.set_double_click, key))
@@ -3042,35 +3051,51 @@ class ConsoleWindow(QWidget):
                  Switch(pet.locked, pet.set_locked))
         page.row(card, "鼠标穿透", "点不到它（托盘图标能解除）",
                  Switch(pet.cfg.get("passthrough", False), pet.set_passthrough))
-        page.hint(card, "真点不到它了：双击托盘图标，或去「通用」里点救急恢复。")
+        page.hint(card, "若已无法点击：双击托盘图标，或在「通用」中执行救急恢复。")
 
     # ---------------- 文案与语录 ----------------
     def _page_lines(self, page):
         pet = self.pet
-        card = page.card("高峰 / 空闲时段", "DeepSeek 不同时段价钱不一样",
+        card = page.card("高峰 / 空闲时段", "DeepSeek 不同时段价格不同",
                          "nav.lines")
-        page.row(card, "在气泡里标出现在贵不贵", "显示现在是高峰还是空闲",
+        page.row(card, "显示当前峰谷时段", "在余额气泡中标注高峰或空闲",
                  Switch(pet.show_peak, pet.set_show_peak))
-        page.combo(card, "这两句怎么写", "换个说法",
+        page.combo(card, "峰谷文案", "选择文案风格",
                    [(name, name) for name
                     in (self.ctx.get("PEAK_TEXT_STYLES") or {})],
                    pet.peak_style,
                    lambda style: self._run(pet.set_peak_style, style))
 
-        card = page.card("语录", "闲着时它自己冒话", "ui.quote")
+        card = page.card("语录", "闲置时自动说话", "ui.quote")
         levels = list((self.ctx.get("LINE_FREQ_LEVELS") or {}).items())
-        page.combo(card, "说话频率", "太吵就调安静一点",
+        page.combo(card, "语录频率", "控制自动说话的间隔",
                    [(name, f"{name}（{conf.get('hint', '')}）")
                     for name, conf in levels],
                    pet.line_freq,
                    lambda name: self._run(pet.set_line_freq, name))
+        page.row(card, "离开 / 返回提醒", "离开超过 30 分钟后返回时提醒一次",
+                 Switch(pet.cfg.get("back_greet", True), pet.set_back_greet))
+        page.row(card, "全屏时静音", "全屏（游戏 / 视频）时不显示气泡，提醒暂存",
+                 Switch(pet.cfg.get("fullscreen_silent", True),
+                        pet.set_fullscreen_silent))
+
+        # 语录板块：哪几块参与说话（关掉的整块不再开口，台词本身留着）
+        self.section_switches = {}
+        sec_card = page.card("语录板块", "选择哪几块参与说话", "ui.quote")
+        for sec_id, sec_name, sec_desc, _keys in (self.ctx.get("LINE_SECTIONS") or []):
+            sw = Switch(pet.line_section_on(sec_id),
+                        (lambda on, sid=sec_id: self._run(pet.set_line_section, sid, on)))
+            self.section_switches[sec_id] = sw
+            page.row(sec_card, sec_name, sec_desc, sw)
+        page.hint(sec_card, "关掉的板块整块不再说话（台词还留着，随时能再打开）。"
+                            "快速双击不受影响：双击该做什么还做什么。")
+
         self.lines_row = page.row(card, "台词内容", self._lines_desc(),
                                   self._text_button("打开编辑器…",
                                                     self._open_lines_editor,
                                                     "primary"))
-        page.hint(card, "闲着冒的话会给「触发类」让位：打开应用、用久了、到点、"
-                        "按快捷键、双击、点它拖它、换歌 —— 这些说的时候闲话不插嘴，"
-                        "也不盖掉它；它们说完闲话再接着冒。")
+        page.hint(card, "优先级：触发类提示（应用启动 / 使用时长 / 定时 / 快捷键 / 双击）"
+                        "高于语录；触发提示显示期间语录暂不显示。")
         self._hook_page("lines", self._sync_lines_controls)
 
     def _lines_desc(self):
@@ -3079,11 +3104,17 @@ class ConsoleWindow(QWidget):
                 else "自己写 / 改写内置")
 
     def _sync_lines_controls(self):
-        """台词改了哪几类，现读一遍（编辑器关掉、或切回这一页时都走这儿）。"""
+        """台词改了哪几类、哪几块被关了，现读一遍（切回这一页时也走这儿）。"""
         row = getattr(self, "lines_row", None)
-        if row is None or row.desc_label is None:
-            return
-        row.desc_label.setText(self._lines_desc())
+        if row is not None and row.desc_label is not None:
+            row.desc_label.setText(self._lines_desc())
+        pet = self.pet
+        for sec_id, sw in (getattr(self, "section_switches", None) or {}).items():
+            want = pet.line_section_on(sec_id)
+            if sw.isChecked() != want:
+                sw.blockSignals(True)
+                sw.setChecked(want)
+                sw.blockSignals(False)
 
     def _open_lines_editor(self):
         self._run(self.pet.edit_lines_dialog)
@@ -3092,10 +3123,10 @@ class ConsoleWindow(QWidget):
     # ---------------- 音效 ----------------
     def _page_sound(self, page):
         pet = self.pet
-        card = page.card("音效", "点击 / 拖拽时的那一声", "nav.sound")
-        page.row(card, "按键音效", "关掉就安静了",
+        card = page.card("音效", "点击、拖拽时的音效", "nav.sound")
+        page.row(card, "按键音效", "关闭后无音效",
                  Switch(pet.sound_on, pet.set_sound))
-        self.sound_combo = page.combo(card, "音效选择", "内置几套，也可以自己加",
+        self.sound_combo = page.combo(card, "音效选择", "内置若干套，可自行添加",
                                       [(name, name) for name in pet._sound_names()],
                                       pet.sound_set,
                                       lambda name: self._run(pet.set_sound_set, name))
@@ -3141,44 +3172,44 @@ class ConsoleWindow(QWidget):
     # ---------------- 联动与自动化 ----------------
     def _page_integration(self, page):
         pet = self.pet
-        card = page.card("打开应用时冒泡", "它看着你开什么，顺口吐槽两句",
+        card = page.card("应用启动提醒", "打开指定应用时显示一条提示",
                          "nav.integration")
-        page.row(card, "打开应用时冒泡", "扫一遍本机应用，挑几个给它管",
+        page.row(card, "应用启动提醒", "可为每个应用单独设置提示文字",
                  Switch(pet.process_alerts, pet.set_process_alerts))
         page.buttons(card, [
-            ("扫描电脑应用并添加…",
+            ("扫描本机应用并添加…",
              lambda: self._run(pet.scan_apps_dialog), "primary", "ui.spinner"),
-            ("清理自定义 / 改写的文字…",
+            ("清理自定义文字…",
              lambda: self._run(pet.remove_custom_app_dialog), "danger", "ui.delete"),
         ])
-        page.hint(card, "扫出来的每个应用都能单独改台词，改错了可以在这儿清掉。")
-        # 一个都没配过的时候：给张插图 + 一句"该干嘛"，别只留一片空白
+        page.hint(card, "每个应用可单独设置提示文字；未添加的应用不受影响。")
+        # 一条都没配过时给张插图 + 一句"下一步做什么"，别只留一片空白
         self.integration_empty = page.empty(
-            "empty.app", "还没给任何应用配过台词",
-            "点上面的「扫描电脑应用并添加…」挑一个", size=44, layout=card)
+            "empty.app", "尚未配置应用提示",
+            "点「扫描本机应用并添加…」选择一个应用", size=44, layout=card)
         self._hook_page("integration", self._sync_integration_empty)
 
-        card = page.card("用久了提醒", "连续用一个应用太久，它主动让你歇会儿",
+        card = page.card("使用时长提醒", "连续使用同一应用达到设定时长后提醒",
                          "ui.timer")
-        page.row(card, "用久了提醒", "连续在前台用满设定的分钟数就说一句",
+        page.row(card, "使用时长提醒", "达到设定分钟数时显示一条提示",
                  Switch(pet.cfg.get("app_time_on", True), pet.set_app_time_on))
-        page.buttons(card, [("配置哪些应用 / 说多久…",
+        page.buttons(card, [("配置应用与时长…",
                              self._open_app_time, "primary", "ui.edit")])
         self.app_time_hint = page.hint(card, self._app_time_text(), "muted")
 
-        card = page.card("到点说一句", "每天 / 每周固定的点，或者每隔一段时间",
+        card = page.card("定时提醒", "按每天、每周或固定间隔提醒",
                          "page.clock")
-        page.row(card, "到点说一句", "到点了它主动冒一句",
+        page.row(card, "定时提醒", "到设定时间显示一条提示",
                  Switch(pet.cfg.get("timed_on", True), pet.set_timed_on))
-        page.buttons(card, [("配置时间点和台词…",
+        page.buttons(card, [("配置时间与台词…",
                              self._open_timed, "primary", "ui.edit")])
         self.timed_hint = page.hint(card, self._timed_text(), "muted")
 
-        card = page.card("全局快捷键", "按一下它就说一句（哪个窗口在前台都管用）",
+        card = page.card("全局快捷键", "在任意窗口按组合键触发",
                          "ui.keyboard")
-        page.row(card, "全局快捷键", "自己设键，比如 Ctrl+Alt+1 让它夸你一句",
+        page.row(card, "全局快捷键", "按键与动作都可自定义",
                  Switch(pet.cfg.get("hotkeys_on", True), pet.set_hotkeys_on))
-        page.buttons(card, [("配置快捷键和台词…",
+        page.buttons(card, [("配置按键与动作…",
                              self._open_hotkeys, "primary", "ui.edit")])
         self.hotkey_hint = page.hint(card, self._hotkey_text(), "muted")
         self._hook_page("integration", self._sync_autosay_texts)
@@ -3199,21 +3230,21 @@ class ConsoleWindow(QWidget):
     def _app_time_text(self):
         rules = [r for r in (self.pet.app_time_rules() or {}).values()
                  if isinstance(r, dict) and r.get("on", True) and (r.get("lines") or [])]
-        return (f"现在管着 {len(rules)} 个应用（点开就能改说多久、说什么）。"
-                if rules else "还没配：点「配置哪些应用」加一条，或者删掉不想要的。")
+        return (f"已启用 {len(rules)} 个应用。" if rules
+                else "未配置。点「配置应用与时长…」添加。")
 
     def _timed_text(self):
         rules = [r for r in self.pet.clock_rules()
                  if r.get("on", True) and (r.get("lines") or [])]
-        return (f"现在有 {len(rules)} 条到点提醒。" if rules
-                else "还没有到点提醒：点「配置时间点和台词」加一条。")
+        return (f"已启用 {len(rules)} 条定时提醒。" if rules
+                else "未配置。点「配置时间与台词…」添加。")
 
     def _hotkey_text(self):
         rules = [r for r in self.pet.hotkey_rules()
                  if r.get("on", True) and (r.get("lines") or [])]
         if not rules:
-            return "还没设快捷键：点「配置快捷键和台词」加一条。"
-        text = "现在有 %d 个：%s。" % (len(rules),
+            return "未配置。点「配置按键与动作…」添加。"
+        text = "已启用 %d 个：%s。" % (len(rules),
                                       "、".join(r.get("seq") or "?" for r in rules))
         bad = self.pet.hotkey_failed_texts()
         if bad:
@@ -3249,8 +3280,8 @@ class ConsoleWindow(QWidget):
                            lambda on: self._run(pet.set_perf_mode, on)))
 
         card = page.card("百宝箱 · 回收内存",
-                         "把后台程序用不着的内存先还给系统", "page.sparkle")
-        page.row(card, "回收时不动前台程序", "防止你正在用的一下子卡住",
+                         "把后台程序不用的内存先还给系统", "page.sparkle")
+        page.row(card, "回收时不动前台程序", "跳过当前前台程序，避免卡顿",
                  Switch(pet.cfg.get("mem_skip_foreground", True),
                         pet.set_mem_skip_foreground))
         self.mem_hint = page.hint(card, self._mem_hint_text(), "muted")
@@ -3258,11 +3289,35 @@ class ConsoleWindow(QWidget):
         # 回收是后台跑的，点完这一下数还不准 —— 回到这一页时现读一遍就够了
         self._hook_page("performance", self._sync_mem_hint)
 
+        card = page.card("免打扰", "开启期间不显示气泡，提醒暂存，结束后汇总",
+                         "ui.bell-off")
+        page.slider(card, "默认时长", "菜单中「免打扰」使用的时长",
+                    5, 180, int(pet.cfg.get("quiet_minutes") or 30), " 分钟",
+                    lambda v: self._run(pet.set_quiet_minutes, v))
+        page.buttons(card, [
+            ("开始免打扰", lambda: self._run(pet.start_quiet), "primary", "ui.bell-off"),
+            ("结束免打扰", lambda: self._run(pet.stop_quiet), None, "ui.reset"),
+        ])
+        self.quiet_hint = page.hint(card, self._quiet_text(), "muted")
+
+        self._hook_page("performance", self._sync_tool_texts)
+
+    def _quiet_text(self):
+        left = self.pet.quiet_left()
+        return (f"已开启，剩余 {left // 60} 分 {left % 60} 秒；期间不显示气泡，提醒暂存。"
+                if left else "未开启。")
+
+    def _sync_tool_texts(self):
+        """免打扰那行状态（回到这一页时现读）。"""
+        label = getattr(self, "quiet_hint", None)
+        if label is not None:
+            label.setText(self._quiet_text())
+
     def _mem_hint_text(self):
         last = getattr(self.pet, "_mem_last", None)
         human = self.ctx.get("human_mb", lambda n: f"{n / 1048576:.0f} MB")
         return (f"上次：{last[0]} 个程序腾出 {human(last[1])}" if last
-                else "还没收过。第一把通常收得最多，紧接着再点往往只剩零头。")
+                else "尚未执行。首次效果最明显，连续执行通常变化很小。")
 
     def _sync_mem_hint(self):
         label = getattr(self, "mem_hint", None)

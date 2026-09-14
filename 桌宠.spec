@@ -54,12 +54,15 @@ _drop = ('icuuc.dll', 'icuin.dll', 'icuio.dll', 'icutu.dll', 'icuuc', 'icudt')
 a.binaries = [b for b in a.binaries
               if not any(os.path.basename(b[0]).lower().startswith(p) for p in _drop)]
 
+# 文件夹版（onedir）而不是单文件版（onefile）——2026-09-14 改的。
+# 单文件版每次启动都要先把 100 多 MB 解压到 %TEMP% 再起来，"点了要等一会儿"
+# 主要就是它；文件夹版直接读旁边的文件，启动快得多。发出去的是安装包，
+# 安装包把整个文件夹装进去，用户那边看不出区别。
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,        # 依赖不进 exe，交给下面的 COLLECT 放到同一个文件夹
     name='大肥鱼桌宠',
     debug=False,
     bootloader_ignore_signals=False,
@@ -74,4 +77,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['icon.ico'],
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='大肥鱼桌宠',
 )
