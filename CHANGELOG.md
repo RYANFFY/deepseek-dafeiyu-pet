@@ -1,5 +1,53 @@
 # 更新日志
 
+## v1.1.2
+
+### 设置窗口里的数字，不用重启就跟着变
+
+- 「桌宠形象」页那颗 **「我的形象库…（三维 N · 挂件 N）」**：在库里 **上传 / 换图 / 改名 /
+  从库里删掉** 之后，后面的条目数**当场**就更新 —— 不用关掉设置窗口再打开，更不用重启桌宠。
+- **「现在是谁」**那一排（大肥鱼 / 小鲸鱼挂件）也跟着实际用着的那套走：在别的地方换过形象，
+  回到这一页会跳到正确的一档上，不会停在旧的那一档。
+- **音效**页的「音效选择」名单：自己加过 / 删过的音效，回到这一页就在名单里，
+  下拉里选中的也是正在用的那套。
+- **「台词内容」**那行的「已改 N 类」、**「回收内存」**那行的「上次：N 个程序腾出 … MB」：
+  回到那一页读的都是最新的数。
+- 做法统一成一套"现读一遍"：**每次切回某一页、或者把设置窗口重新露出来**
+  （收起来过一阵再打开、从任务栏点回来）都会重读该页上会变的数据，
+  而不是建页面的时候读一次、之后再也不管。
+
+- 实测：离屏脚本 `F:\Codex\work\test_console_live_refresh.py`（10 组，22 项全过）——
+  空库时按钮写「三维 0 · 挂件 0」；在形象库里收一条、关掉窗口**当场**变「三维 0 · 挂件 1」；
+  切到别的页再切回来读到「三维 1 · 挂件 1」；删掉一条变「三维 1 · 挂件 0」；
+  在别处换回大肥鱼后「现在是谁」跟着跳；设置窗口收起来、在别处加了形象，
+  重新露出来写的就是最新数；音效名单切回来多了自己加的那套、下拉选中它；
+  「已改 1 类」和改回默认都对得上；回收内存那行再进来读的是最新那次
+  （「上次：7 个程序腾出 512 MB」）。截图 `F:\Codex\work\shot_skinlib_count_live.png`、
+  `F:\Codex\work\shot_console_appearance_live.png`。
+- 回归：设置窗口那几支老脚本照旧全过 —— `test_console_page.py`（12 页切一遍 + 最小窗口）、
+  `test_console_ui.py`、`test_console_style.py`（45 项）、`test_console_click.py`（12 项）、
+  `test_console_perf.py`、`test_console_backdrop.py`（12 项）；
+  `test_skin_library.py`（形象库本体）也照旧 ALL PASS。
+
+### 维护者相关（发版 / 仓库，不写进 Release 说明）
+
+- 没动桌宠本体（`桌宠.py`）：这几处一直是设置窗口"读晚了"，数据源（`pet.cfg` /
+  `pet.skin_library()` / `pet._sound_names()` / `pet._mem_last`）本来就是现成的。
+- `ui_console.py`：
+  - `ConsoleWindow._page_hooks` + `_hook_page(key, fn)` / `_refresh_page(key)` /
+    `_refresh_current_page()`：页面级的"现读一遍"挂点。页面是建一次留着的，
+    凡"会变的数据"都往这儿挂；`switch_page()` 和 `showEvent()` 各调一次。
+  - `Page.buttons()` 返回的那行挂 `wrap.buttons = [...]`，外面改按钮文字不用再
+    `findChildren` 赌顺序。
+  - 「桌宠形象」页：`_skin_lib_text()`（条目数现读）、`_sync_skin_controls()`
+    （条目数 + 「现在是谁」）、`_open_skin_library()`（关掉形象库窗口立刻刷一次）、
+    `_reset_all_skin()`。
+  - 「音效」页：`_sync_sound_controls()`（名单变了才重建下拉，重建时 `blockSignals`）、
+    `_add_sound()` / `_remove_sound()` 各包一层；「文案和语录」页 `_sync_lines_controls()`；
+    「性能和工具」页 `_sync_mem_hint()`（回收是后台跑的，点完那一下数还不准，
+    回到这一页再读）。
+  - `APP_VERSION`：1.1.1 → **1.1.2**。
+
 ## v1.1.1
 
 ### 设置窗口能换背景了：图片 / 视频都行

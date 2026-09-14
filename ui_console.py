@@ -51,8 +51,9 @@ except Exception:
 
 # 界面自己的版本号。发版时跟着一起改（关于页和侧边栏底部都读它）。
 # 注意：**没推送就不算开新版本** —— 同一版里的返工都算在同一个号上
-# （2026-09-14 主人定的：这个会话里一直叫 1.1.1，等推送那天再说下一版）。
-APP_VERSION = "1.1.1"
+# （2026-09-14 主人定的）。v1.1.1 已经推送过，所以这一版的改动是 1.1.2；
+# 之后再改还是 1.1.2，等推送那天才说下一版。
+APP_VERSION = "1.1.2"
 
 # 最小化动画时长（毫秒）：照着 Windows 那套"往任务栏收"的感觉来
 MINIMIZE_ANIM_MS = 190
@@ -1116,6 +1117,7 @@ class Page(QScrollArea):
         line.setSpacing(8)
         if align_right:
             line.addStretch(1)
+        btns = []
         for text, slot, style in items:
             btn = QPushButton(text)
             # 固定高度 32：125% 缩放下 = 整 40 物理像素（30 会落在半像素上，
@@ -1127,9 +1129,13 @@ class Page(QScrollArea):
             if slot is not None:
                 btn.clicked.connect(lambda _=False, f=slot: f())
             line.addWidget(btn)
+            btns.append(btn)
         if not align_right:
             line.addStretch(1)
         layout.addWidget(wrap)
+        # 挂个按钮清单：外面要改按钮文字（比如"我的形象库…（三维 1 · 挂件 0）"的条目数）时
+        # 不用再去翻 QPushButton，也不用赌 findChildren 的先后顺序
+        wrap.buttons = btns
         return wrap
 
     def hint(self, layout, text, style="faint"):
@@ -1289,6 +1295,11 @@ class ConsoleWindow(QWidget):
         self.ctx = ctx or {}
         self._pages = {}
         self._nav_items = {}
+        # 「这一页要现读一遍数据」的挂点：key → [回调]。
+        # 页面是建一次就留着不重建的，凡是"会变的数据"（比如形象库的条目数）都得靠这个刷新，
+        # 不然就得重启桌宠才能看见新数（见 _hook_page / _refresh_page）。
+        self._page_hooks = {}
+        self._cur_page_key = None         # 现在停在哪一页（showEvent 刷新时用）
         self._shadow_pm = None            # 阴影贴图缓存（见 _shadow_pixmap）
         self._shadow_key = None
         self._min_anim = None             # 最小化动画（跑着的时候不接第二次）
@@ -1944,10 +1955,27 @@ class ConsoleWindow(QWidget):
         self.pet.update()
 
     # ---------------- 切页 ----------------
+    def _hook_page(self, key, fn):
+        """给某一页挂一个"现读一遍数据"的回调（切页 / 窗口重新露出来时都会跑）。"""
+        self._page_hooks.setdefault(key, []).append(fn)
+
+    def _refresh_page(self, key):
+        """把某一页上"会变的东西"按现在的实际状态重摆一遍。"""
+        for fn in self._page_hooks.get(key) or ():
+            try:
+                fn()
+            except Exception as exc:
+                print(f"刷新「{key}」页失败:", exc)
+
+    def _refresh_current_page(self):
+        if self._cur_page_key:
+            self._refresh_page(self._cur_page_key)
+
     def switch_page(self, key):
         page = self._pages.get(key)
         if page is None:
             return
+        self._cur_page_key = key
         self.stack.setCurrentWidget(page)
         self.title_label.setText(page.title)
         self.desc_label.setText(page.desc)
@@ -1959,6 +1987,8 @@ class ConsoleWindow(QWidget):
             self._sync_size_controls()
         elif key == "console":
             self._sync_console_controls()
+        # 页面是建一次留着的，这里补一遍"现读一遍数据"的（形象库条目数这类）
+        self._refresh_page(key)
 
     # ---------------- 余额那张卡（开着窗口就自己刷）----------------
     def _refresh_balance_card(self):
@@ -2089,18 +2119,20 @@ class ConsoleWindow(QWidget):
         skin_pet = self.ctx.get("SKIN_PET", "大肥鱼")
         skin_widget = self.ctx.get("SKIN_WIDGET", "小鲸鱼挂件")
         card = page.card("形象", "换形象、上传自己的图", "nav.appearance")
-        page.row(card, "现在是谁", "",
-                 Segmented([(skin_pet, f"{skin_pet}（三视图）"),
-                            (skin_widget, f"{skin_widget}（单张）")],
-                           pet.skin, lambda name: self._run(pet.set_skin, name)))
-        n_pet = len(pet.skin_library("pet"))
-        n_widget = len(pet.skin_library("widget"))
-        page.buttons(card, [
-            (f"我的形象库…（三维 {n_pet} · 挂件 {n_widget}）",
-             lambda: self._run(pet.skin_library_dialog), "primary"),
-            ("全部恢复默认形象",
-             lambda: self._run(pet.clear_custom_skin, None), "danger"),
+        # 「现在是谁」和"形象库有几个"都是会变的：建的时候摆一次，
+        # 之后每次切到这一页（或把窗口重新露出来）都按实际状态重摆（见 _sync_skin_controls）
+        self.skin_seg = Segmented([(skin_pet, f"{skin_pet}（三视图）"),
+                                   (skin_widget, f"{skin_widget}（单张）")],
+                                  pet.skin, lambda name: self._run(pet.set_skin, name))
+        page.row(card, "现在是谁", "", self.skin_seg)
+        row = page.buttons(card, [
+            (self._skin_lib_text(),
+             self._open_skin_library, "primary"),
+            ("全部恢复默认形象", self._reset_all_skin, "danger"),
         ])
+        btns = getattr(row, "buttons", [])
+        self.skin_lib_btn = btns[0] if btns else None
+        self._hook_page("appearance", self._sync_skin_controls)
 
         card = page.card("大小", "脚底和中心不动，原地缩放", "page.resize")
         levels = list((self.ctx.get("SIZE_LEVELS") or {}).items())
@@ -2130,6 +2162,39 @@ class ConsoleWindow(QWidget):
                  Switch(pet.snap_on, pet.set_snap))
         page.row(card, "左吸附时翻面", "贴在左边时面朝屏幕里",
                  Switch(pet.flip_on_left, pet.set_flip_on_left))
+
+    def _skin_lib_text(self):
+        """「我的形象库…」按钮上的字：条目数**现读**，不存下来。"""
+        pet = self.pet
+        try:
+            n_pet = len(pet.skin_library("pet"))
+            n_widget = len(pet.skin_library("widget"))
+        except Exception:
+            return "我的形象库…"
+        return f"我的形象库…（三维 {n_pet} · 挂件 {n_widget}）"
+
+    def _sync_skin_controls(self):
+        """形象库条目数 + "现在是谁"，都按现在的实际状态重摆一遍。
+
+        上传 / 换图 / 删条目 / 恢复默认形象都会改这两个数 —— 以前只在建页面时读一次，
+        所以非得重启桌宠才更新；现在改成切回这一页、以及关掉形象库窗口之后就重读。
+        """
+        btn = getattr(self, "skin_lib_btn", None)
+        if btn is not None:
+            btn.setText(self._skin_lib_text())
+        seg = getattr(self, "skin_seg", None)
+        if seg is not None:
+            # clear_custom_skin 可能把挂件退回"大肥鱼"，这里跟着对上
+            seg.set_value(getattr(self.pet, "skin", None))
+
+    def _open_skin_library(self):
+        """我的形象库…：关掉窗口之后马上把这一页的数刷新一遍（不用再切页 / 重启）。"""
+        self._run(self.pet.skin_library_dialog)
+        self._sync_skin_controls()
+
+    def _reset_all_skin(self):
+        self._run(self.pet.clear_custom_skin, None)
+        self._sync_skin_controls()
 
     # ---------------- 控制台外观 ----------------
     def _page_console(self, page):
@@ -2413,13 +2478,27 @@ class ConsoleWindow(QWidget):
                     for name, conf in levels],
                    pet.line_freq,
                    lambda name: self._run(pet.set_line_freq, name))
-        n_custom = len(pet.cfg.get("custom_lines") or {})
-        page.row(card, "台词内容",
-                 f"自己写 / 改写内置（已改 {n_custom} 类）" if n_custom
-                 else "自己写 / 改写内置",
-                 self._text_button("打开编辑器…",
-                                   lambda: self._run(pet.edit_lines_dialog),
-                                   "primary"))
+        self.lines_row = page.row(card, "台词内容", self._lines_desc(),
+                                  self._text_button("打开编辑器…",
+                                                    self._open_lines_editor,
+                                                    "primary"))
+        self._hook_page("lines", self._sync_lines_controls)
+
+    def _lines_desc(self):
+        n_custom = len(self.pet.cfg.get("custom_lines") or {})
+        return (f"自己写 / 改写内置（已改 {n_custom} 类）" if n_custom
+                else "自己写 / 改写内置")
+
+    def _sync_lines_controls(self):
+        """台词改了哪几类，现读一遍（编辑器关掉、或切回这一页时都走这儿）。"""
+        row = getattr(self, "lines_row", None)
+        if row is None or row.desc_label is None:
+            return
+        row.desc_label.setText(self._lines_desc())
+
+    def _open_lines_editor(self):
+        self._run(self.pet.edit_lines_dialog)
+        self._sync_lines_controls()
 
     # ---------------- 音效 ----------------
     def _page_sound(self, page):
@@ -2427,19 +2506,48 @@ class ConsoleWindow(QWidget):
         card = page.card("音效", "点击 / 拖拽时的那一声", "nav.sound")
         page.row(card, "按键音效", "关掉就安静了",
                  Switch(pet.sound_on, pet.set_sound))
-        page.combo(card, "音效选择", "内置几套，也可以自己加",
-                   [(name, name) for name in pet._sound_names()],
-                   pet.sound_set,
-                   lambda name: self._run(pet.set_sound_set, name))
+        self.sound_combo = page.combo(card, "音效选择", "内置几套，也可以自己加",
+                                      [(name, name) for name in pet._sound_names()],
+                                      pet.sound_set,
+                                      lambda name: self._run(pet.set_sound_set, name))
         page.slider(card, "音量", "", 0, 100, int(pet.volume * 100), "%",
                     lambda v: self._run(pet.set_volume, v / 100.0))
         page.buttons(card, [
             ("试听", lambda: pet.preview_sounds(), "primary"),
-            ("添加我的音效…",
-             lambda: self._run(pet.add_custom_sound_dialog), None),
-            ("删掉我加的音效…",
-             lambda: self._run(pet.remove_custom_sound_dialog), "danger"),
+            ("添加我的音效…", self._add_sound, None),
+            ("删掉我加的音效…", self._remove_sound, "danger"),
         ])
+        self._hook_page("sound", self._sync_sound_controls)
+
+    def _sync_sound_controls(self):
+        """音效名单现读一遍：自己加 / 删过的，回到这一页就看得见（不用重启）。"""
+        box = getattr(self, "sound_combo", None)
+        if box is None:
+            return
+        pet = self.pet
+        names = list(pet._sound_names())
+        shown = [box.itemText(i) for i in range(box.count())]
+        if shown != names:
+            box.blockSignals(True)
+            box.clear()
+            for name in names:                      # 值就是名字，跟 page.combo 建的时候一样
+                box.addItem(name, name)
+            box.blockSignals(False)
+        for i in range(box.count()):
+            if box.itemData(i) == pet.sound_set:
+                if box.currentIndex() != i:
+                    box.blockSignals(True)
+                    box.setCurrentIndex(i)
+                    box.blockSignals(False)
+                break
+
+    def _add_sound(self):
+        self._run(self.pet.add_custom_sound_dialog)
+        self._sync_sound_controls()
+
+    def _remove_sound(self):
+        self._run(self.pet.remove_custom_sound_dialog)
+        self._sync_sound_controls()
 
     # ---------------- 联动与自动化 ----------------
     def _page_integration(self, page):
@@ -2471,13 +2579,21 @@ class ConsoleWindow(QWidget):
         page.row(card, "回收时不动前台程序", "防止你正在用的一下子卡住",
                  Switch(pet.cfg.get("mem_skip_foreground", True),
                         pet.set_mem_skip_foreground))
-        last = getattr(pet, "_mem_last", None)
-        human = self.ctx.get("human_mb", lambda n: f"{n / 1048576:.0f} MB")
-        page.hint(card,
-                  f"上次：{last[0]} 个程序腾出 {human(last[1])}" if last
-                  else "还没收过。第一把通常收得最多，紧接着再点往往只剩零头。",
-                  "muted")
+        self.mem_hint = page.hint(card, self._mem_hint_text(), "muted")
         page.buttons(card, [("回收内存", lambda: pet.mem_trim_now(), "primary")])
+        # 回收是后台跑的，点完这一下数还不准 —— 回到这一页时现读一遍就够了
+        self._hook_page("performance", self._sync_mem_hint)
+
+    def _mem_hint_text(self):
+        last = getattr(self.pet, "_mem_last", None)
+        human = self.ctx.get("human_mb", lambda n: f"{n / 1048576:.0f} MB")
+        return (f"上次：{last[0]} 个程序腾出 {human(last[1])}" if last
+                else "还没收过。第一把通常收得最多，紧接着再点往往只剩零头。")
+
+    def _sync_mem_hint(self):
+        label = getattr(self, "mem_hint", None)
+        if label is not None:
+            label.setText(self._mem_hint_text())
 
     # ---------------- 通用 ----------------
     def _page_general(self, page):
@@ -3001,6 +3117,8 @@ class ConsoleWindow(QWidget):
         super().showEvent(ev)
         self._video_follow_visibility()
         self._bg_size_timer.start()         # 布局这会儿才定下来，迟一拍按真尺寸重算
+        # 窗口收起来过一阵再打开：期间在右键菜单里改过的东西（形象库、音效…）要追得上
+        self._refresh_current_page()
 
     def hideEvent(self, ev):
         # hideEvent 里 isVisible() 已经是 False 了，别绕一圈判断，直接停
