@@ -2602,12 +2602,12 @@ class ConsoleWindow(QWidget):
         self._sync_weather_controls()
 
     def _city_list(self):
-        """现在该显示哪些城市（配置里的列表 + 当前城市兜底）。"""
+        """现在该显示哪些城市：**当前城市排最前面**，其余按原顺序（on 是当前那个）。"""
         pet = self.pet
         current = pet.cfg.get("city", "汕头")
-        cities = [c for c in (pet.cfg.get("city_list") or []) if c]
-        if current not in cities:
-            cities.append(current)
+        cities = pet.cities_ordered()
+        if current and current not in cities:
+            cities.insert(0, current)
         return cities, current
 
     def _sync_weather_controls(self):

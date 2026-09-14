@@ -2493,31 +2493,49 @@ def pick_balance_info(infos):
     return infos[0]
 
 
+def city_query_variants(name):
+    """同一个地名可能有的叫法：原样 + 去掉末尾的"区 / 县"。
+
+    中国天气网的库里是"鹿城"不是"鹿城区"，带上后缀就一条都搜不到
+    （2026-09-14 实测 "鹿城区" 0 条、"鹿城" 命中 101210710）。
+    """
+    q = (name or "").strip()
+    out = [q] if q else []
+    if len(q) > 1 and q.endswith(("区", "县")):
+        out.append(q[:-1])
+    return out
+
+
 def lookup_city(query):
-    """联网查城市，返回候选列表 [(显示名, 存进配置的城市名)]。"""
+    """联网查城市，返回候选列表 [(显示名, 存进配置的城市名)]。
+
+    先走中国天气网（国内直连、中文库全，"温州 / 汕头"这种简称也认），
+    查不到再退到 open-meteo（国外地名靠它兜底）。
+    """
     q = (query or "").strip()
     if not q:
         return []
     items = []
-    try:
-        r = requests.get("https://geocoding-api.open-meteo.com/v1/search",
-                         params={"name": q, "count": 6, "language": "zh"}, timeout=10)
-        for x in ((r.json() or {}).get("results") or []):
-            label = x.get("name") or ""
-            extra = " · ".join([v for v in (x.get("admin1"), x.get("country")) if v])
-            if label:
-                items.append((f"{label}（{extra}）" if extra else label, label))
-    except Exception:
-        items = []
-    if not items:
-        # 中文地名地理编码常搜不到，改用天气接口验证能不能查到
+    for variant in city_query_variants(q):
         try:
-            j = requests.get(f"https://wttr.in/{q}?format=j1", timeout=12,
-                             headers={"User-Agent": "Mozilla/5.0"}).json() or {}
-            if j.get("current_condition"):
-                items.append((f"{q}（联网验证可用）", q))
+            for _code, name, prov in cn_city_search(variant)[:6]:
+                if name not in [x[1] for x in items]:
+                    items.append((f"{name}（{prov}）" if prov else name, name))
         except Exception:
             pass
+        if items:
+            break
+    if not items:
+        try:
+            r = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                             params={"name": q, "count": 6, "language": "zh"}, timeout=8)
+            for x in ((r.json() or {}).get("results") or []):
+                label = x.get("name") or ""
+                extra = " · ".join([v for v in (x.get("admin1"), x.get("country")) if v])
+                if label:
+                    items.append((f"{label}（{extra}）" if extra else label, label))
+        except Exception:
+            items = []
     if not items:
         items = [(q, q)]
     return items
@@ -3527,84 +3545,82 @@ def to_chinese_city(name):
     return name
 
 
-# wttr.in（World Weather Online）的天气代码 → 中文
-WWO_ZH = {
-    113: "晴", 116: "多云", 119: "阴", 122: "阴天", 143: "薄雾", 248: "雾", 260: "冻雾",
-    176: "局部有雨", 179: "局部有雪", 182: "局部雨夹雪", 185: "局部冻毛毛雨",
-    200: "局部雷阵雨", 227: "风吹雪", 230: "暴风雪",
-    263: "局部小雨", 266: "毛毛雨", 281: "冻毛毛雨", 284: "强冻毛毛雨",
-    293: "局部小雨", 296: "小雨", 299: "间中中雨", 302: "中雨",
-    305: "间中大雨", 308: "大雨", 311: "小冻雨", 314: "中到大冻雨",
-    317: "小雨夹雪", 320: "中到大雨夹雪",
-    323: "局部小雪", 326: "小雪", 329: "局部中雪", 332: "中雪",
-    335: "局部大雪", 338: "大雪", 350: "冰粒",
-    353: "小阵雨", 356: "中到大阵雨", 359: "暴雨",
-    362: "小阵雨夹雪", 365: "中到大阵雨夹雪",
-    368: "小阵雪", 371: "中到大阵雪", 374: "小冰粒阵", 377: "中到大冰粒阵",
-    386: "局部雷阵雨", 389: "雷阵雨", 392: "局部雷阵雪", 395: "雷阵雪",
-}
+# ---------- 天气数据源 ----------
+# 2026-09-14 换源。以前第一站是 wttr.in（墙外），实测从这台机器 4/4 全失败
+# （3.0 秒被断连 / 12.9 秒读超时），而且它失败两次才轮到备用源 —— 这就是
+# "每次看天气都要等十几秒"的根源。现在第一站是**国内直连的中国天气网**：
+# 不要 Key，实测城市搜索 0.2~0.4 秒、实况 0.1 秒，回来的本来就是中文。
+CN_WEATHER_SEARCH = "https://toy1.weather.com.cn/search"
+CN_WEATHER_SK = "https://d1.weather.com.cn/sk_2d/{code}.html"
+CN_WEATHER_HEADERS = {"User-Agent": "Mozilla/5.0",
+                      "Referer": "https://www.weather.com.cn/"}
 
 
-def en_weather_to_zh(raw):
-    """英文天气描述兜底翻译（认不出来就返回中文的"未知"，绝不吐英文）。"""
-    t = (raw or "").lower()
-    if "thunder" in t:
-        return "雷阵雪" if "snow" in t else "雷阵雨"
-    if "blizzard" in t or "blowing snow" in t:
-        return "暴风雪"
-    if "snow" in t:
-        if "heavy" in t:
-            return "大雪"
-        if "moderate" in t:
-            return "中雪"
-        return "小雪"
-    if "sleet" in t or "ice pellet" in t or "ice pellets" in t:
-        return "雨夹雪"
-    if "freezing" in t and "rain" in t:
-        return "冻雨"
-    if "drizzle" in t:
-        return "毛毛雨"
-    if "rain" in t or "shower" in t:
-        if "torrential" in t or "heavy" in t:
-            return "大雨"
-        if "moderate" in t:
-            return "中雨"
-        return "小雨"
-    if "freezing fog" in t:
-        return "冻雾"
-    if "fog" in t:
-        return "雾"
-    if "mist" in t or "haze" in t:
-        return "薄雾"
-    if "overcast" in t:
-        return "阴天"
-    if "cloud" in t:
-        return "多云" if ("partly" in t or "patchy" in t) else "阴"
-    if "sunny" in t or "clear" in t:
-        return "晴"
-    if "wind" in t:
-        return "大风"
-    return "未知天气"
+def _cn_body(resp):
+    """中国天气网的响应头没写 charset，requests 会猜成 ISO-8859-1，这里按 UTF-8 读。"""
+    if not resp.encoding or resp.encoding.lower() in ("iso-8859-1", "ascii"):
+        resp.encoding = "utf-8"
+    return resp.text or ""
 
 
-def weather_desc_zh(cur):
-    """把 wttr.in 的 current_condition 翻成中文描述：优先用天气代码，再退回英文关键词。"""
-    code = cur.get("weatherCode")
+def cn_city_search(name):
+    """中国天气网：城市名 → [(城市代码, 中文名, 省份)]，查不到返回 []。
+
+    接口回来的是 `([{"ref":"101280501~guangdong~汕头~Shantou~…~广东"}])` 这种
+    "伪 JSON"：外面裹着一对括号，去掉再按 JSON 读。
+    """
+    q = (name or "").strip()
+    if not q:
+        return []
+    r = requests.get(CN_WEATHER_SEARCH, params={"cityname": q},
+                     headers=CN_WEATHER_HEADERS, timeout=6)
+    body = _cn_body(r).strip().strip("()")
+    rows = json.loads(body) if body else []
+    out = []
+    for row in rows or []:
+        parts = str((row or {}).get("ref") or "").split("~")
+        code = parts[0] if parts else ""
+        cname = parts[2] if len(parts) > 2 else ""
+        prov = parts[9] if len(parts) > 9 else ""
+        if code and cname:
+            out.append((code, cname, prov))
+    return out
+
+
+def cn_parse_sk(body):
+    """中国天气网那行 `var dataSK={...}` → (温度, 中文描述)；不是实况就返回 None。
+
+    单独拆出来是为了能离线自测（不用真联网）。
+    """
+    body = body or ""
+    if "dataSK" not in body:
+        # 国外城市（2 开头的代码）它只回一张"网页无法访问"的报错页，早点认出来
+        return None
+    i, j = body.find("{"), body.rfind("}")
+    if i < 0 or j <= i:
+        return None
     try:
-        code = int(code)
-    except (TypeError, ValueError):
-        code = None
-    if code in WWO_ZH:
-        return WWO_ZH[code]
-    desc = ""
-    try:
-        desc = (cur.get("weatherDesc") or [{}])[0].get("value", "")
+        data = json.loads(body[i:j + 1]) or {}
     except Exception:
-        desc = ""
-    return en_weather_to_zh(desc)
+        return None
+    temp = data.get("temp")
+    if temp in (None, "", "999"):        # 999 是它自己的"这儿没数据"占位
+        return None
+    desc = (data.get("weather") or "").strip() or "未知天气"
+    try:
+        return str(round(float(temp))), desc
+    except (TypeError, ValueError):
+        return None
 
 
-# open-meteo（WMO）天气代码 → 中文，作为 wttr.in 的备用数据源
+def cn_weather_now(code):
+    """中国天气网实况：城市代码 → (温度, 中文描述)；没取到返回 None。"""
+    r = requests.get(CN_WEATHER_SK.format(code=code),
+                     headers=CN_WEATHER_HEADERS, timeout=6)
+    return cn_parse_sk(_cn_body(r))
+
+
+# open-meteo（WMO）天气代码 → 中文，做中国天气网取不到时的兜底
 WMO_ZH = {
     0: "晴", 1: "晴间多云", 2: "多云", 3: "阴", 45: "雾", 48: "冻雾",
     51: "小毛毛雨", 53: "毛毛雨", 55: "大毛毛雨", 56: "冻毛毛雨", 57: "强冻毛毛雨",
@@ -3615,38 +3631,62 @@ WMO_ZH = {
 }
 
 
+def open_meteo_weather(name):
+    """兜底源 open-meteo：地名 → 坐标 → 实况，返回 (温度, 中文描述) 或 None。"""
+    g = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                     params={"name": name, "count": 1, "language": "zh"},
+                     timeout=5).json() or {}
+    found = g.get("results") or []
+    if not found:
+        return None
+    w = requests.get("https://api.open-meteo.com/v1/forecast",
+                     params={"latitude": found[0]["latitude"],
+                             "longitude": found[0]["longitude"],
+                             "current": "temperature_2m,weather_code"},
+                     timeout=5).json() or {}
+    cur = w.get("current") or {}
+    if cur.get("temperature_2m") is None:
+        return None
+    code = cur.get("weather_code")
+    desc = WMO_ZH.get(int(code), "未知天气") if code is not None else "未知天气"
+    return str(round(float(cur["temperature_2m"]))), desc
+
+
 def fetch_weather(city):
-    """查天气：先问 wttr.in（带重试），不行就用 open-meteo 兜底。
+    """查天气：先走国内源（中国天气网），不行再用 open-meteo 兜底。
 
     返回 (温度, 中文描述)；都失败返回 None。
     """
-    for attempt in range(2):
+    city = (city or "").strip()
+    variants = city_query_variants(city)
+    for attempt in range(2):        # 国内源偶尔也会抽一下，重试一次比退到墙外划算
         try:
-            r = requests.get(f"https://wttr.in/{city}?format=j1", timeout=12,
-                             headers={"User-Agent": "Mozilla/5.0"})
-            cur = (r.json() or {})["current_condition"][0]
-            return cur["temp_C"], weather_desc_zh(cur)
+            for q in variants:
+                hits = cn_city_search(q)
+                if hits:
+                    got = cn_weather_now(hits[0][0])
+                    if got:
+                        return got
+            break                   # 查询本身是通的（只是它这儿没有实况），不用重试
         except Exception:
             if attempt == 0:
-                time.sleep(0.6)
-    try:
-        g = requests.get("https://geocoding-api.open-meteo.com/v1/search",
-                         params={"name": city, "count": 1, "language": "zh"},
-                         timeout=10).json() or {}
-        found = g.get("results") or []
-        if found:
-            w = requests.get("https://api.open-meteo.com/v1/forecast",
-                             params={"latitude": found[0]["latitude"],
-                                     "longitude": found[0]["longitude"],
-                                     "current": "temperature_2m,weather_code"},
-                             timeout=10).json() or {}
-            cur = w.get("current") or {}
-            if cur.get("temperature_2m") is not None:
-                code = cur.get("weather_code")
-                desc = WMO_ZH.get(int(code), "未知天气") if code is not None else "未知天气"
-                return str(round(float(cur["temperature_2m"]))), desc
-    except Exception:
-        pass
+                time.sleep(0.4)
+    names = []
+    for q in variants:
+        names.append(q)
+        if not q.endswith(("市", "县", "区")):
+            # open-meteo 的中文库里多是"汕头市"这种全称，简称常搜不到，补一刀再试
+            names.append(q + "市")
+    for attempt in range(2):        # 兜底源偶尔抽一下（SSL 报错 / 超时），重试一次
+        for name in names:
+            try:
+                got = open_meteo_weather(name)
+                if got:
+                    return got
+            except Exception:
+                pass
+        if attempt == 0:
+            time.sleep(0.4)
     return None
 
 
@@ -3848,18 +3888,31 @@ class PetWindow(QWidget):
 
     def _apply_city(self, name):
         self.cfg["city"] = name
-        # 顺手记进"城市列表"，之后菜单里可以直接点着切换
-        cities = [c for c in (self.cfg.get("city_list") or []) if c != name]
-        cities.append(name)
-        self.cfg["city_list"] = cities[-12:]        # 最多留 12 个，别越堆越长
+        # 顺手记进"城市列表"，之后菜单里可以直接点着切换。
+        # 刚选中的这个排**最前面**（列表的第一位永远是当前城市，一眼看到自己在用哪个）
+        others = [c for c in (self.cfg.get("city_list") or []) if c and c != name]
+        self.cfg["city_list"] = ([name] + others)[:12]   # 最多留 12 个，别越堆越长
         self.save_config()              # 立刻落盘，下次启动就是这个默认城市
         self.say(f"好咯，城市换成{name}啦")
         self._get_weather()
         self._notify_console()          # 设置窗口开着的话，那一排城市立刻跟上
 
+    def cities_ordered(self):
+        """城市列表：**当前城市永远排最前面**，其余保持原顺序、不重复。
+
+        菜单和设置页都读这个 —— 不管 config.json 里是怎么排的（老配置的当前城市
+        可能躺在最后），显示出来总是"选中的那个在第一"。
+        """
+        cur = (self.cfg.get("city") or "").strip()
+        out = []
+        for c in ([cur] if cur else "") + list(self.cfg.get("city_list") or []):
+            if c and c not in out:
+                out.append(c)
+        return out
+
     def remove_city_dialog(self):
         """从城市列表里删掉一个（最后一个删不掉，总得留一个用）。"""
-        cities = [c for c in (self.cfg.get("city_list") or []) if c]
+        cities = self.cities_ordered()
         if len(cities) <= 1:
             self.say("就剩这一个城市啦，删下去可要空咯")
             return
@@ -3868,9 +3921,11 @@ class PetWindow(QWidget):
                                             0, False, Qt.WindowType.WindowStaysOnTopHint)
         if not ok or not pick:
             return
-        self.cfg["city_list"] = [c for c in cities if c != pick]
+        left = [c for c in cities if c != pick]
+        self.cfg["city_list"] = left
         if self.cfg.get("city") == pick:
-            self.cfg["city"] = self.cfg["city_list"][-1]
+            # 城市列表是"当前的在最前"，删掉当前的就顶最前面那个上来
+            self.cfg["city"] = left[0] if left else self.cfg.get("city", "汕头")
         self.save_config()
         self.say(f"{pick} 拿走咯")
         self._notify_console()
@@ -4140,7 +4195,8 @@ class PetWindow(QWidget):
         self._bal_peek_until = 0.0       # 放歌时快速双击 → 临时看余额
         self._peek_pending = False        # 双击要的那一眼，等余额回来再冒泡
         self._key_hint_shown = False      # "没配 Key，双击看不了余额"这句每次启动只提醒一次
-        self._last_click_ms = -99999     # 快速双击判定
+        self._last_click_ms = -99999     # 快速双击判定（墙上时间，毫秒）
+        self._single_pending = None      # 单击欠着的那句台词：(到点秒, 说话函数)，双击就撤销
         self._dc_hold_until = 0.0        # 双击之后这几秒不让自言自语插嘴（别盖住刚弹的那一眼）
         self._trigger_until = 0.0        # 触发类的话说到什么时候：这段时间里闲话让位（见 say）
         self._bal_wait_until = 0.0       # 余额泡泡等"触发类的话"说完再顶上来（见 show_balance_bubble）
@@ -6494,6 +6550,15 @@ class PetWindow(QWidget):
                 _, text, inner = self._pending_bubbles.pop(due[0])
                 self.say(text, inner=inner)
 
+        # 单击欠着的那句台词：等双击判定窗口过去才冒（窗口内来了第二下就撤销）
+        if self._single_pending and self._secs() >= self._single_pending[0]:
+            _when, speak = self._single_pending
+            self._single_pending = None
+            try:
+                speak()
+            except Exception:
+                pass
+
         # 城市定位 / 搜索结果
         if self._city_queue:
             city = self._city_queue.pop(0)
@@ -7345,6 +7410,7 @@ class PetWindow(QWidget):
                 self._press_on_lyric_btn = None
                 self._lyric_btn_pressed = None
                 self._last_click_ms = -99999    # 这一下不算点击，别带出假的单击 / 双击
+                self._single_pending = None     # 点按钮也不是单击：欠着的那句台词撤销
                 self.last_press_pos = None
                 self.drag_start_pos = None
                 # 按的哪颗、松手时还在哪颗上，才算真的点了它
@@ -7368,15 +7434,17 @@ class PetWindow(QWidget):
                 # 锁定着按住了乱划：什么都不做（不然会被当成单击/双击，蹦一句话或者弹窗口）
                 self._drag_blocked = False
                 self._last_click_ms = -99999      # 这一下也不算"上一次点击"，免得带出假双击
+                self._single_pending = None       # 同上：拖了一把，就不算单击
             else:
                 # 用**墙上时间**判双击：以前用桌宠自己的动画时钟（self.t × tick_ms），
                 # 一旦动画停一下 / 卡一下，时钟就走得比真实时间慢，两次隔了 0.8 秒的点击
                 # 也会被当成"快速双击"。
                 now_ms = time.time() * 1000.0
-                quick = (now_ms - self._last_click_ms) <= 380
+                quick = (now_ms - self._last_click_ms) <= self._double_click_window_ms()
                 self._last_click_ms = now_ms
                 if quick:
                     self._last_click_ms = -99999      # 双击只算一次
+                    self._single_pending = None       # 上一拍欠着的那句单击台词，撤销
                     self._on_double_click()
                 else:
                     self._on_single_click()
@@ -7384,21 +7452,47 @@ class PetWindow(QWidget):
             self.drag_start_pos = None
 
     def _on_single_click(self):
-        """单击：蹦跳 + 回嘴 + 顺手刷一下余额。"""
+        """单击：蹦跳 + 回嘴 + 顺手刷一下余额。
+
+        蹦跳和静默刷新**立刻**做（手感不能等），**台词压到双击判定窗口之后**
+        才冒 —— 想快速双击的人不会再被先顶一句台词。这就是"分得开、又没感觉"：
+        看得见的部分是零延迟，只有那句可能在 0.3~0.8 秒内被撤销的话在等。
+        """
         self.refresh_balance(silent=True)      # 点一下顺手刷新余额
         if self._music_playing():
             # 放歌时报"在放什么"，不用随机台词把歌词顶掉
             self.jump_t = 1.0
             words = self.lines_for_say("MUSIC_CLICK_LINES")
             if words:
-                self.say(random.choice(words).format(song=self._song_label()),
-                         seconds=3.6, again=True)
+                line = random.choice(words)
+                self._defer_single_line(lambda: self.say(
+                    line.format(song=self._song_label()), seconds=3.6, again=True))
             return
         if random.random() < 0.7:
             self.jump_t = 1.0
         words = self.lines_for_say("REACT_LINES")
         if words and random.random() < 0.6:
-            self.say(random.choice(words))
+            line = random.choice(words)
+            self._defer_single_line(lambda: self.say(line))
+
+    def _double_click_window_ms(self):
+        """双击判定窗口：跟系统设的双击间隔走，下限 500 毫秒、上限 800 毫秒。
+
+        2026-09-14 之前这里写死 **380 毫秒** —— 比系统还严，手速慢一点的人双击
+        会被拆成两次单击（多冒一句台词），误触很高。现在跟系统走，并且**下限提到
+        500 毫秒**：这台机器控制面板里设的是 400 毫秒，只照系统来几乎等于没改。
+        比窗口短 = 快速双击（撤销欠着的那句单击台词）；比窗口长 = 两次独立单击。
+        """
+        ms = 500
+        try:
+            ms = int(QApplication.doubleClickInterval()) or 500
+        except Exception:
+            pass
+        return max(500, min(800, ms))
+
+    def _defer_single_line(self, speak):
+        """把单击要说的那句话记下来，等判定窗口过去再冒（窗口内双击就撤销）。"""
+        self._single_pending = (self._secs() + self._double_click_window_ms() / 1000.0, speak)
 
     def _on_double_click(self):
         """快速双击：按一级菜单「快速双击」里选的那样冒一下（默认看 5 秒余额）。
@@ -7742,10 +7836,9 @@ class PetWindow(QWidget):
         weather_menu.addAction("添加城市（联网搜索）", self.search_city_dialog)
         weather_menu.addSeparator()
         # 城市列表：加过的城市都在这儿，点一下就切过去（√ 是当前用的）
+        # 顺序固定成"当前城市排第一"（选谁谁就上第一，见 _apply_city / cities_ordered）
         cur_city = self.cfg.get("city", "汕头")
-        city_list = [c for c in (self.cfg.get("city_list") or []) if c]
-        if cur_city not in city_list:
-            city_list.append(cur_city)
+        city_list = self.cities_ordered()
         for city in city_list:
             a = weather_menu.addAction(city)
             a.setCheckable(True)
