@@ -339,37 +339,6 @@ pyinstaller --noconfirm --onefile --windowed --name 大肥鱼桌宠 --add-data "
 PyInstaller 把本机其它运行时里的 ICU（`icuuc.dll` / `icudt*.dll`）也打进了包，和 Qt 期望的
 系统 ICU 版本冲突；`桌宠.spec` 里已经加了过滤，直接用它打包就不会踩这个坑。
 
-## 改完代码怎么发版（维护者）
-
-1. 双击仓库同级的「发布到GitHub.bat」（或手动提交）：
-   ```bash
-   git add -A && git commit -m "说明这次改了什么" && git push origin main
-   ```
-   网络不好时加参数：`git -c http.sslBackend=openssl -c protocol.version=0 push origin main`
-2. 要发新版本（带 exe 下载）时重新打包并建 Release：
-   ```bash
-   pyinstaller --noconfirm --clean 桌宠.spec
-   gh release create v1.0.8 "dist/大肥鱼桌宠.exe" --title "大肥鱼桌宠 v1.0.8" --notes "这次改了什么"
-   ```
-   版本号按现有最高版本 +1（桌面上的「发布到GitHub.bat」会自动算好，不用手动记）；
-   内容没变就别重发，版本号保持连续、不跳号。
-3. **微信版 zip 只做在本地**（`…\outputs\大肥鱼桌宠-vX.Y.Z-微信版.zip`，
-   **里面就两样：Windows 安装版 exe（`大肥鱼桌宠-安装版-vX.Y.Z.exe`）+ 使用说明.txt（教程）**，
-   不放源码、不放别的东西），**不传到 GitHub**。
-   **GitHub Release 里也只放 `dafeiyu-pet-setup.exe`（安装版）**，绿色版不再上传
-   （v1.0.12 及更早的老版本里只有绿色版，保持原样没动）。
-   单独补一份本地 zip：`powershell -File F:\Codex\work\publish-pet.ps1 -ZipOnly -Version 1.0.16`
-
-> 平时只管跟 Codex 说一句「推送」：它会跑 `F:\Codex\work\publish-pet.ps1`
-> （提交 → 推送 → 打包 → 发新版），Release 里只放安装版，
-> 微信 zip 留在 `outputs\` 本地，回复里用**可以直接点的链接**给出（里面只有安装版 + 教程）。
-> 桌面上那个「发布到GitHub.bat」也是同一个脚本，但它遇到"没有代码改动"会整段跳过（连 Release 都不发），
-> 需要补发一版时给它加 `-Force`。
-
-> 改了右键菜单（尤其新增带二级菜单的项）之后，记得用真鼠标点一遍二级菜单：
-> 这台的 Windows 有时不会把鼠标移动消息送给弹出菜单，得确认「悬停兜底」（`_menu_hover_watch`）
-> 仍然能把子菜单弹出来、点得中。
-
 ## 更换形象
 
 **方法一（推荐，不用改文件）**：右键菜单「形象 → **我的形象库…** → 上传新形象…」，
