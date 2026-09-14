@@ -2811,7 +2811,23 @@ class PetWindow(QWidget):
             "menu_debug": False,
             "custom_sounds": {},
             "still_face_cursor": False,
-            "mem_skip_foreground": True     # 百宝箱·回收内存：不动前台程序（防卡顿）
+            "mem_skip_foreground": True,    # 百宝箱·回收内存：不动前台程序（防卡顿）
+            # 设置窗口自己的样子（背景 / 标题 / 图标）。跟桌宠本体无关，
+            # 全是 ui_console.BACKDROP_DEFAULTS 里那几个键，界面那边负责读写。
+            "console_bg_path": "",
+            "console_bg_fit_window": True,
+            "console_bg_focus": "cc",
+            "console_bg_bright": 0,
+            "console_bg_blur": 0,
+            "console_bg_scrim": 34,
+            "console_brand_title": "大肥鱼桌宠",
+            "console_logo_path": "",
+            "console_accent": "",
+            "console_card_alpha": 100,
+            "console_card_radius": 12,
+            "console_remember_geo": True,
+            "console_geo": "",
+            "console_start_page": "balance"
         }
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
@@ -7693,6 +7709,9 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     install_qt_translator(app)      # Qt 自带按钮（OK / Cancel…）显示中文
+    # 滚轮别改滑块 / 下拉的值：鼠标划过去随手一滚就变了，那是误触
+    if ui_console:
+        ui_console.install_wheel_guard(app)
     # 窗口 / 任务栏图标：以前一个 setWindowIcon 都没有，任务栏上就是一只空白方块
     if ui_console:
         _ico = ui_console.bundle_icon(BUNDLE_DIR)
@@ -7717,6 +7736,15 @@ def main():
         server = None
 
     w = PetWindow()
+    # 设置窗口里挑的强调色 / 卡片样式是"整个界面"的：这里先套一次，
+    # 免得从右键菜单直接开形象库那种老对话框时用的还是默认配色。
+    if ui_console:
+        try:
+            ui_console.set_accent(w.cfg.get("console_accent"))
+            ui_console.set_card_style(w.cfg.get("console_card_alpha"),
+                                      w.cfg.get("console_card_radius"))
+        except Exception:
+            pass
 
     if server is not None:
         def on_new_connection():

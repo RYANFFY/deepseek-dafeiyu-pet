@@ -14,19 +14,25 @@
 界面逻辑全在本文件里。
 """
 
+import contextlib
 import ctypes
 import os
 import time
 from string import Template
 
 from PySide6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent,
-                            QParallelAnimationGroup, QPoint, QPropertyAnimation,
-                            QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation)
-from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup,
-                               QComboBox, QFrame, QHBoxLayout, QLabel,
-                               QPushButton, QScrollArea, QSizePolicy, QSlider,
-                               QStackedWidget, QVBoxLayout, QWidget)
+                            QByteArray, QObject, QParallelAnimationGroup, QPoint,
+                            QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer,
+                            QUrl, QVariantAnimation)
+from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QPainter,
+                           QPainterPath, QPixmap, QWheelEvent)
+from PySide6.QtWidgets import (QAbstractButton, QAbstractScrollArea,
+                               QAbstractSlider, QApplication, QButtonGroup,
+                               QColorDialog, QComboBox, QFileDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QPushButton, QScrollArea, QScrollBar,
+                               QSizePolicy, QSlider, QStackedWidget,
+                               QVBoxLayout, QWidget)
 
 try:
     from PySide6.QtSvg import QSvgRenderer
@@ -34,9 +40,19 @@ try:
 except Exception:          # 缺 QtSvg 也不该让桌宠起不来：图标位置留空就是
     SVG_OK = False
 
+# 视频背景（QtMultimedia）。缺了就只是"视频那一档用不了"，图片背景照常。
+try:
+    from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
+    MEDIA_OK = True
+except Exception:
+    QMediaPlayer = QVideoSink = None
+    MEDIA_OK = False
+
 
 # 界面自己的版本号。发版时跟着一起改（关于页和侧边栏底部都读它）。
-APP_VERSION = "1.1.0"
+# 注意：**没推送就不算开新版本** —— 同一版里的返工都算在同一个号上
+# （2026-09-14 主人定的：这个会话里一直叫 1.1.1，等推送那天再说下一版）。
+APP_VERSION = "1.1.1"
 
 # 最小化动画时长（毫秒）：照着 Windows 那套"往任务栏收"的感觉来
 MINIMIZE_ANIM_MS = 190
@@ -101,8 +117,54 @@ THEMES = {
 
 THEME_MODES = [("system", "跟随系统"), ("light", "亮色"), ("dark", "暗色")]
 
+# --------------------------------------------------------------------------- #
+# 控制台自己的样子（背景 / 标题 / 图标）
+# --------------------------------------------------------------------------- #
+# 全部存在 config.json 里。这些只影响设置窗口自己，跟桌宠本体没关系 ——
+# 键名统一带 console_ 前缀，别跟上面那批 pet 的设置混在一起。
+BACKDROP_DEFAULTS = {
+    "console_bg_path": "",            # 底图文件；空 = 没有背景（图片还是视频看后缀）
+    "console_bg_fit_window": True,    # 自动适配窗口：开着铺满并可挑截取位置，关掉完整显示
+    "console_bg_focus": "cc",         # 铺满时留哪一块（九宫格：tl / tc / tr / cl / cc / …）
+    "console_bg_bright": 0,           # -100（压暗）~ +100（提亮）
+    "console_bg_blur": 0,             # 0 ~ 40：越大越糊
+    "console_bg_scrim": 34,           # 0 ~ 100%：蒙在底图上的那层底色，越高字越清楚
+    "console_brand_title": "大肥鱼桌宠",
+    "console_logo_path": "",
+    "console_accent": "",             # 强调色；空 = 跟主题默认
+    "console_card_alpha": 100,        # 卡片不透明度 %（调低背景能从卡片里透出来）
+    "console_card_radius": 12,        # 卡片圆角
+    "console_remember_geo": True,     # 记住窗口大小和位置
+    "console_geo": "",                # 记下来的几何（base64，不是给人看的）
+    "console_start_page": "balance",  # 打开时先看哪一页
+}
+
+# 铺满时"留哪一块"的九宫格（先竖后横：tl = 上左，cc = 正中）。
+BG_FOCUS = [("tl", "左上"), ("tc", "上"), ("tr", "右上"),
+            ("cl", "左"), ("cc", "正中"), ("cr", "右"),
+            ("bl", "左下"), ("bc", "下"), ("br", "右下")]
+# 强调色的现成配色。第一项是空串 = 不覆盖，跟主题默认那套走。
+ACCENT_PRESETS = [("", "跟主题默认"), ("#3b7bf6", "蓝"), ("#17a2b8", "青"),
+                  ("#22a06b", "绿"), ("#8b5cf6", "紫"), ("#f0883e", "橙"),
+                  ("#e8608c", "玫红")]
+IMAGE_FILTER = "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+VIDEO_FILTER = "视频 (*.mp4 *.webm *.mkv *.mov *.avi *.m4v)"
+# 背景只留一个"导入文件"：图片和视频一起给，是哪种看后缀，不让用户再选一次类型
+MEDIA_FILTER = ("图片或视频 (*.png *.jpg *.jpeg *.webp *.bmp *.gif "
+                "*.mp4 *.webm *.mkv *.mov *.avi *.m4v *.wmv)"
+                ";;图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+                ";;视频 (*.mp4 *.webm *.mkv *.mov *.avi *.m4v *.wmv)")
+VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v", ".wmv")
+VIDEO_FRAME_S = 0.066          # 视频背景最多 15 帧/秒：再快只是白烧 CPU
+BACKDROP_MAX_PX = 4096         # 底图最长边超过这个先缩一刀，免得一张 8K 图把内存吃光
+
 _mode = "system"
 _current = dict(THEMES["light"])
+# 用户自己挑的强调色 / 卡片样式。放模块级是因为 build_qss() 和老的对话框都读这儿，
+# 而且这些设置本来就是"整个界面一起变"，不是某一页的事。
+_accent_pick = None
+_card_alpha = 100
+_card_radius = 12
 
 
 def system_scheme():
@@ -137,16 +199,94 @@ def set_mode(mode):
     return refresh_tokens()
 
 
+def _mix(color, other, amount):
+    """把 color 往 other 混 amount（0~1）。强调色的 hover / 选中底都是这么算的。"""
+    a = max(0.0, min(1.0, float(amount)))
+    return QColor(
+        int(round(color.red() * (1 - a) + other.red() * a)),
+        int(round(color.green() * (1 - a) + other.green() * a)),
+        int(round(color.blue() * (1 - a) + other.blue() * a)),
+        color.alpha())
+
+
+def set_accent(color):
+    """用户挑的强调色；传空 = 跟主题默认。
+
+    只让他挑**一个**颜色：hover 和选中底是算出来的。要是让他一格格配四五个色，
+    十有八九配出看不清的组合，那不是自定义、是自己给自己挖坑。
+    """
+    global _accent_pick
+    text = str(color or "").strip()
+    probe = QColor(text)
+    _accent_pick = text if (text and probe.isValid()) else None
+    return refresh_tokens()
+
+
+def get_accent():
+    return _accent_pick
+
+
+def set_card_style(alpha=None, radius=None):
+    """卡片的不透明度 / 圆角（样式表里的 $card、$card_radius 两个格子）。"""
+    global _card_alpha, _card_radius
+    if alpha is not None:
+        try:
+            _card_alpha = max(20, min(100, int(alpha)))
+        except (TypeError, ValueError):
+            pass
+    if radius is not None:
+        try:
+            _card_radius = max(0, min(24, int(radius)))
+        except (TypeError, ValueError):
+            pass
+
+
+def card_style():
+    return _card_alpha, _card_radius
+
+
+def _rgba(color, alpha_percent=100):
+    """QSS 里的 rgba()。亮 / 暗两套底色都是实色，卡片要半透明只能自己拼字符串。"""
+    c = QColor(color)
+    alpha = int(round(255 * max(0, min(100, int(alpha_percent))) / 100))
+    return "rgba(%d, %d, %d, %d)" % (c.red(), c.green(), c.blue(), alpha)
+
+
+def _accent_into(palette, base):
+    """把用户挑的强调色套到一套调色板上（refresh_tokens 里调）。"""
+    accent = QColor(_accent_pick)
+    if not accent.isValid():
+        return
+    dark = QColor(base["bg"]).lightness() < 128
+    palette["accent"] = accent.name()
+    # hover：亮色主题往暗走、暗色主题往亮走，"划过去"两边都看得出变化
+    palette["accent_hover"] = _mix(
+        accent, QColor("#ffffff") if dark else QColor("#000000"), 0.16).name()
+    # 选中底：主色掺一丢丢到卡片底色里（掺多了对比度就没了）
+    palette["accent_soft"] = _mix(accent, QColor(base["surface"]), 0.82).name()
+    # 主色上的文字：亮主色配黑字、深主色配白字
+    palette["accent_text"] = "#0d1220" if accent.lightness() > 150 else "#ffffff"
+
+
 def refresh_tokens():
     """按当前模式重算调色板，返回实际生效的亮/暗。"""
     global _current
     effective = system_scheme() if _mode == "system" else _mode
-    _current = dict(THEMES[effective])
+    base = THEMES[effective]
+    _current = dict(base)
+    if _accent_pick:
+        _accent_into(_current, base)
     return effective
 
 
 def tokens():
     return _current
+
+
+def default_accent():
+    """主题自带的强调色（不受用户挑的那一个影响）。色卡上那颗「默认」用它。"""
+    effective = system_scheme() if _mode == "system" else _mode
+    return THEMES[effective]["accent"]
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +336,21 @@ def icon(name, color, size=18):
     return QIcon(icon_pixmap(name, color, size))
 
 
+def swatch_pixmap(color, size=18):
+    """色卡上那一颗（2 倍分辨率，圆角方块）。"""
+    px = int(size) * 2
+    pm = QPixmap(px, px)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(color))
+    painter.drawRoundedRect(QRectF(1.0, 1.0, px - 2.0, px - 2.0), 6.0, 6.0)
+    painter.end()
+    pm.setDevicePixelRatio(2.0)
+    return pm
+
+
 def clear_icon_cache():
     """换主题时清一遍（同一张图要按新颜色重画）。"""
     _ICON_CACHE.clear()
@@ -220,6 +375,123 @@ def bundle_icon(bundle_dir):
     return QIcon()
 
 
+def load_image(path):
+    """读一张图（QImage）。读不出来给 None —— 用户把文件删了 / 挪走了也不能让窗口崩。"""
+    try:
+        if not path or not os.path.exists(path):
+            return None
+        img = QImage(path)
+        if img.isNull():
+            return None
+        # 超大图先缩一刀再进后面的流程：一张 8000px 的图裁完就得 100MB 内存
+        if max(img.width(), img.height()) > BACKDROP_MAX_PX:
+            img = img.scaled(BACKDROP_MAX_PX, BACKDROP_MAX_PX,
+                             Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        return img
+    except Exception:
+        return None
+
+
+def bg_kind_of(path):
+    """这个文件是图片还是视频 —— 只看后缀，不再让用户自己选一次。"""
+    return "video" if os.path.splitext(str(path or ""))[1].lower() in VIDEO_EXTS \
+        else "image"
+
+
+def scale_cover(img, width, height, focus="cc"):
+    """等比缩放到**刚好盖住** width×height，再裁一张正好那么大的。
+
+    focus 是九宫格（先竖后横）：tl 留左上、cc 留正中、br 留右下 ——
+    竖图铺进横窗口时"想留上半身还是下半身"就靠它。
+    """
+    if img is None or img.isNull() or width <= 0 or height <= 0:
+        return img
+    scaled = img.scaled(width, height,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation)
+    focus = str(focus or "cc")
+    hx = {"l": 0.0, "c": 0.5, "r": 1.0}.get(focus[1:2], 0.5)
+    vy = {"t": 0.0, "c": 0.5, "b": 1.0}.get(focus[0:1], 0.5)
+    x = int(round(max(0, scaled.width() - width) * hx))
+    y = int(round(max(0, scaled.height() - height) * vy))
+    return scaled.copy(x, y, width, height)
+
+
+def brighten_image(img, amount):
+    """亮暗度 -100 ~ +100：整张蒙一层黑或白。比逐像素算快一个数量级。"""
+    amount = max(-100, min(100, int(amount or 0)))
+    if img is None or img.isNull() or amount == 0:
+        return img
+    out = QImage(img)
+    painter = QPainter(out)
+    color = QColor("#ffffff") if amount > 0 else QColor("#000000")
+    color.setAlpha(int(abs(amount) * 255 / 100))
+    painter.fillRect(out.rect(), color)
+    painter.end()
+    return out
+
+
+def blur_image(img, radius):
+    """模糊：**缩到 1/s 再放大回来**，做两遍。
+
+    直接卷一遍高斯太慢（125% 缩放下 1150×800 要几百毫秒，拖滑块会一顿一顿的）；
+    而 Qt 在大比例缩小时走的是面积平均，等效一次盒式模糊，代价只有几毫秒。
+    缩-放做两遍，把盒式那点方块感磨掉，肉眼分不出来。
+    """
+    radius = max(0, int(radius or 0))
+    if img is None or img.isNull() or radius <= 0:
+        return img
+    out = img
+    factor = 1.0 + radius * 0.30
+    for _ in range(2):
+        w = max(1, int(round(out.width() / factor)))
+        h = max(1, int(round(out.height() / factor)))
+        if w >= out.width() and h >= out.height():
+            return out
+        out = out.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+        out = out.scaled(img.width(), img.height(),
+                         Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    return out
+
+
+def pick_accent(img):
+    """从一张图里挑一个能当强调色的颜色。
+
+    做法很土但够用：缩到 64×64，按色相分 12 个桶，把"鲜艳又亮"的像素按权重
+    累加，挑权重最大的那一桶取平均色。太暗的会提亮一档 —— 深蓝当强调色，
+    按钮上那几个字会糊成一团。
+    """
+    if img is None or img.isNull():
+        return ""
+    small = img.scaled(64, 64, Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    buckets = {}
+    for y in range(small.height()):
+        for x in range(small.width()):
+            color = small.pixelColor(x, y)
+            if color.alpha() < 32:
+                continue
+            hue, sat, val, _a = color.getHsv()
+            if hue < 0 or sat < 60 or val < 60:      # 灰的、快黑的，不算
+                continue
+            weight = sat * val
+            r, g, b, n = buckets.get(hue // 30, (0.0, 0.0, 0.0, 0.0))
+            buckets[hue // 30] = (r + color.red() * weight,
+                                  g + color.green() * weight,
+                                  b + color.blue() * weight, n + weight)
+    if not buckets:
+        return ""
+    _key, (r, g, b, n) = max(buckets.items(), key=lambda kv: kv[1][3])
+    color = QColor(int(r / n), int(g / n), int(b / n))
+    hue, sat, val, _a = color.getHsv()
+    if val < 175:
+        color = QColor.fromHsv(max(0, hue), sat, 175)
+    return color.name()
+
+
 def style_dialog(dlg, bundle_dir=None):
     """把设置窗口那套配色套到老对话框上（形象库 / 上传形象 / 扫描应用 / 各种小窗口）。
 
@@ -233,6 +505,53 @@ def style_dialog(dlg, bundle_dir=None):
     ico = bundle_icon(bundle_dir)
     if not ico.isNull():
         dlg.setWindowIcon(ico)
+
+
+# --------------------------------------------------------------------------- #
+# 滚轮：不许它改滑块 / 下拉的值
+# --------------------------------------------------------------------------- #
+class _WheelGuard(QObject):
+    """鼠标划过去随手一滚，数值 / 选项就变了 —— 那是误触，不是操作。
+
+    处理办法不是简单吞掉：**把这一下转给外面的滚动区**（页面照常滚），
+    外面没有滚动区（比如音量那个小窗口）才当没发生。
+    滚动条自己的滚轮不拦 —— 那是正常的滚动。
+    """
+
+    def eventFilter(self, obj, ev):
+        if ev.type() != QEvent.Type.Wheel:
+            return False
+        if not isinstance(obj, (QAbstractSlider, QComboBox)):
+            return False
+        if isinstance(obj, QScrollBar):
+            return False
+        area = obj.parentWidget()
+        while area is not None and not isinstance(area, QAbstractScrollArea):
+            area = area.parentWidget()
+        if area is not None and area.viewport() is not obj:
+            try:
+                QApplication.sendEvent(area.viewport(), QWheelEvent(
+                    ev.position(), ev.globalPosition(), ev.pixelDelta(),
+                    ev.angleDelta(), ev.buttons(), ev.modifiers(),
+                    ev.phase(), ev.inverted()))
+            except Exception:
+                pass
+        return True
+
+
+_WHEEL_GUARD = None
+
+
+def install_wheel_guard(app):
+    """整个程序装一遍：滑块 / 下拉不再被滚轮改值（多次调用也只装一个）。"""
+    global _WHEEL_GUARD
+    if _WHEEL_GUARD is None:
+        _WHEEL_GUARD = _WheelGuard()
+    try:
+        app.installEventFilter(_WHEEL_GUARD)
+    except Exception:
+        pass
+    return _WHEEL_GUARD
 
 
 # --------------------------------------------------------------------------- #
@@ -258,7 +577,7 @@ QLabel#faint { color: $text_faint; font-size: 11px; }
 QLabel#ok { color: $ok; font-size: 12px; }
 QLabel#warn { color: $warn; font-size: 12px; }
 QLabel#danger { color: $danger; font-size: 12px; }
-QFrame#card { background: $surface; border: 1px solid $border; border-radius: 12px; }
+QFrame#card { background: $card; border: 1px solid $border; border-radius: $card_radius; }
 QFrame#divider { background: $border; border: none; max-height: 1px; }
 QFrame#segBox { background: $surface_alt; border: none; border-radius: 9px; }
 QPushButton#segBtn { background: transparent; border: none; border-radius: 7px;
@@ -281,6 +600,28 @@ QPushButton#danger:hover { background: $surface_alt; border-color: $danger;
                            color: $danger; }
 QPushButton#winBtn { background: transparent; border: none; padding: 5px; border-radius: 6px; }
 QPushButton#winBtn:hover { background: $surface_alt; }
+/* 「控制台外观」里那排色卡：色块本身不带字，选中靠一圈描边 */
+QPushButton#swatch { background: transparent; border: 2px solid transparent;
+                     border-radius: 8px; padding: 0px; }
+QPushButton#swatch:hover { background: transparent; border-color: $text_faint; }
+QPushButton#swatch:checked { background: transparent; border-color: $text; }
+QPushButton#swatchText, QPushButton#swatchIcon { background: $surface;
+                     border: 1px solid $border; border-radius: 8px;
+                     padding: 0px 8px; color: $text; font-size: 12px; }
+QPushButton#swatchText:hover, QPushButton#swatchIcon:hover { background: $surface_alt; }
+QPushButton#swatchText:checked { border: 2px solid $text; }
+/* 「截取位置」那 9 个小格：选中那格填成主色 */
+QPushButton#alignCell { background: $surface_alt; border: 1px solid $border;
+                        border-radius: 5px; padding: 0px; }
+QPushButton#alignCell:hover { border-color: $accent; }
+QPushButton#alignCell:checked { background: $accent; border-color: $accent; }
+QPushButton#alignCell:disabled { background: transparent; border-color: $border; }
+/* 滑块右边那个数字：点一下能直接填数（省得拖半天） */
+QPushButton#numBox { background: transparent; border: 1px solid transparent;
+                     border-radius: 6px; padding: 0px; color: $text_dim;
+                     font-size: 12px; }
+QPushButton#numBox:hover { background: $surface_alt; border-color: $border;
+                           color: $text; }
 QComboBox { background: $surface_alt; border: 1px solid $border; border-radius: 8px;
             padding: 5px 8px; color: $text; font-size: 12px; min-width: 132px; }
 QComboBox:hover { background: $surface; border-color: $accent; }
@@ -330,10 +671,31 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: t
 """)
 
 
-def build_qss():
+# 用户设了背景图 / 视频时追加的一段：把"实色底"换成"透一层"，
+# 底图才看得见；卡片还是实心的，字不会跟着糊。
+# 只加在控制台窗口上（build_qss(glass=True)），老对话框照旧用实色底。
+_QSS_GLASS = Template("""
+QFrame#shell { background: transparent; }
+QFrame#sidebar { background: $sidebar_glass; }
+QScrollArea { background: transparent; }
+QWidget#pageInner { background: transparent; }
+QDialog { background: $dialog_bg; }
+""")
+
+
+def build_qss(glass=False):
     data = dict(tokens())
     data["chevron"] = icon_path("ui.chevron-down").replace("\\", "/")
-    return _QSS.substitute(data)
+    # 卡片那两个格子：默认就是实心 + 12px 圆角，用户在「控制台外观」里能改
+    data["card"] = _rgba(tokens()["surface"], _card_alpha)
+    data["card_radius"] = "%dpx" % int(_card_radius)
+    out = _QSS.substitute(data)
+    if glass:
+        out += _QSS_GLASS.substitute(dict(
+            data,
+            sidebar_glass=_rgba(tokens()["sidebar"], 62),
+            dialog_bg=tokens()["bg"]))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -421,6 +783,121 @@ class Segmented(QWidget):
             self._group.setExclusive(True)
             return
         if not btn.isChecked():
+            btn.setChecked(True)
+
+
+class ColorSwatches(QWidget):
+    """一排色卡 + 「自定义…」+ 「从背景取色」。
+
+    比下拉框少一步：色块点一下就是它，不用先展开再挑。
+    「自定义…」那颗自己也能显示颜色 —— 当前颜色是用户自己挑的（不在预设里），
+    它会被点亮并变成那个色，一眼就知道现在用的是哪颗。
+    """
+
+    def __init__(self, current, on_pick, on_custom, on_from_bg, parent=None):
+        super().__init__(parent)
+        self._on_pick = on_pick
+        self._current = str(current or "")
+        box = QHBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(5)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons = {}
+        for value, label in ACCENT_PRESETS:
+            btn = QPushButton()
+            btn.setObjectName("swatch")
+            btn.setCheckable(True)
+            btn.setFixedSize(26, 26)
+            btn.setIconSize(QSize(18, 18))
+            btn.setIcon(QIcon(swatch_pixmap(value or default_accent(), 18)))
+            btn.setToolTip(label)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, v=value: self._on_pick(v))
+            self._group.addButton(btn)
+            box.addWidget(btn)
+            self._buttons[value] = btn
+
+        self._custom = QPushButton("自定义…")
+        self._custom.setObjectName("swatchText")
+        self._custom.setCheckable(True)
+        self._custom.setFixedHeight(26)
+        self._custom.setIconSize(QSize(15, 15))
+        self._custom.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._custom.setToolTip("自己挑一个 —— 取色盘右边那颗吸管能吸屏幕上的任意一点")
+        self._custom.clicked.connect(lambda _=False: on_custom())
+        self._group.addButton(self._custom)
+        box.addWidget(self._custom)
+
+        self._from_bg = QPushButton()
+        self._from_bg.setObjectName("swatchIcon")
+        self._from_bg.setFixedSize(26, 26)
+        self._from_bg.setIconSize(QSize(16, 16))
+        self._from_bg.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._from_bg.setToolTip("从背景图里挑一个颜色")
+        self._from_bg.setIcon(icon("ui.pipette", tokens()["text"], 16))
+        self._from_bg.clicked.connect(lambda _=False: on_from_bg())
+        box.addWidget(self._from_bg)
+        self.set_value(current)
+
+    def set_value(self, value):
+        """把色卡摆成"现在用的是哪个"（自己挑的颜色点亮「自定义…」）。"""
+        value = str(value or "")
+        self._current = value
+        default_btn = self._buttons.get("")
+        if default_btn is not None:
+            default_btn.setIcon(QIcon(swatch_pixmap(default_accent(), 18)))
+        if value and value not in self._buttons:
+            self._custom.setIcon(QIcon(swatch_pixmap(value, 15)))
+            self._custom.setToolTip(f"自定义 {value}（点了可以再换）")
+            self._custom.setChecked(True)
+            return
+        self._custom.setIcon(QIcon(swatch_pixmap(tokens()["accent"], 15)))
+        self._custom.setToolTip("自己挑一个 —— 取色盘右边那颗吸管能吸屏幕上的任意一点")
+        btn = self._buttons.get(value)
+        if btn is not None:
+            btn.setChecked(True)
+            return
+        self._group.setExclusive(False)
+        for one in self._buttons.values():
+            one.setChecked(False)
+        self._custom.setChecked(False)
+        self._group.setExclusive(True)
+
+    def repaint_theme(self):
+        """换主题（亮/暗）之后重画那颗「默认」和图标按钮。"""
+        self.set_value(self._current)
+        self._from_bg.setIcon(icon("ui.pipette", tokens()["text"], 16))
+
+
+class AlignGrid(QWidget):
+    """九宫格：铺满的时候"留哪一块"（选中的那格填成主色）。"""
+
+    def __init__(self, current, on_pick, parent=None):
+        super().__init__(parent)
+        self._on_pick = on_pick
+        self._buttons = {}
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(3)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        for index, (value, label) in enumerate(BG_FOCUS):
+            btn = QPushButton()
+            btn.setObjectName("alignCell")
+            btn.setCheckable(True)
+            btn.setFixedSize(24, 24)
+            btn.setToolTip(label)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, v=value: self._on_pick(v))
+            self._group.addButton(btn)
+            grid.addWidget(btn, index // 3, index % 3)
+            self._buttons[value] = btn
+        self.set_value(current)
+
+    def set_value(self, value):
+        btn = self._buttons.get(str(value or "cc")) or self._buttons.get("cc")
+        if btn is not None and not btn.isChecked():
             btn.setChecked(True)
 
 
@@ -618,10 +1095,17 @@ class Page(QScrollArea):
             sub.setObjectName("rowDesc")
             sub.setWordWrap(True)
             col.addWidget(sub)
-        line.addLayout(col, 1)
+        # 左边这栏文字**整块居中**，不让标题和说明被拉开：
+        # 右边控件高（比如"截取位置"那个九宫格）时，原来两行字会一个在顶一个在底。
+        holder = QWidget()
+        holder.setLayout(col)
+        line.addWidget(holder, 1, Qt.AlignmentFlag.AlignVCenter)
         if control is not None:
             line.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(wrap)
+        # 挂两个引用：外面要改这一行的文字时不用再去翻 QLabel（背景那行就靠它刷文件名）
+        wrap.title_label = name
+        wrap.desc_label = sub if desc else None
         return wrap
 
     def buttons(self, layout, items, align_right=True):
@@ -679,10 +1163,13 @@ class Page(QScrollArea):
             sub.setObjectName("rowDesc")
             col.addWidget(sub)
         line.addLayout(col, 1)
-        show = QLabel(f"{value}{unit}")
-        show.setObjectName("muted")
-        show.setFixedWidth(46)
-        show.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # 右边的数字做成一颗粒按钮：点一下直接填数（拖到 -35 这种位置太费劲）。
+        # 填超了上下限也没关系 —— QInputDialog 自己就夹在 range 里，而且只收整数。
+        show = QPushButton(f"{value}{unit}")
+        show.setObjectName("numBox")
+        show.setFixedSize(54, 24)
+        show.setCursor(Qt.CursorShape.PointingHandCursor)
+        show.setToolTip(f"点一下直接填（{low} ~ {high}，整数）")
         bar = QSlider(Qt.Orientation.Horizontal)
         bar.setRange(low, high)
         bar.setValue(value)
@@ -694,6 +1181,13 @@ class Page(QScrollArea):
             show.setText(f"{v}{unit}")
             on_change(v)
 
+        def typed():
+            got, ok = QInputDialog.getInt(self, "填一个数", f"{title}：",
+                                          int(bar.value()), int(low), int(high), 1)
+            if ok:
+                bar.setValue(int(got))
+
+        show.clicked.connect(typed)
         bar.valueChanged.connect(moved)
         line.addWidget(bar, 0, Qt.AlignmentFlag.AlignVCenter)
         line.addWidget(show, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -721,6 +1215,42 @@ class Page(QScrollArea):
 
 
 # --------------------------------------------------------------------------- #
+# 窗口壳：背景图画在这一层（所有控件底下）
+# --------------------------------------------------------------------------- #
+class ShellFrame(QFrame):
+    """窗口那张圆角卡片。
+
+    平时它就是一块纯色（底色交给样式表）；用户设了背景图 / 视频时，
+    把处理好的底图贴在这儿 —— 它是最外层的子控件，所以天然在所有内容底下。
+    样式表那边同时把 `#shell` 的底色改成透明，不然底图会被自己的底色盖住。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.backdrop = None            # 已按窗口大小裁好（+亮暗/模糊）的底图
+        self.backdrop_scrim = 0         # 遮罩不透明度 0~255
+        self.backdrop_rgb = "#000000"   # 遮罩颜色：跟当前主题的底色走
+
+    def paintEvent(self, ev):
+        if self.backdrop is not None and not self.backdrop.isNull():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            path = QPainterPath()
+            path.addRoundedRect(
+                QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0),
+                14.0, 14.0)
+            painter.setClipPath(path)
+            painter.drawPixmap(0, 0, self.backdrop)
+            if self.backdrop_scrim > 0:
+                scrim = QColor(self.backdrop_rgb)
+                scrim.setAlpha(self.backdrop_scrim)
+                painter.fillPath(path, scrim)
+            painter.end()
+        # 边框仍旧交给样式表画（开着背景时那边只留一圈 1px 边框）
+        super().paintEvent(ev)
+
+
+# --------------------------------------------------------------------------- #
 # 控制台窗口
 # --------------------------------------------------------------------------- #
 class ConsoleWindow(QWidget):
@@ -733,8 +1263,10 @@ class ConsoleWindow(QWidget):
     PAGES = [
         ("balance", "余额和用量", "Key、来源、今日已用怎么算",
          "nav.balance", "_page_balance"),
-        ("appearance", "形象和外观", "换成谁、多大、多透明、在哪一层",
+        ("appearance", "桌宠形象", "换成谁、多大、多透明、在哪一层",
          "nav.appearance", "_page_appearance"),
+        ("console", "控制台外观", "背景、标题、图标，都随你",
+         "nav.console", "_page_console"),
         ("behavior", "动作和互动", "怎么走、双击做什么、怎么防误触",
          "nav.behavior", "_page_behavior"),
         ("weather", "天气和城市", "看哪个城市的天气", "nav.weather", "_page_weather"),
@@ -772,6 +1304,46 @@ class ConsoleWindow(QWidget):
         # 主题要先定下来：页面里那个"主题三选一"建的时候就要知道现在选的是哪档
         self._mode = pet.cfg.get("ui_theme", "system")
         set_mode(self._mode)
+        # 强调色 / 卡片样式是"整个界面"的事（老对话框也套同一套），
+        # 而且调色板在建控件时就要用上，所以先定下来再建窗口
+        set_accent(pet.cfg.get("console_accent"))
+        set_card_style(pet.cfg.get("console_card_alpha"),
+                       pet.cfg.get("console_card_radius"))
+        # 滚轮改值这个毛病在设置窗口里最明显，这里也保证装上（重复装无副作用）
+        try:
+            install_wheel_guard(QApplication.instance())
+        except Exception:
+            pass
+
+        # 控制台自己的样子（背景 / 标题 / 图标）。全部现读 config.json，
+        # 存的是 `console_` 开头那几个键（见 BACKDROP_DEFAULTS）。
+        self._bg_src = None               # 原图缓存
+        self._bg_src_key = None
+        self._bg_out = None               # 裁好 + 亮暗 + 模糊之后的底图
+        self._bg_out_key = None
+        self._bg_out_params = None        # 上面那张图是按哪些参数算的（自检用）
+        self._video_pm = None             # 视频当前帧（还没处理）
+        self._video_path = None
+        self._video_player = None
+        self._video_sink = None
+        self._video_ts = 0.0
+        self._video_wanted = False
+        self._brand_img = None            # 侧边栏图标（用户的图）
+        self._brand_key = None
+        self._glass_state = None          # 样式表现在是"透"的还是"实"的
+        self._bg_size_timer = QTimer(self)
+        self._bg_size_timer.setSingleShot(True)
+        self._bg_size_timer.setInterval(140)      # 拖窗口时别每帧都重算底图
+        self._bg_size_timer.timeout.connect(
+            lambda: self._apply_backdrop(force=True))
+        self._style_timer = QTimer(self)
+        self._style_timer.setSingleShot(True)
+        self._style_timer.setInterval(60)      # 连拖滑块时攒一下再重下样式表
+        self._style_timer.timeout.connect(self.apply_theme)
+        self._geo_timer = QTimer(self)
+        self._geo_timer.setSingleShot(True)
+        self._geo_timer.setInterval(500)       # 松手半秒之后再记窗口大小 / 位置
+        self._geo_timer.timeout.connect(self._geo_save)
 
         self.setWindowTitle("大肥鱼桌宠 · 设置")
         self.setWindowFlags(Qt.WindowType.Window
@@ -780,8 +1352,11 @@ class ConsoleWindow(QWidget):
                             # 让"点任务栏图标 = 最小化 / 再点唤出"生效
                             | Qt.WindowType.WindowMinimizeButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumSize(820, 560)
+        # 高度 620 是这一版涨上来的：左侧分类从 11 条变成 12 条，560 会把
+        # 底下那条版本号挤出去（12×36 + 11×4 + 品牌 + 边距 ≈ 558，壳得够高）。
+        self.setMinimumSize(820, 620)
         self.resize(920, 640)
+        self._geo_restore()          # 「记住窗口大小和位置」开着就摆回上次那儿
         self.setFont(QFont("Microsoft YaHei UI", 9))
         ico = bundle_icon(self.ctx.get("BUNDLE_DIR"))
         if not ico.isNull():
@@ -790,7 +1365,7 @@ class ConsoleWindow(QWidget):
         # 外面留 20px 给阴影，里面才是"真正的窗口"
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 20, 20, 20)
-        self.shell = QFrame()
+        self.shell = ShellFrame()
         self.shell.setObjectName("shell")
         outer.addWidget(self.shell)
 
@@ -801,7 +1376,9 @@ class ConsoleWindow(QWidget):
         body.addWidget(self._build_main(), 1)
 
         self.apply_theme()
-        self.switch_page("home")
+        # 一开始先摆哪一页。原来这儿写的是 "home" —— 而 "home" 这一页 v1.1.0
+        # 早就删了，等于什么都没切，所以打开时标题栏那片是空的（一直没人发现）。
+        self.switch_page(self._start_page())
 
         # 系统切亮暗时，只有"跟随系统"这一档要跟着变
         try:
@@ -830,6 +1407,7 @@ class ConsoleWindow(QWidget):
     def _build_sidebar(self):
         side = QFrame()
         side.setObjectName("sidebar")
+        self.sidebar = side
         side.setFixedWidth(210)
         box = QVBoxLayout(side)
         box.setContentsMargins(12, 16, 12, 14)
@@ -838,15 +1416,16 @@ class ConsoleWindow(QWidget):
         brand = QHBoxLayout()
         brand.setContentsMargins(6, 0, 0, 10)
         brand.setSpacing(8)
-        logo = QLabel()
-        logo.setFixedSize(26, 26)
-        logo.setPixmap(self._logo_pixmap(26))
-        brand.addWidget(logo)
-        title = QLabel("大肥鱼桌宠")
-        title.setObjectName("brand")
-        brand.addWidget(title)
+        self.brand_logo = QLabel()
+        self.brand_logo.setFixedSize(26, 26)
+        brand.addWidget(self.brand_logo)
+        self.brand_label = QLabel("")
+        self.brand_label.setObjectName("brand")
+        brand.addWidget(self.brand_label)
         brand.addStretch(1)
         box.addLayout(brand)
+        # 名字和图标都能改成自己的（「控制台外观」那一页）
+        self._apply_brand()
 
         for key, title, _desc, icon_name, _builder in self.PAGES:
             item = NavItem(key, title, icon_name)
@@ -919,16 +1498,423 @@ class ConsoleWindow(QWidget):
         return pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
                           Qt.TransformationMode.SmoothTransformation)
 
+    # ---------------- 控制台外观：背景 / 标题 / 图标 ----------------
+    # 这一块只管"设置窗口自己长什么样"，跟桌宠本体一点关系都没有。
+    # 设置存 config.json 里那几个 console_ 开头的键（BACKDROP_DEFAULTS）。
+    def _bg(self, key):
+        """取一个 console_ 设置：配置里没有（老 config.json）就用默认值。"""
+        try:
+            value = self.pet.cfg.get(key, BACKDROP_DEFAULTS[key])
+        except Exception:
+            value = BACKDROP_DEFAULTS.get(key)
+        return BACKDROP_DEFAULTS.get(key) if value is None else value
+
+    def _bg_int(self, key):
+        try:
+            return int(self._bg(key))
+        except (TypeError, ValueError):
+            return int(BACKDROP_DEFAULTS[key])
+
+    def _bg_bool(self, key):
+        value = self._bg(key)
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+
+    def _bg_path(self):
+        return str(self._bg("console_bg_path") or "").strip()
+
+    def _glass_on(self):
+        """现在该不该"透一层"。
+
+        只看**有没有挑文件**（+ 文件还在不在），不看"这一帧有没有画面" ——
+        视频第一帧要等解码，要是按"有画面"来算，那几百毫秒里样式表给的是实色底、
+        又没人画底图，会闪一下。宁可先按平的底色画（看着就是原来的窗口），
+        有帧了自然就上来了。
+        """
+        path = self._bg_path()
+        return bool(path) and os.path.exists(path)
+
+    def _set_bg(self, key, value):
+        self.pet.cfg[key] = value
+        try:
+            self.pet.save_config()
+        except Exception:
+            pass
+
+    def _ask_file(self, title, filt, current=""):
+        """挑文件。期间让桌宠站住不动（跟别的对话框一个规矩）。"""
+        guard = getattr(self.pet, "_ui_guard", None)
+        ctx = guard() if callable(guard) else contextlib.nullcontext()
+        try:
+            with ctx:
+                path, _ok = QFileDialog.getOpenFileName(
+                    self, title, current or "", filt)
+        except Exception:
+            return ""
+        return path or ""
+
+    # ---- 底图 ----
+    def _image_source(self, path):
+        """原图。按路径 + 修改时间缓存：换了图、或者把同一张图改了，都会重读。"""
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            stamp = 0
+        key = (path, stamp)
+        if key != self._bg_src_key:
+            self._bg_src = load_image(path)
+            self._bg_src_key = key
+            self._bg_out_key = None
+        return self._bg_src
+
+    def _apply_backdrop(self, force=False):
+        """把这一帧的底图贴到窗口壳上。
+
+        图片那边做了两级缓存（原图一份、处理完一份），拖滑块时只重算"处理"这一步；
+        视频每来一帧当新图处理，所以那边一直是 force。
+        """
+        glass = self._glass_on()
+        if glass != self._glass_state:
+            # 样式表得跟着"变透 / 变实"。用户把背景文件删了 / 挪走了就是这条：
+            # 底图没了、样式表还是透明的那套，窗口会变成一片空白。
+            self.apply_theme()
+            return
+        path = self._bg_path()
+        exists = bool(path) and os.path.exists(path)
+        live = exists and bg_kind_of(path) == "video"
+        if live:
+            self._video_ensure(path)
+        else:
+            self._video_stop()
+
+        src = None
+        if exists and not live:
+            src = self._image_source(path)
+        elif live:
+            src = self._video_pm
+
+        shell = self.shell
+        if (src is None or src.isNull()) and not glass:
+            shell.backdrop = None
+            self._bg_out = None
+            self._bg_out_key = None
+            shell.update()
+            return
+
+        dpr = self.devicePixelRatioF() or 1.0
+        width = max(1, int(round(shell.width() * dpr)))
+        height = max(1, int(round(shell.height() * dpr)))
+        bright = self._bg_int("console_bg_bright")
+        blur = self._bg_int("console_bg_blur")
+        scrim = max(0, min(100, self._bg_int("console_bg_scrim")))
+        # 自动适配窗口 = 铺满（多出来的裁掉，可以挑留哪一块）；
+        # 关掉 = 完整显示（不裁图 / 不裁视频，空的地方露主题底色）。
+        fit = "cover" if self._bg_bool("console_bg_fit_window") else "contain"
+        focus = str(self._bg("console_bg_focus") or "cc")
+
+        params = (bright, blur, fit, focus)
+        key = (width, height, dpr, params,
+               "video" if live else self._bg_src_key)
+        if not force and self._bg_out is not None and key == self._bg_out_key:
+            out = self._bg_out
+        else:
+            base = QImage(width, height,
+                          QImage.Format.Format_ARGB32_Premultiplied)
+            # 先铺一层主题底色：用户的图带透明时露出来的是它，不是花屏
+            base.fill(QColor(tokens()["bg"]))
+            if src is not None and not src.isNull():
+                painter = QPainter(base)
+                self._paint_backdrop(painter, src, width, height, fit, focus)
+                painter.end()
+            out = brighten_image(base, bright)
+            out = blur_image(out, blur)
+            self._bg_out = out
+            self._bg_out_key = key
+            self._bg_out_params = params
+
+        pm = QPixmap.fromImage(out)
+        pm.setDevicePixelRatio(dpr)
+        shell.backdrop = pm
+        shell.backdrop_rgb = tokens()["bg"]          # 遮罩用当前主题的底色
+        shell.backdrop_scrim = scrim * 255 // 100
+        shell.update()
+
+    @staticmethod
+    def _paint_backdrop(painter, src, width, height, fit, focus="cc"):
+        """底图怎么放：铺满（按 focus 裁）或完整显示（留边）。"""
+        if fit == "contain":
+            fitted = src.scaled(width, height,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+            painter.drawImage((width - fitted.width()) // 2,
+                              (height - fitted.height()) // 2, fitted)
+            return
+        painter.drawImage(0, 0, scale_cover(src, width, height, focus))
+
+    # ---- 视频背景 ----
+    def _video_ensure(self, path):
+        """需要就换片、需要就播。这台机器上 QtMultimedia 缺失时这一档直接不生效。"""
+        if not MEDIA_OK:
+            return
+        if self._video_player is None:
+            self._video_player = QMediaPlayer(self)
+            self._video_sink = QVideoSink(self)
+            self._video_player.setVideoSink(self._video_sink)
+            self._video_sink.videoFrameChanged.connect(self._on_video_frame)
+            try:
+                self._video_player.setLoops(QMediaPlayer.Loops.Infinite)
+            except Exception:
+                pass
+        if self._video_path != path:
+            self._video_path = path
+            self._video_pm = None
+            self._bg_out_key = None
+            self._video_ts = 0.0
+            self._video_player.setSource(QUrl.fromLocalFile(path))
+        if self._video_wanted:
+            if (self._video_player.playbackState()
+                    != QMediaPlayer.PlaybackState.PlayingState):
+                self._video_player.play()
+        else:
+            self._video_player.pause()
+
+    def _video_stop(self):
+        self._video_pm = None
+        if self._video_player is not None:
+            self._video_player.stop()
+
+    def _video_follow_visibility(self):
+        """窗口收起来 / 最小化时别再解码了 —— 视频背景最费的就是这一段。"""
+        want = bool(self.isVisible() and not self.isMinimized())
+        self._video_wanted = want
+        player = self._video_player
+        if player is None:
+            return
+        try:
+            if want:
+                player.play()
+            else:
+                player.pause()
+        except Exception:
+            pass
+
+    def _on_video_frame(self, frame):
+        if not self._video_wanted or frame is None:
+            return
+        now = time.monotonic()
+        if now - self._video_ts < VIDEO_FRAME_S:
+            return                     # 15 帧够了，剩下的别浪费在解码 + 模糊上
+        self._video_ts = now
+        try:
+            img = frame.toImage()
+        except Exception:
+            return
+        if img.isNull():
+            return
+        self._video_pm = img
+        self._apply_backdrop(force=True)
+
+    # ---- 标题和图标 ----
+    def _brand_image(self, path):
+        """图标文件。按路径 + 修改时间缓存 —— 打字改标题时每个字都会走到这儿。"""
+        if not path:
+            return None
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            return None
+        key = (path, stamp)
+        if key != self._brand_key:
+            self._brand_key = key
+            self._brand_img = load_image(path)
+        return self._brand_img
+
+    def _apply_brand(self):
+        """左上角那个名字和图标：用户改过就用用户的，没改就是默认。"""
+        title = str(self._bg("console_brand_title") or "").strip() or "大肥鱼桌宠"
+        self.brand_label.setText(title)
+        self.brand_label.setToolTip(title)
+        pm = None
+        img = self._brand_image(str(self._bg("console_logo_path") or "").strip())
+        if img is not None and not img.isNull():
+            pm = QPixmap.fromImage(img).scaled(
+                26, 26, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+        if pm is None or pm.isNull():
+            pm = self._logo_pixmap(26)
+        self.brand_logo.setPixmap(pm)
+
+    def _logo_text(self):
+        path = str(self._bg("console_logo_path") or "").strip()
+        if path and os.path.exists(path):
+            return f"当前：{os.path.basename(path)}"
+        return "当前：默认的小鲸鱼"
+
+    def _bg_path_text(self):
+        path = self._bg_path()
+        if path and os.path.exists(path):
+            kind = "视频" if bg_kind_of(path) == "video" else "图片"
+            return f"{kind}：{os.path.basename(path)}"
+        if path:
+            return f"文件不在了：{path}"
+        return "还没导入"
+
+    def _bg_pick_text(self):
+        return "换个文件…" if self._bg_path() else "导入文件…"
+
+    # ---- 强调色 / 卡片 / 侧边栏 ----
+    def _sync_accent_row(self):
+        """把色卡摆成配置里的样子（自己挑的颜色会点亮「自定义…」那颗）。"""
+        row = getattr(self, "accent_row", None)
+        if row is not None:
+            row.set_value(str(self._bg("console_accent") or ""))
+
+    def _apply_accent(self, value, save=True):
+        """换强调色：调色板 → 样式表 → 整个界面（连老对话框一起）。"""
+        if save:
+            self._set_bg("console_accent", value)
+        set_accent(value)
+        self.apply_theme()
+        self._hint_accent("点一下就是它")
+
+    def _pick_accent(self):
+        """自己挑一个颜色。
+
+        用 Qt 那套**非原生**取色盘：自带一颗吸管，能直接吸屏幕上任意一点
+        （Windows 原生那个只有 RGB/HSV，吸不了屏）。操作也简单：
+        色卡上点「自定义…」，想吸哪儿就点吸管再点屏幕上那一点。
+        """
+        start = QColor(str(self._bg("console_accent") or "") or tokens()["accent"])
+        guard = getattr(self.pet, "_ui_guard", None)
+        ctx = guard() if callable(guard) else contextlib.nullcontext()
+        try:
+            with ctx:
+                picked = QColorDialog.getColor(
+                    start, self, "挑一个强调色",
+                    QColorDialog.ColorDialogOption.DontUseNativeDialog)
+        except Exception:
+            return
+        if picked is None or not picked.isValid():
+            return
+        self._apply_accent(picked.name())
+
+    def _accent_from_bg(self):
+        """从背景图里取一个颜色当强调色。"""
+        img = None
+        if self._bg_path() and bg_kind_of(self._bg_path()) == "image":
+            img = self._image_source(self._bg_path())
+        if img is None:
+            img = self._video_pm
+        color = pick_accent(img)
+        if not color:
+            self._hint_accent("这张图挑不出颜色，换张鲜艳点的")
+            return
+        self._apply_accent(color)
+        self._hint_accent(f"取自背景图：{color}")
+
+    def _hint_accent(self, text):
+        """拿「强调色」那行的说明文字当回执（不额外占一行）。"""
+        row = getattr(self, "accent_row_wrap", None)
+        label = getattr(row, "desc_label", None) if row is not None else None
+        if label is not None:
+            label.setText(text)
+
+    def _on_card_style(self, key, value):
+        """卡片不透明度 / 圆角：改的是样式表里的格子，攒一下再重下。"""
+        self._set_bg(key, int(value))
+        set_card_style(self._bg_int("console_card_alpha"),
+                       self._bg_int("console_card_radius"))
+        self._style_later()
+
+    def _style_later(self):
+        """连着拖的滑块：攒一下再重下样式表，别每一格都让 Qt 重新解析一遍。"""
+        self._style_timer.start()
+
+    def _start_page(self):
+        key = str(self._bg("console_start_page") or "")
+        return key if key in self._pages else "balance"
+
+    # ---- 窗口大小 / 位置 ----
+    def _on_remember_geo(self, on):
+        self._set_bg("console_remember_geo", bool(on))
+        if on:
+            self._geo_save()          # 立刻记一次，别等用户拖窗口
+
+    def _geo_save(self):
+        if not self._bg("console_remember_geo"):
+            return
+        # 最小化动画期间窗口会被改成"往任务栏收"的那个尺寸（1 像素那么大），
+        # 那会儿要是记下来，下次打开窗口就是一粒芝麻 —— 放过这几种时刻。
+        if (not self.isVisible() or self.isMinimized()
+                or getattr(self, "_min_anim", None) is not None
+                or getattr(self, "_restoring", False)
+                or getattr(self, "_min_pm", None) is not None):
+            return
+        try:
+            blob = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        except Exception:
+            return
+        if self.pet.cfg.get("console_geo") == blob:
+            return
+        self._set_bg("console_geo", blob)
+
+    def _geo_restore(self):
+        if not self._bg("console_remember_geo"):
+            return
+        blob = str(self.pet.cfg.get("console_geo") or "")
+        if not blob:
+            return
+        try:
+            self.restoreGeometry(QByteArray.fromBase64(blob.encode("ascii")))
+        except Exception:
+            return
+        self._geo_clamp()
+
+    def _geo_clamp(self):
+        """存下来的位置要是落在已经拔掉的显示器上，拉回看得见的地方。"""
+        try:
+            screen = QApplication.screenAt(self.frameGeometry().center())
+            if screen is None:
+                best, best_area = None, 0
+                frame = self.frameGeometry()
+                for one in QApplication.screens():
+                    inter = one.availableGeometry().intersected(frame)
+                    area = inter.width() * inter.height()
+                    if area > best_area:
+                        best, best_area = one, area
+                screen = best or QApplication.primaryScreen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+            width = max(self.minimumWidth(), min(self.width(), avail.width()))
+            height = max(self.minimumHeight(), min(self.height(), avail.height()))
+            self.resize(width, height)
+            x = max(avail.left(), min(self.x(), avail.right() - width + 1))
+            y = max(avail.top(), min(self.y(), avail.bottom() - height + 1))
+            self.move(x, y)
+        except Exception:
+            pass
+
     # ---------------- 主题 ----------------
     def apply_theme(self):
+        glass = self._glass_on()
+        self._glass_state = glass
         effective = refresh_tokens()
         clear_icon_cache()
-        self.setStyleSheet(build_qss())
+        self.setStyleSheet(build_qss(glass))
+        # 开着背景时页面那块要"透"：视口原来标着"我自己铺满底"（滚动时省一次重画），
+        # 留在那儿底图就被它盖住了。
+        for page in self._pages.values():
+            page.viewport().setAttribute(
+                Qt.WidgetAttribute.WA_OpaquePaintEvent, not glass)
         self._repaint_icons()
         for page in self._pages.values():
             page.repaint_cards()
         for item in self._nav_items.values():
             item.update()
+        self._apply_backdrop(force=True)
+        self._sync_accent_row()     # 「默认」那颗色卡跟着亮/暗主题换
         self.update()
         return effective
 
@@ -971,6 +1957,8 @@ class ConsoleWindow(QWidget):
             self._refresh_balance_card()
         elif key == "appearance":
             self._sync_size_controls()
+        elif key == "console":
+            self._sync_console_controls()
 
     # ---------------- 余额那张卡（开着窗口就自己刷）----------------
     def _refresh_balance_card(self):
@@ -1142,6 +2130,239 @@ class ConsoleWindow(QWidget):
                  Switch(pet.snap_on, pet.set_snap))
         page.row(card, "左吸附时翻面", "贴在左边时面朝屏幕里",
                  Switch(pet.flip_on_left, pet.set_flip_on_left))
+
+    # ---------------- 控制台外观 ----------------
+    def _page_console(self, page):
+        card = page.card("背景", "铺在窗口最底下", "page.layers")
+        # 只有"导入文件"这一个入口：图片 / 视频一起给，是哪种看后缀。
+        # （原来有「不用 / 图片 / 视频」一排 + 另外一颗「清掉」，
+        #   「不用」和「清掉」干的是同一件事，主人说分不清。）
+        self.bg_pick_btn = self._text_button(self._bg_pick_text(),
+                                             self._pick_backdrop)
+        bg_buttons = QWidget()
+        bg_line = QHBoxLayout(bg_buttons)
+        bg_line.setContentsMargins(0, 0, 0, 0)
+        bg_line.setSpacing(8)
+        bg_line.addWidget(self.bg_pick_btn)
+        bg_line.addWidget(self._text_button("移除", self._clear_backdrop))
+        self.bg_path_row = page.row(card, "图片 / 视频", self._bg_path_text(),
+                                    bg_buttons)
+        self.bg_fit_switch = Switch(self._bg_bool("console_bg_fit_window"),
+                                    self._on_fit_window)
+        page.row(card, "自动适配窗口", "关掉就完整显示", self.bg_fit_switch)
+        self.bg_focus_grid = AlignGrid(self._bg("console_bg_focus"),
+                                       self._on_bg_focus)
+        self.bg_focus_grid.setEnabled(self._bg_bool("console_bg_fit_window"))
+        self.bg_focus_row = page.row(card, "截取位置", "铺满时留哪一块",
+                                     self.bg_focus_grid)
+        self.bg_bright_bar = page.slider(
+            card, "亮暗", "负数压暗，正数提亮",
+            -100, 100, self._bg_int("console_bg_bright"), "",
+            lambda v: self._on_bg_slider("console_bg_bright", v))
+        self.bg_blur_bar = page.slider(
+            card, "模糊", "越高越糊，字更清楚",
+            0, 40, self._bg_int("console_bg_blur"), "",
+            lambda v: self._on_bg_slider("console_bg_blur", v))
+        self.bg_scrim_bar = page.slider(
+            card, "遮罩", "越高底图越淡",
+            0, 100, self._bg_int("console_bg_scrim"), "%",
+            lambda v: self._on_bg_slider("console_bg_scrim", v))
+        self.bg_hint = page.hint(card, "视频循环播放，窗口收起时会自己暂停。")
+        if not MEDIA_OK:
+            page.hint(card, "这台机器上没有视频解码器，只能导入图片。")
+
+        card = page.card("标题和图标", "左上角那两样", "ui.edit")
+        self.brand_edit = QLineEdit(str(self._bg("console_brand_title") or ""))
+        self.brand_edit.setFixedWidth(220)
+        self.brand_edit.setPlaceholderText("大肥鱼桌宠")
+        self.brand_edit.textChanged.connect(self._on_brand_text)
+        page.row(card, "标题", "清空 = 用默认名字", self.brand_edit)
+        self.brand_row = page.row(
+            card, "图标", self._logo_text(),
+            self._pair_buttons(("换一张…", self._pick_logo),
+                               ("恢复默认", self._clear_logo)))
+
+        card = page.card("颜色和卡片", "按钮、滑块、卡片", "page.theme-system")
+        self.accent_row = ColorSwatches(
+            str(self._bg("console_accent") or ""), self._apply_accent,
+            self._pick_accent, self._accent_from_bg)
+        # 这行的说明文字顺便当回执用（取色失败时就地写一句，不另占一行）
+        self.accent_row_wrap = page.row(card, "强调色", "点一下就是它",
+                                        self.accent_row)
+        self.card_alpha_bar = page.slider(
+            card, "卡片不透明度", "越低越透",
+            40, 100, self._bg_int("console_card_alpha"), "%",
+            lambda v: self._on_card_style("console_card_alpha", v))
+        self.card_radius_bar = page.slider(
+            card, "圆角", "0 = 方角", 0, 18,
+            self._bg_int("console_card_radius"), "",
+            lambda v: self._on_card_style("console_card_radius", v))
+
+        card = page.card("窗口", "开在哪儿", "page.resize")
+        self.geo_switch = Switch(bool(self._bg("console_remember_geo")),
+                                 self._on_remember_geo)
+        page.row(card, "记住大小位置", "下次打开照旧", self.geo_switch)
+        self.start_combo = page.combo(
+            card, "默认打开", "一开就停在这一页",
+            [(key, title) for key, title, _desc, _icon, _builder in self.PAGES],
+            self._start_page(), self._on_start_page)
+
+        card = page.card("恢复默认", "一把清干净", "ui.reset")
+        page.buttons(card, [("全部恢复默认", self._reset_console_look, "danger")])
+
+    # ---- 控制台外观：动一下就要顺手存盘 ----
+    def _pick_backdrop(self):
+        """导入背景：图片和视频一起给，是哪种看后缀（不再让用户先选一次类型）。"""
+        path = self._ask_file("挑一张图或一段视频", MEDIA_FILTER, self._bg_path())
+        if not path:
+            return
+        if bg_kind_of(path) == "video" and not MEDIA_OK:
+            self._hint_bg("这台机器上没有视频解码器，只能导入图片。")
+            return
+        self._set_bg("console_bg_path", path)
+        self.apply_theme()
+        self._sync_console_controls()
+        self._hint_bg("视频循环播放，窗口收起时会自己暂停。")
+
+    def _clear_backdrop(self):
+        self._set_bg("console_bg_path", "")
+        self._video_stop()
+        self.apply_theme()
+        self._sync_console_controls()
+        self._hint_bg("还没导入 —— 点右边「导入文件…」")
+
+    def _on_bg_slider(self, key, value):
+        self._set_bg(key, int(value))
+        self._apply_backdrop(force=True)
+
+    def _on_fit_window(self, on):
+        """自动适配窗口：开 = 铺满（可挑截取位置），关 = 完整显示。"""
+        on = bool(on)
+        self._set_bg("console_bg_fit_window", on)
+        switch = getattr(self, "bg_fit_switch", None)
+        if switch is not None and switch.isChecked() != on:
+            switch.blockSignals(True)       # 从别处改的值，开关也得跟着摆对
+            switch.setChecked(on)
+            switch.blockSignals(False)
+        grid = getattr(self, "bg_focus_grid", None)
+        if grid is not None:
+            grid.setEnabled(on)             # 不放满就没有"截哪一块"这回事
+        self._apply_backdrop(force=True)
+
+    def _on_bg_focus(self, focus):
+        focus = str(focus or "cc")
+        if focus == self._bg("console_bg_focus"):
+            return
+        self._set_bg("console_bg_focus", focus)
+        self._apply_backdrop(force=True)
+
+    def _hint_bg(self, text):
+        """拿「背景」那张卡的说明当回执（不额外占一行）。"""
+        label = getattr(self, "bg_hint", None)
+        if label is not None:
+            label.setText(text)
+
+    def _on_start_page(self, key):
+        self._set_bg("console_start_page", str(key or ""))
+
+    def _on_brand_text(self, text):
+        if text == self._bg("console_brand_title"):
+            return
+        self._set_bg("console_brand_title", text)
+        self._apply_brand()
+
+    def _pick_logo(self):
+        path = self._ask_file("挑一张图标", IMAGE_FILTER + ";;图标 (*.ico)",
+                              str(self._bg("console_logo_path") or ""))
+        if not path:
+            return
+        self._set_bg("console_logo_path", path)
+        self._apply_brand()
+        self._sync_console_controls()
+
+    def _clear_logo(self):
+        self._set_bg("console_logo_path", "")
+        self._apply_brand()
+        self._sync_console_controls()
+
+    def _reset_console_look(self):
+        """背景 / 标题 / 图标一起回到默认。"""
+        for key, value in BACKDROP_DEFAULTS.items():
+            self.pet.cfg[key] = value
+        try:
+            self.pet.save_config()
+        except Exception:
+            pass
+        self._video_stop()
+        set_accent(self.pet.cfg.get("console_accent"))
+        set_card_style(self._bg_int("console_card_alpha"),
+                       self._bg_int("console_card_radius"))
+        self._apply_brand()
+        self._sync_console_controls()
+        self.apply_theme()
+
+    def _sync_console_controls(self):
+        """把这一页上的控件摆成配置里的样子（恢复默认 / 从别处改过之后用）。"""
+        fit_on = self._bg_bool("console_bg_fit_window")
+        pick_btn = getattr(self, "bg_pick_btn", None)
+        if pick_btn is not None:
+            pick_btn.setText(self._bg_pick_text())
+        fit_switch = getattr(self, "bg_fit_switch", None)
+        if fit_switch is not None and fit_switch.isChecked() != fit_on:
+            fit_switch.blockSignals(True)
+            fit_switch.setChecked(fit_on)
+            fit_switch.blockSignals(False)
+        grid = getattr(self, "bg_focus_grid", None)
+        if grid is not None:
+            grid.set_value(self._bg("console_bg_focus"))
+            grid.setEnabled(fit_on)
+        self._hint_bg("视频循环播放，窗口收起时会自己暂停。" if MEDIA_OK
+                      else "这台机器上没有视频解码器，只能导入图片。")
+        for name, key, unit in (("bg_bright_bar", "console_bg_bright", ""),
+                                ("bg_blur_bar", "console_bg_blur", ""),
+                                ("bg_scrim_bar", "console_bg_scrim", "%"),
+                                ("card_alpha_bar", "console_card_alpha", "%"),
+                                ("card_radius_bar", "console_card_radius", "")):
+            bar = getattr(self, name, None)
+            if bar is None:
+                continue
+            value = self._bg_int(key)
+            if bar.value() != value:
+                bar.blockSignals(True)
+                bar.setValue(value)
+                bar.blockSignals(False)
+            label = getattr(bar, "value_label", None)
+            if label is not None:
+                label.setText(f"{value}{unit}")
+        self._sync_accent_row()
+        switch = getattr(self, "geo_switch", None)
+        if switch is not None:
+            want = bool(self._bg("console_remember_geo"))
+            if switch.isChecked() != want:
+                switch.blockSignals(True)
+                switch.setChecked(want)
+                switch.blockSignals(False)
+        start = getattr(self, "start_combo", None)
+        if start is not None:
+            key = self._start_page()
+            if start.currentData() != key:
+                index = start.findData(key)
+                if index >= 0:
+                    start.blockSignals(True)
+                    start.setCurrentIndex(index)
+                    start.blockSignals(False)
+        edit = getattr(self, "brand_edit", None)
+        if edit is not None:
+            text = str(self._bg("console_brand_title") or "")
+            if edit.text() != text:
+                edit.blockSignals(True)
+                edit.setText(text)
+                edit.blockSignals(False)
+        for row, text in ((getattr(self, "bg_path_row", None), self._bg_path_text()),
+                          (getattr(self, "brand_row", None), self._logo_text())):
+            label = getattr(row, "desc_label", None) if row is not None else None
+            if label is not None:
+                label.setText(text)
 
     # ---------------- 行为与互动 ----------------
     def _page_behavior(self, page):
@@ -1761,11 +2982,40 @@ class ConsoleWindow(QWidget):
 
     def closeEvent(self, ev):
         self._live.stop()
+        self._video_stop()
         super().closeEvent(ev)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._glass_on():
+            self._bg_size_timer.start()     # 拖着改大小时别每帧都重算底图
+        if self._bg("console_remember_geo"):
+            self._geo_timer.start()
+
+    def moveEvent(self, ev):
+        super().moveEvent(ev)
+        if self._bg("console_remember_geo"):
+            self._geo_timer.start()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._video_follow_visibility()
+        self._bg_size_timer.start()         # 布局这会儿才定下来，迟一拍按真尺寸重算
+
+    def hideEvent(self, ev):
+        # hideEvent 里 isVisible() 已经是 False 了，别绕一圈判断，直接停
+        self._video_wanted = False
+        if self._video_player is not None:
+            try:
+                self._video_player.pause()
+            except Exception:
+                pass
+        super().hideEvent(ev)
 
     def changeEvent(self, ev):
         """兜底：万一原生消息那条路没拦到（别的入口进来的最小化），也走我们的动画。"""
         if ev.type() == QEvent.Type.WindowStateChange:
+            self._video_follow_visibility()     # 最小化时把视频背景停下来
             if self.isMinimized():
                 if getattr(self, "_min_self", False):
                     self._min_self = False      # 自己发起的那一次，放行
