@@ -2736,6 +2736,7 @@ class PetWindow(QWidget):
         self.save_config()              # 立刻落盘，下次启动就是这个默认城市
         self.say(f"城市已设置为{name}")
         self._get_weather()
+        self._notify_console()          # 设置窗口开着的话，那一排城市立刻跟上
 
     def remove_city_dialog(self):
         """从城市列表里删掉一个（最后一个删不掉，总得留一个用）。"""
@@ -2753,6 +2754,7 @@ class PetWindow(QWidget):
             self.cfg["city"] = self.cfg["city_list"][-1]
         self.save_config()
         self.say(f"把{pick}从列表里拿掉了")
+        self._notify_console()
 
     def set_city_dialog(self):
         """手动设置默认城市：直接写进 config.json，不联网、不用等搜索。"""
@@ -6009,6 +6011,19 @@ class PetWindow(QWidget):
         m.addSeparator()
         m.addAction("退出", self.quit_app)
         return m
+
+    def _notify_console(self):
+        """叫设置窗口把当前那一页重读一遍（城市这类"后台加进来"的东西要立刻反映）。
+
+        窗口没开就是什么都不做 —— 下次打开它会自己现读（见 ConsoleWindow._refresh_page）。
+        """
+        win = getattr(self, "_console", None)
+        if win is None:
+            return
+        try:
+            win.refresh_pages()
+        except Exception as exc:
+            print("通知设置窗口刷新失败:", exc)
 
     def open_console(self):
         """打开设置窗口（菜单最上面那条「打开设置…」）。

@@ -762,25 +762,41 @@ class Segmented(QWidget):
         self._buttons = {}
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        box = QFrame()
-        box.setObjectName("segBox")
-        line = QHBoxLayout(box)
-        line.setContentsMargins(3, 3, 3, 3)
-        line.setSpacing(2)
+        self._box = QFrame()
+        self._box.setObjectName("segBox")
+        self._line = QHBoxLayout(self._box)
+        self._line.setContentsMargins(3, 3, 3, 3)
+        self._line.setSpacing(2)
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         for value, label in options:
-            btn = QPushButton(label)
-            btn.setObjectName("segBtn")
-            btn.setCheckable(True)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setChecked(value == current)
-            btn.clicked.connect(lambda _=False, v=value: self._pick(v))
-            line.addWidget(btn)
-            self._group.addButton(btn)
-            self._buttons[value] = btn
-        outer.addWidget(box)
+            self._add(value, label, value == current)
+        outer.addWidget(self._box)
         outer.addStretch(1)
+
+    def _add(self, value, label, checked=False):
+        btn = QPushButton(label)
+        btn.setObjectName("segBtn")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setChecked(bool(checked))
+        btn.clicked.connect(lambda _=False, v=value: self._pick(v))
+        self._line.addWidget(btn)
+        self._group.addButton(btn)
+        self._buttons[value] = btn
+        return btn
+
+    def set_options(self, options, current=None):
+        """整排换内容（城市列表这种"条目本身会变"的地方用）。"""
+        for btn in list(self._buttons.values()):
+            self._line.removeWidget(btn)
+            self._group.removeButton(btn)
+            btn.setParent(None)
+            btn.deleteLater()
+        self._buttons.clear()
+        for value, label in options:
+            self._add(value, label, value == current)
+        self.update()
 
     def _pick(self, value):
         if self._on_change is not None:
@@ -2100,6 +2116,14 @@ class ConsoleWindow(QWidget):
         if self._cur_page_key:
             self._refresh_page(self._cur_page_key)
 
+    def refresh_pages(self):
+        """外面（桌宠）改了配置之后叫一声：把当前这一页"会变的"重读一遍。
+
+        城市是**后台联网**加进来的 —— 加完那一刻窗口还开着，靠这个立刻反映
+        （见 桌宠.py 的 `_notify_console`）。
+        """
+        self._refresh_current_page()
+
     def switch_page(self, key):
         page = self._pages.get(key)
         if page is None:
@@ -2164,21 +2188,23 @@ class ConsoleWindow(QWidget):
         ])
 
         card = page.card("余额来源", "换来源会重新取一次数", "nav.balance")
-        page.combo(card, "看谁的余额", "DeepSeek，或你自己加的服务",
-                   [(name, name) for name in self._source_names()],
-                   pet.cfg.get("balance_source") or "DeepSeek",
-                   lambda name: self._run(pet.set_balance_source, name))
-        page.row(card, "API Key",
-                 "当前：已配置" if has_key else "当前：还没配，配了才看得到余额",
-                 self._text_button("换一个…" if has_key else "现在配…",
-                                   lambda: self._run(pet._set_key_dialog),
-                                   "primary"))
+        # 来源名单和"Key 配没配"都会变（自己加 / 删服务、换 Key），都靠 _sync_source_controls 现读
+        self.source_combo = page.combo(
+            card, "看谁的余额", "DeepSeek，或你自己加的服务",
+            [(name, name) for name in self._source_names()],
+            pet.cfg.get("balance_source") or "DeepSeek",
+            lambda name: self._run(pet.set_balance_source, name))
+        self.key_btn = self._text_button("换一个…" if has_key else "现在配…",
+                                        self._set_key, "primary")
+        self.key_row = page.row(
+            card, "API Key",
+            "当前：已配置" if has_key else "当前：还没配，配了才看得到余额",
+            self.key_btn)
         page.buttons(card, [
-            ("添加其他 API Key…",
-             lambda: self._run(pet.add_other_key_dialog), None),
-            ("删除其他 API Key…",
-             lambda: self._run(pet.remove_other_key_dialog), "danger"),
+            ("添加其他 API Key…", self._add_other_key, None),
+            ("删除其他 API Key…", self._remove_other_key, "danger"),
         ])
+        self._hook_page("balance", self._sync_source_controls)
 
         card = page.card("今日已用怎么算", "按余额差值算出来的，跟平台可能对不上",
                          "page.calibrate")
@@ -2195,28 +2221,105 @@ class ConsoleWindow(QWidget):
                                    lambda: self._run(pet.calibrate_usage_dialog),
                                    "primary"))
 
+    def _sync_source_controls(self):
+        """余额来源那一栏现读：自己加 / 删过服务、换过 Key 之后要说得出现在是啥。"""
+        pet = self.pet
+        box = getattr(self, "source_combo", None)
+        if box is not None:
+            names = self._source_names()
+            shown = [box.itemText(i) for i in range(box.count())]
+            if shown != names:
+                box.blockSignals(True)
+                box.clear()
+                for name in names:              # 值就是名字，跟 page.combo 建的时候一样
+                    box.addItem(name, name)
+                box.blockSignals(False)
+            want = pet.cfg.get("balance_source") or "DeepSeek"
+            for i in range(box.count()):
+                if box.itemData(i) == want:
+                    if box.currentIndex() != i:
+                        box.blockSignals(True)
+                        box.setCurrentIndex(i)
+                        box.blockSignals(False)
+                    break
+        has_key = self._has_key()
+        row = getattr(self, "key_row", None)
+        if row is not None and row.desc_label is not None:
+            row.desc_label.setText(
+                "当前：已配置" if has_key else "当前：还没配，配了才看得到余额")
+        btn = getattr(self, "key_btn", None)
+        if btn is not None:
+            btn.setText("换一个…" if has_key else "现在配…")
+
+    def _add_other_key(self):
+        self._run(self.pet.add_other_key_dialog)
+        self._sync_source_controls()
+
+    def _remove_other_key(self):
+        self._run(self.pet.remove_other_key_dialog)
+        self._sync_source_controls()
+
+    def _set_key(self):
+        self._run(self.pet._set_key_dialog)
+        self._sync_source_controls()
+
     # ---------------- 天气与城市 ----------------
     def _page_weather(self, page):
         pet = self.pet
         card = page.card("城市", "点一下切过去", "nav.weather")
+        # 城市列表是"条目本身会变"的那类（联网加、删掉都算），所以建的时候先空着，
+        # 交给 _sync_weather_controls 按现在的配置摆 —— 加完 / 删完立刻就反映
+        self.city_seg = Segmented([], None,
+                                  lambda name: self._run(pet._apply_city, name))
+        card.addWidget(self.city_seg)
+        page.buttons(card, [
+            ("手动输入…", self._set_city_manual, "primary"),
+            ("自动定位（按 IP）", lambda: self._run(pet.auto_locate_city), None),
+            ("添加城市（联网搜索）",
+             self._add_city_search, None),
+        ])
+        # 这一行只有"列表里不止一个城市"时才露出来 —— 建的时候先放着，靠 sync 显隐
+        self.city_del_row = page.buttons(card, [
+            ("从列表里删掉城市…", self._remove_city, "danger")])
+        page.hint(card, "挂梯子时按 IP 定位会不准，最好手动填。"
+                        "想看一眼现在几度：右键桌宠 →「查看天气」。")
+        self._hook_page("weather", self._sync_weather_controls)
+        self._sync_weather_controls()
+
+    def _city_list(self):
+        """现在该显示哪些城市（配置里的列表 + 当前城市兜底）。"""
+        pet = self.pet
         current = pet.cfg.get("city", "汕头")
         cities = [c for c in (pet.cfg.get("city_list") or []) if c]
         if current not in cities:
             cities.append(current)
-        card.addWidget(Segmented([(c, c) for c in cities], current,
-                                 lambda name: self._run(pet._apply_city, name)))
-        page.buttons(card, [
-            ("手动输入…", lambda: self._run(pet.set_city_dialog), "primary"),
-            ("自动定位（按 IP）", lambda: self._run(pet.auto_locate_city), None),
-            ("添加城市（联网搜索）",
-             lambda: self._run(pet.search_city_dialog), None),
-        ])
-        if len(cities) > 1:
-            page.buttons(card, [
-                ("从列表里删掉城市…",
-                 lambda: self._run(pet.remove_city_dialog), "danger")])
-        page.hint(card, "挂梯子时按 IP 定位会不准，最好手动填。"
-                        "想看一眼现在几度：右键桌宠 →「查看天气」。")
+        return cities, current
+
+    def _sync_weather_controls(self):
+        """城市那一排现读一遍：加城市 / 删城市 / 联网定位回来都要立刻反映。"""
+        cities, current = self._city_list()
+        seg = getattr(self, "city_seg", None)
+        if seg is not None:
+            if list(seg._buttons) != cities:      # 条目变了才整排重建（顺序也算）
+                seg.set_options([(c, c) for c in cities], current)
+            else:
+                seg.set_value(current)
+        row = getattr(self, "city_del_row", None)
+        if row is not None:
+            row.setVisible(len(cities) > 1)
+
+    def _set_city_manual(self):
+        self._run(self.pet.set_city_dialog)
+        self._sync_weather_controls()
+
+    def _add_city_search(self):
+        """联网搜出来的城市是**后台**加进来的，加完那一刻桌宠会叫一声（refresh_pages）。"""
+        self._run(self.pet.search_city_dialog)
+        self._sync_weather_controls()
+
+    def _remove_city(self):
+        self._run(self.pet.remove_city_dialog)
+        self._sync_weather_controls()
 
     # ---------------- 音乐与歌词 ----------------
     def _page_music(self, page):
