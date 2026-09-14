@@ -29,7 +29,8 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QPainter,
 from PySide6.QtWidgets import (QAbstractButton, QAbstractScrollArea,
                                QAbstractSlider, QApplication, QButtonGroup,
                                QColorDialog, QComboBox, QFileDialog, QFrame,
-                               QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+                               QGraphicsOpacityEffect, QGridLayout, QHBoxLayout,
+                               QInputDialog, QLabel,
                                QLineEdit, QPushButton, QScrollArea, QScrollBar,
                                QSizePolicy, QSlider, QStackedWidget,
                                QVBoxLayout, QWidget)
@@ -57,6 +58,8 @@ APP_VERSION = "1.1.2"
 
 # 最小化动画时长（毫秒）：照着 Windows 那套"往任务栏收"的感觉来
 MINIMIZE_ANIM_MS = 190
+# 切页淡入的时长（毫秒）：短到"看得出是换了一页"，又不至于等
+PAGE_ANIM_MS = 150
 # 动画节拍：**自己去插值**，一拍 8ms（≈120fps）。
 # Qt 自带的动画走的是全局统一计时器（默认 16ms ≈ 60fps），时长相同时帧数只有一半，
 # 所以同一段 190ms 我们按 8ms 走 —— 时间不变、帧数翻倍。
@@ -138,6 +141,8 @@ BACKDROP_DEFAULTS = {
     "console_remember_geo": True,     # 记住窗口大小和位置
     "console_geo": "",                # 记下来的几何（base64，不是给人看的）
     "console_start_page": "balance",  # 打开时先看哪一页
+    "console_page_anim": True,        # 切页时淡入一下（嫌晃眼就关掉）
+    "console_reduce_motion": False,   # 减少动效：窗口的动画一律不播（省电优先）
 }
 
 # 铺满时"留哪一块"的九宫格（先竖后横：tl = 上左，cc = 正中）。
@@ -282,6 +287,14 @@ def refresh_tokens():
 
 def tokens():
     return _current
+
+
+def is_dark():
+    """现在实际生效的是亮色还是暗色（"跟随系统"也解析过）。
+
+    桌宠那边画气泡要用它：气泡风格选「跟随界面」时，跟着这里走。
+    """
+    return (_mode if _mode in ("light", "dark") else system_scheme()) == "dark"
 
 
 def default_accent():
@@ -1553,6 +1566,69 @@ class ConsoleWindow(QWidget):
         except Exception:
             pass
 
+    # ---- 动效（切页淡入 / 减少动效）----
+    def _reduce_motion(self):
+        """「减少动效」开着吗：开着的话这个窗口一个字都不动。"""
+        return self._bg_bool("console_reduce_motion")
+
+    def _page_anim_on(self):
+        """切页要不要淡入一下（「减少动效」开着时一律不播）。"""
+        return self._bg_bool("console_page_anim") and not self._reduce_motion()
+
+    def _set_motion(self, key, on):
+        """改「页面切换动效 / 减少动效」：存下来，顺手把正跑着的那段动画收干净。"""
+        self._set_bg(key, bool(on))
+        if not self._page_anim_on():
+            self._stop_page_anim()
+
+    def _stop_page_anim(self):
+        """把手里的切页动画收干净：停掉、拆掉那个不透明度效果（留着会让整页走离屏合成）。"""
+        anim = getattr(self, "_page_anim", None)
+        page = getattr(self, "_page_anim_page", None)
+        self._page_anim = None
+        self._page_anim_page = None
+        if anim is not None:
+            try:
+                anim.stop()
+                anim.deleteLater()
+            except RuntimeError:
+                pass
+        if page is not None:
+            try:
+                page.setGraphicsEffect(None)   # 传 None = 把上一张效果拆掉
+            except RuntimeError:
+                pass
+
+    def _animate_page_in(self, page):
+        """新页面淡入一下（150ms，只动透明度）。
+
+        用 QGraphicsOpacityEffect 是没法子 —— 这个窗口是无边框 + 半透明（分层窗口），
+        动透明度只有这条路。它会让这一页在动画期间走离屏合成，所以**跑完立刻拆掉**，
+        不然之后滚动会一直慢半拍。
+        """
+        if not self._page_anim_on() or not self.isVisible():
+            return
+        self._stop_page_anim()
+        try:
+            fx = QGraphicsOpacityEffect(page)
+            page.setGraphicsEffect(fx)
+            anim = QPropertyAnimation(fx, b"opacity", self)
+            anim.setDuration(PAGE_ANIM_MS)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.finished.connect(lambda p=page: self._page_anim_done(p))
+            self._page_anim = anim
+            self._page_anim_page = page
+            anim.start(QPropertyAnimation.DeletionPolicy.KeepWhenStopped)
+        except Exception as exc:
+            print("切页动效失败:", exc)
+            self._stop_page_anim()
+
+    def _page_anim_done(self, page):
+        if getattr(self, "_page_anim_page", None) is page:
+            self._stop_page_anim()
+
     def _ask_file(self, title, filt, current=""):
         """挑文件。期间让桌宠站住不动（跟别的对话框一个规矩）。"""
         guard = getattr(self.pet, "_ui_guard", None)
@@ -1977,6 +2053,8 @@ class ConsoleWindow(QWidget):
             return
         self._cur_page_key = key
         self.stack.setCurrentWidget(page)
+        # 新页面淡入一下（「页面切换动效」关掉、或开着「减少动效」时不播）
+        self._animate_page_in(page)
         self.title_label.setText(page.title)
         self.desc_label.setText(page.desc)
         for name, item in self._nav_items.items():
@@ -2157,6 +2235,14 @@ class ConsoleWindow(QWidget):
         page.slider(card, "透明度", "拖太低就快看不见了", 20, 100,
                     int(pet.opacity * 100), "%",
                     lambda v: self._run(pet.set_opacity, v / 100.0))
+        # 气泡（语录 / 余额 / 歌词）用哪套配色：默认跟着上面那套界面主题的亮暗走，
+        # 也能自己定死浅色 / 深色（深色底上原来的白气泡太刺眼）
+        self.bubble_seg = Segmented(
+            list(self.ctx.get("BUBBLE_STYLES") or [("auto", "跟随界面")]),
+            getattr(pet, "bubble_style", "auto"),
+            lambda name: self._run(pet.set_bubble_style, name))
+        page.row(card, "气泡风格", "语录、余额、歌词三种气泡一起换",
+                 self.bubble_seg)
         page.row(card, "窗口层级", "跟别的窗口谁在前", self._layer_combo())
         page.row(card, "拖拽吸附四边", "拖到屏幕边上自己贴住",
                  Switch(pet.snap_on, pet.set_snap))
@@ -2186,6 +2272,9 @@ class ConsoleWindow(QWidget):
         if seg is not None:
             # clear_custom_skin 可能把挂件退回"大肥鱼"，这里跟着对上
             seg.set_value(getattr(self.pet, "skin", None))
+        bubble = getattr(self, "bubble_seg", None)
+        if bubble is not None:
+            bubble.set_value(getattr(self.pet, "bubble_style", "auto"))
 
     def _open_skin_library(self):
         """我的形象库…：关掉窗口之后马上把这一页的数刷新一遍（不用再切页 / 重启）。"""
@@ -2364,6 +2453,7 @@ class ConsoleWindow(QWidget):
                        self._bg_int("console_card_radius"))
         self._apply_brand()
         self._sync_console_controls()
+        self._sync_motion_switches()      # 动效那两颗开关也在 BACKDROP_DEFAULTS 里，一起复位
         self.apply_theme()
 
     def _sync_console_controls(self):
@@ -2595,6 +2685,19 @@ class ConsoleWindow(QWidget):
         if label is not None:
             label.setText(self._mem_hint_text())
 
+    def _sync_motion_switches(self):
+        """把「页面切换动效 / 减少动效」两颗开关摆成配置里的样子（恢复默认之后也要对得上）。"""
+        for name, key in (("page_anim_switch", "console_page_anim"),
+                          ("reduce_motion_switch", "console_reduce_motion")):
+            switch = getattr(self, name, None)
+            if switch is None:
+                continue
+            want = self._bg_bool(key)
+            if switch.isChecked() != want:
+                switch.blockSignals(True)
+                switch.setChecked(want)
+                switch.blockSignals(False)
+
     # ---------------- 通用 ----------------
     def _page_general(self, page):
         pet = self.pet
@@ -2616,6 +2719,21 @@ class ConsoleWindow(QWidget):
         page.row(card, "界面配色", "亮色 / 暗色 / 跟系统",
                  seg)
         page.hint(card, "「跟随系统」会在你切 Windows 深色模式时自动跟着变。")
+
+        card = page.card("动效", "这个窗口自己的动画", "page.sparkle")
+        self.page_anim_switch = Switch(
+            self._bg_bool("console_page_anim"),
+            lambda on: self._set_motion("console_page_anim", on))
+        page.row(card, "页面切换动效", "切分类时新页面淡入一下",
+                 self.page_anim_switch)
+        self.reduce_motion_switch = Switch(
+            self._bg_bool("console_reduce_motion"),
+            lambda on: self._set_motion("console_reduce_motion", on))
+        page.row(card, "减少动效",
+                 "一切动画都不播：切页直接换、最小化 / 还原也直接到位（省电）",
+                 self.reduce_motion_switch)
+        page.hint(card, "「减少动效」开着的时候，上面那条切页动效也会一起停。")
+        self._hook_page("general", self._sync_motion_switches)
 
         card = page.card("排查问题", "右键菜单不听话的时候才用得上", "ui.help")
         page.row(card, "记录菜单日志", "会写一个 menu-debug.log 方便查",
@@ -2819,6 +2937,14 @@ class ConsoleWindow(QWidget):
             return
         if getattr(self, "_anim_target", None) == "min":
             return                       # 已经在往最小化走，别重复起
+        if self._reduce_motion():
+            # 「减少动效」开着：不拍截图、不播动画，直接最小化。
+            # `_min_self` 是给 changeEvent 那条兜底看的（不然它会把窗口拉回来再播一遍）。
+            self._min_self = True
+            self._min_pm = None          # 不留素材，还原时也不会突然冒出动画
+            self._min_min_size = None
+            self.showMinimized()
+            return
         if getattr(self, "_min_pm", None) is None:
             self._min_pm = self.grab()   # 素材：整窗截图（还原动画也用它）
         self._restoring = False
@@ -2946,6 +3072,13 @@ class ConsoleWindow(QWidget):
         """
         if getattr(self, "_anim_target", None) == "restore":
             return                       # 已经在往还原走了
+        if self._reduce_motion():
+            # 「减少动效」开着：不播动画，直接摆回来（_finish_restore 顺带把控件放回来、
+            # 清掉可能留着的素材，没素材时它也是个幂等的收尾）
+            self._restoring = False
+            self.showNormal()
+            self._finish_restore()
+            return
         if not self.isMinimized() and getattr(self, "_min_pm", None) is None:
             # 正常开着、也没素材：谈不上"从任务栏还原"，抬到前面就行
             self.showNormal()

@@ -16,6 +16,25 @@
   （收起来过一阵再打开、从任务栏点回来）都会重读该页上会变的数据，
   而不是建页面的时候读一次、之后再也不管。
 
+### 气泡风格自己挑：深色界面下不再是刺眼的白气泡
+
+- **「桌宠形象 → 外观」里多了一条「气泡风格」**（跟随界面 / 浅色 / 深色）：
+  **语录、余额、歌词三种气泡一起换**。
+- **默认「跟随界面」**：设置窗口选亮色，气泡就是白底深字；选暗色，
+  气泡换成深底浅字 —— 深色主题下原来那块白气泡太扎眼，这条就是冲着它来的
+  （「跟随系统」也跟着系统的亮暗走）。
+- 想固定一种也行：选「浅色」/「深色」之后跟界面主题脱钩，界面怎么切它都不变。
+
+### 动效：切页淡入，不想看就关掉
+
+- 设置窗口**切分类时新页面淡一下进来**（150 毫秒，只动透明度、不动位置）——
+  原来是一下子"啪"地换页。
+- **「通用 → 动效」**里两颗开关：
+  - **页面切换动效**：上面那条淡入的开关，不想看就关掉。
+  - **减少动效**：一开，这个窗口的动画**全都不播**（切页直接换，
+    最小化 / 从任务栏点回来也直接到位，不拍截图、不插帧）—— 省电，
+    也照顾不喜欢画面动来动去的情况。
+
 - 实测：离屏脚本 `F:\Codex\work\test_console_live_refresh.py`（10 组，22 项全过）——
   空库时按钮写「三维 0 · 挂件 0」；在形象库里收一条、关掉窗口**当场**变「三维 0 · 挂件 1」；
   切到别的页再切回来读到「三维 1 · 挂件 1」；删掉一条变「三维 1 · 挂件 0」；
@@ -28,11 +47,32 @@
   `test_console_ui.py`、`test_console_style.py`（45 项）、`test_console_click.py`（12 项）、
   `test_console_perf.py`、`test_console_backdrop.py`（12 项）；
   `test_skin_library.py`（形象库本体）也照旧 ALL PASS。
+- 实测：气泡风格 `F:\Codex\work\test_bubble_style.py`（22 项全过）——
+  默认 auto；界面切暗色 → 气泡自动用深色那套；手动选浅色时界面暗着也还是浅色；
+  **把桌宠真画出来取气泡那一带的底色**：浅色 (255,255,255)、深色 (31,35,49)，
+  心声 (232,232,238) → (45,50,68)，余额和歌词气泡同样换；歌词那块的**排版缓存**
+  也跟着重算（字色从 #262c42 变 #e9ebf4）；「桌宠形象 → 外观」里那一排点一下就写进配置；
+  老配置里存着「暗色」时，**刚启动、还没开过设置窗口**气泡就已经是深色。
+  截图 `F:\Codex\work\shot_bubble_dark_auto.png`（深色界面下的深气泡）、
+  `shot_bubble_dark_light.png`（同一界面下强选浅色）、`shot_bubble_style_row.png`。
+- 实测：动效 `F:\Codex\work\test_console_motion.py`（30 项全过）——
+  切页确实起了动画、跑完把不透明度效果拆干净（留着会拖慢滚动）、12 页连着快速切一圈
+  没有残留、关掉开关就不播；**「减少动效」开着时最小化走系统的直接最小化
+  （不拍截图、不留素材），还原之后真控件都在**；关掉之后最小化 / 还原照旧走动画；
+  两个键都写进 `config.json`。
+- 回归：桌宠本体那批用例一起跑了一遍 —— 歌词折行 / 歌词卡住与位置记忆 / 音频设备跟随、
+  峰谷显示、余额逻辑、自定义台词与音效、大小五档与无级、锁定位置、吸附翻面、
+  鼠标不动模式、音量透明度窗口、菜单性能、应用扫描、天气、回收内存：全过。
+  顺手修了三支早就过期、跟这次改动无关的用例：`test_quick_menu.py`
+  （侧边分类少了 v1.1.1 新增的「控制台外观」一页）、`test_size_levels.py`
+  （菜单里那条早就从「无级调节…」改名成「精确调节…」）、`test_new_features.py`
+  （应用搜索那条假定这台机器上只有一个名字带 steam 的应用，实际有两个）。
 
 ### 维护者相关（发版 / 仓库，不写进 Release 说明）
 
-- 没动桌宠本体（`桌宠.py`）：这几处一直是设置窗口"读晚了"，数据源（`pet.cfg` /
-  `pet.skin_library()` / `pet._sound_names()` / `pet._mem_last`）本来就是现成的。
+- 「数字不用重启」那一批没动桌宠本体：那几处一直是设置窗口"读晚了"，
+  数据源（`pet.cfg` / `pet.skin_library()` / `pet._sound_names()` / `pet._mem_last`）
+  本来就是现成的。气泡风格那批才动了 `桌宠.py`（见下面几条）。
 - `ui_console.py`：
   - `ConsoleWindow._page_hooks` + `_hook_page(key, fn)` / `_refresh_page(key)` /
     `_refresh_current_page()`：页面级的"现读一遍"挂点。页面是建一次留着的，
@@ -47,6 +87,25 @@
     「性能和工具」页 `_sync_mem_hint()`（回收是后台跑的，点完那一下数还不准，
     回到这一页再读）。
   - `APP_VERSION`：1.1.1 → **1.1.2**。
+- 气泡风格（`桌宠.py`）：`BUBBLE_STYLES`（auto / light / dark）、`BUBBLE_INK`
+  （两套颜色：气泡底 / 正文字 / 心声 / 余额三行 / 歌词三行）、`BUBBLE_PEAK_COLORS`
+  （峰谷那行在深色底上要亮一点）；`_bubble_theme()` / `_bubble_ink()` /
+  `set_bubble_style()`；`_lyric_rows()` 多收一个 `ink`（不给就按现在生效的那套，
+  老用例不用改），歌词**排版缓存的 key 里带上了 theme** —— 颜色是烘在缓存里的，
+  不带就会"换了风格字色不变"。`_bubble_theme()` 在「跟随系统」那档才缓存 1 秒
+  （画气泡每帧都要问一次，而那条路要读注册表）；亮 / 暗是定死的，直接算不缓存。
+- `ui_console.is_dark()`：给桌宠用的"现在实际是亮还是暗"。另外 `PetWindow.__init__`
+  现在**一启动就 `ui_console.set_mode(cfg["ui_theme"])`** —— 以前要等设置窗口建出来
+  才 set_mode，所以"刚启动、还没开过设置"时气泡会按系统亮暗走，老对话框取主题色也偏一档。
+- 动效（`ui_console.py`）：`PAGE_ANIM_MS = 150`；`_page_anim_on()` / `_reduce_motion()` /
+  `_set_motion()` / `_animate_page_in()` / `_page_anim_done()` / `_stop_page_anim()`；
+  `switch_page()` 里起动画，`_stop_page_anim()` 必须把 effect 拆掉
+  （`page.setGraphicsEffect(None)`）—— 留着会让这一页之后一直走离屏合成、滚动变慢。
+  `minimize_with_anim()` / `restore_with_anim()` 开头加了「减少动效」分支：
+  最小化前要 `self._min_self = True`（不然 `changeEvent` 的兜底会把窗口拉回来再播一遍），
+  还原走 `showNormal()` + `_finish_restore()`（它本身是幂等的收尾）。
+  `console_page_anim` / `console_reduce_motion` 加进 `BACKDROP_DEFAULTS`，
+  所以「全部恢复默认」也会把动效复位（`_sync_motion_switches()`）。
 
 ## v1.1.1
 

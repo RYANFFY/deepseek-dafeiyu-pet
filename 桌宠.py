@@ -407,6 +407,40 @@ LYRIC_ANIM_MS = 10              # 过渡期间用 100 帧/秒重绘（主时钟�
 BUBBLE_ANIM_SEC = 0.15          # 气泡自己变大/变小也用同样长的过渡（跟着 100 帧/秒的计时器走）
 LYRIC_KARAOKE_ON = False        # 逐字高亮（"唱到哪变蓝到哪"）：主人说不要，先关掉（网易云多数歌也没逐字数据）
 LYRIC_KARAOKE_COLOR = (72, 104, 240)   # 已唱到的那部分的颜色（DeepSeek 蓝）
+
+# 气泡风格（语录 / 余额 / 歌词三种气泡共用一套，在「设置 → 桌宠形象 → 外观」里换）：
+# auto = 跟着设置界面的亮暗走，light / dark = 自己定死。
+BUBBLE_STYLES = [("auto", "跟随界面"), ("light", "浅色"), ("dark", "深色")]
+# 两套气泡底色 / 字色。亮色那套就是原来写死的值（老 config.json 不变样）。
+BUBBLE_INK = {
+    "light": {
+        "bg": QColor(255, 255, 255, 242),          # 气泡底
+        "fg": QColor(60, 60, 80),                  # 正文字
+        "inner_bg": QColor(232, 232, 238, 242),    # 心声（（）那种）的底
+        "inner_fg": QColor(125, 125, 138),
+        "bal_title": QColor(130, 138, 158),        # 余额气泡：标题 / 数字 / 小字
+        "bal_big": QColor(32, 49, 112),
+        "bal_sub": QColor(150, 150, 165),
+        "ly_head": QColor(140, 148, 168),          # 歌词气泡：应用·歌名 / 当前句 / 下一句
+        "ly_main": QColor(38, 44, 66),
+        "ly_next": QColor(158, 158, 172),
+    },
+    "dark": {
+        "bg": QColor(31, 35, 49, 246),
+        "fg": QColor(233, 235, 244),
+        "inner_bg": QColor(45, 50, 68, 246),
+        "inner_fg": QColor(170, 176, 196),
+        "bal_title": QColor(151, 157, 178),
+        "bal_big": QColor(150, 186, 255),
+        "bal_sub": QColor(128, 135, 160),
+        "ly_head": QColor(151, 157, 178),
+        "ly_main": QColor(233, 235, 244),
+        "ly_next": QColor(128, 135, 160),
+    },
+}
+# 余额气泡里"现在高峰 / 空闲"那行的颜色（深色底上得亮一点才看得清）
+BUBBLE_PEAK_COLORS = {"light": (QColor(198, 90, 20), QColor(46, 125, 50)),
+                      "dark": (QColor(232, 152, 92), QColor(120, 214, 156))}
 LYRIC_MAX_ROWS = 4              # 当前这句最多折几行（再多就先把字号缩一档）
 LYRIC_MIN_PT = 7                # 折行还是超了时，字号最小缩到几磅（只有"迷你档 + 超长英文句"才会用到）
 LYRIC_OVERFLOW_ROWS = 8         # 缩到底还装不下时最多铺几行（宁可气泡高一点，也别丢歌词）
@@ -2787,6 +2821,7 @@ class PetWindow(QWidget):
             "volume": 0.9,
             "show_peak": True,
             "peak_style": "默认",
+            "bubble_style": "auto",     # 气泡风格：跟随界面 / 浅色 / 深色
             "line_freq": LINE_FREQ_DEFAULT,
             "lyric_offset": LYRIC_OFFSET_DEFAULT,
             "layer": "top",
@@ -2832,6 +2867,14 @@ class PetWindow(QWidget):
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
+        # 界面配色一上来就按配置定下来：气泡风格选「跟随界面」时要看这个亮暗，
+        # 老对话框取主题色也走同一套 —— 以前是等设置窗口建出来才 set_mode，
+        # 那样"刚启动、还没开过设置"的时候气泡会按系统的亮暗走，不是主人选的那档。
+        if ui_console is not None:
+            try:
+                ui_console.set_mode(self.cfg.get("ui_theme", "system"))
+            except Exception:
+                pass
         # 菜单排查日志可以像开关一样存在 config.json 里（菜单里那一项用的）
         global MENU_DEBUG_RUNTIME
         MENU_DEBUG_RUNTIME = bool(self.cfg.get("menu_debug", False))
@@ -2908,6 +2951,9 @@ class PetWindow(QWidget):
         self.balance_always = bool(self.cfg.get("balance_always", False))
         self.show_peak = bool(self.cfg.get("show_peak", True))
         self.peak_style = self.cfg.get("peak_style", "默认")
+        self.bubble_style = self.cfg.get("bubble_style", "auto")
+        if self.bubble_style not in dict(BUBBLE_STYLES):
+            self.bubble_style = "auto"
         self.line_freq = (self.cfg.get("line_freq")
                           if self.cfg.get("line_freq") in LINE_FREQ_LEVELS else LINE_FREQ_DEFAULT)
         try:
@@ -4452,13 +4498,14 @@ class PetWindow(QWidget):
 
         mode = self._bubble_mode(now)
         if mode == "text":
+            ink = self._bubble_ink()
             if self.bubble_inner:
                 bfont = QFont(self.bubble_font)
                 bfont.setItalic(True)
-                bg, fg = QColor(232, 232, 238, 242), QColor(125, 125, 138)
+                bg, fg = ink["inner_bg"], ink["inner_fg"]
             else:
                 bfont = QFont(self.bubble_font)
-                bg, fg = QColor(255, 255, 255, 242), QColor(60, 60, 80)
+                bg, fg = ink["bg"], ink["fg"]
             fm = QFontMetrics(bfont)
             max_w = min(240, self.width() - 16)
             words = self.bubble_text
@@ -4488,6 +4535,7 @@ class PetWindow(QWidget):
                            Qt.AlignmentFlag.AlignCenter, l)
         elif mode == "balance":
             # 余额气泡：余额 / 今日已用（数字带滚动动画）
+            ink = self._bubble_ink()
             f_small = QFont(self.bubble_font)
             f_small.setPointSize(9)
             f_big = QFont(self.bubble_font)
@@ -4518,28 +4566,29 @@ class PetWindow(QWidget):
             bx = (self.width() - bw) / 2
             by = self._bubble_top(bh)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 242))
+            p.setBrush(ink["bg"])
             p.drawRoundedRect(QRectF(bx, by, bw, bh), 14, 14)
             tail = QPointF(self.width() / 2, by + bh)
             p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
                                      QPointF(tail.x() + 7, tail.y() + 9)]))
             ty = by + 8
             p.setFont(f_small)
-            p.setPen(QColor(130, 138, 158))
+            p.setPen(ink["bal_title"])
             p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l1)
             ty += fm_s.height()
             p.setFont(f_big)
-            p.setPen(QColor(32, 49, 112))
+            p.setPen(ink["bal_big"])
             p.drawText(QRectF(bx, ty, bw, fm_b.height()), Qt.AlignmentFlag.AlignCenter, l2)
             ty += fm_b.height()
             p.setFont(f_small)
-            p.setPen(QColor(150, 150, 165))
+            p.setPen(ink["bal_sub"])
             p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l3)
             if show_peak_line:
                 ty += fm_s.height()
                 p.setFont(f_small)
                 # 高峰暖色、空闲绿色，一眼看出现在贵不贵
-                p.setPen(QColor(198, 90, 20) if peak_now else QColor(46, 125, 50))
+                warm, cool = BUBBLE_PEAK_COLORS[self._bubble_theme()]
+                p.setPen(warm if peak_now else cool)
                 p.drawText(QRectF(bx, ty, bw, fm_s.height()), Qt.AlignmentFlag.AlignCenter, l4)
 
         elif mode == "lyric":
@@ -4622,13 +4671,45 @@ class PetWindow(QWidget):
             return "balance"
         return None
 
-    def _lyric_rows(self, head, cur, nxt, max_w):
+    def _bubble_theme(self):
+        """气泡现在该用亮色还是深色那套（bubble_style="auto" 时跟着设置界面的主题）。"""
+        style = getattr(self, "bubble_style", "auto")
+        if style in ("light", "dark"):
+            return style
+        try:
+            # 主人自己挑的亮 / 暗是定死的，直接算（这就是个字符串比较，便宜）
+            if ui_console.get_mode() in ("light", "dark"):
+                return "dark" if ui_console.is_dark() else "light"
+        except Exception:                      # 界面模块没起来 → 还是老样子（浅色）
+            return "light"
+        # 剩下的只有"跟随系统"：那条路要读注册表，而画气泡时每帧都要问一次，
+        # 所以结果缓存 1 秒（Windows 切深色模式时最多晚一秒跟上）
+        now = time.time()
+        cached = getattr(self, "_bubble_theme_cache", None)
+        if cached is not None and now - cached[0] < 1.0:
+            return cached[1]
+        try:
+            theme = "dark" if ui_console.is_dark() else "light"
+        except Exception:
+            theme = "light"
+        self._bubble_theme_cache = (now, theme)
+        return theme
+
+    def _bubble_ink(self):
+        """气泡那套颜色（底 / 字）。每帧都取一次，就是个字典查表，不重新算。"""
+        return BUBBLE_INK[self._bubble_theme()]
+
+    def _lyric_rows(self, head, cur, nxt, max_w, ink=None):
         """把歌词折成"要画的几行"。
 
         一句太长就先把字号往下缩（11 → 8 磅）；缩到底还超才截到 LYRIC_MAX_ROWS 行 ——
         主人反馈过"歌词显示不全"，所以尽量别丢掉半句话。
+        ink 是当前气泡那套颜色（见 _bubble_ink）—— 颜色烘在结果里，换风格要连带重算。
+        不给就按现在生效的那套来（老用例只关心折行，不传这个参数）。
         返回 (rows, 折好的当前句, 当前句用的字体, 它的 QFontMetrics)。
         """
+        if ink is None:
+            ink = self._bubble_ink()
         f_small = QFont(self.bubble_font)
         f_small.setPointSize(9)
         f_main = QFont(self.bubble_font)
@@ -4647,14 +4728,14 @@ class PetWindow(QWidget):
             # 再多给两行，同时把顶部那行「♪ 应用 · 歌名」去掉，腾出高度，
             # 尽量让整句歌词都看得见（主人反馈过"歌词显示不全"）。
             keep = cur_lines[:LYRIC_OVERFLOW_ROWS]
-            rows = [(line, f_main, QColor(38, 44, 66)) for line in keep]
+            rows = [(line, f_main, ink["ly_main"]) for line in keep]
             return rows, keep, f_main, fm_m, 0
         cur_lines = cur_lines[:LYRIC_MAX_ROWS]
         # 下一句一直显示（主人要求：不要因为这一句长就不显示下一句）
         nxt_lines = wrap_text(QFontMetrics(f_small), nxt, max_w)[:1] if nxt else []
-        rows = ([(head_lines[0], f_small, QColor(140, 148, 168))]
-                + [(line, f_main, QColor(38, 44, 66)) for line in cur_lines]
-                + [(line, f_small, QColor(158, 158, 172)) for line in nxt_lines])
+        rows = ([(head_lines[0], f_small, ink["ly_head"])]
+                + [(line, f_main, ink["ly_main"]) for line in cur_lines]
+                + [(line, f_small, ink["ly_next"]) for line in nxt_lines])
         return rows, cur_lines, f_main, fm_m, len(head_lines)
 
     def _paint_lyric_bubble(self, p):
@@ -4672,10 +4753,13 @@ class PetWindow(QWidget):
             # 还没找到歌词 / 用户关了歌词 → 就挂个「♪ 歌名」
             cur, nxt = self._song_label(), ""
         # 排版缓存：换句 / 换宽度 / 换字号才重算 —— 每帧算一次 wrap_text 要 ~1ms，100 帧就掉帧了
-        layout_key = (head, cur, nxt, max_w)
+        # 气泡风格也算在 key 里：颜色是烘在排版结果里的，换了风格得跟着重算
+        theme = self._bubble_theme()
+        ink = BUBBLE_INK[theme]
+        layout_key = (head, cur, nxt, max_w, theme)
         if getattr(self, "_lyric_layout_key", None) != layout_key:
             self._lyric_layout_key = layout_key
-            self._lyric_layout_cache = self._lyric_rows(head, cur, nxt, max_w)
+            self._lyric_layout_cache = self._lyric_rows(head, cur, nxt, max_w, ink)
         rows, cur_lines, f_main, fm_m, n_head = self._lyric_layout_cache
         real_lyric = bool(self._lyric_lines) and self._current_lyric_pair()[0] == cur
         # 换句时的过渡：新的一句淡入、旧的淡出并往上滑一点（不然"啪"一下太生硬）
@@ -4683,11 +4767,11 @@ class PetWindow(QWidget):
         prev_text = getattr(self, "_lyric_prev", "")
         prev_rows = []
         if anim > 0 and prev_text and prev_text != cur:
-            prev_key = (prev_text, max_w)
+            prev_key = (prev_text, max_w, theme)
             if getattr(self, "_lyric_prev_key", None) != prev_key:
                 self._lyric_prev_key = prev_key
                 self._lyric_prev_cache = [
-                    (line, f_main, QColor(38, 44, 66))
+                    (line, f_main, ink["ly_main"])
                     for line in wrap_text(fm_m, prev_text, max_w)[:LYRIC_MAX_ROWS]]
             prev_rows = self._lyric_prev_cache
         widths = [QFontMetrics(font).horizontalAdvance(text) for text, font, _c in rows]
@@ -4716,7 +4800,7 @@ class PetWindow(QWidget):
         # 不然 100 帧/秒会把合成器压住 —— 拖窗口就掉帧了（主人反馈的卡顿）。
         self._lyric_repaint_rect = QRectF(bx - 6, by - 6, bw + 12, height + 20).toRect()
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 242))
+        p.setBrush(ink["bg"])
         p.drawRoundedRect(QRectF(bx, by, bw, height), 14, 14)
         tail = QPointF(self.width() / 2, by + height)
         p.drawPolygon(QPolygonF([tail, QPointF(tail.x() - 7, tail.y() + 9),
@@ -5954,6 +6038,7 @@ class PetWindow(QWidget):
             "LYRIC_OFFSET_LEVELS": LYRIC_OFFSET_LEVELS,
             "DOUBLE_CLICK_CHOICES": DOUBLE_CLICK_CHOICES,
             "PEAK_TEXT_STYLES": PEAK_TEXT_STYLES,
+            "BUBBLE_STYLES": BUBBLE_STYLES,
             "LINE_FREQ_LEVELS": LINE_FREQ_LEVELS,
             "SKIN_PET": SKIN_PET,
             "SKIN_WIDGET": SKIN_WIDGET,
@@ -7265,6 +7350,22 @@ class PetWindow(QWidget):
         self.peak_style = style
         self.cfg["peak_style"] = style
         self.update()
+
+    def set_bubble_style(self, style):
+        """气泡风格：跟随界面 / 浅色 / 深色（语录、余额、歌词三种气泡一起换）。"""
+        if style not in dict(BUBBLE_STYLES):
+            return
+        self.bubble_style = style
+        self.cfg["bubble_style"] = style
+        # 歌词的颜色是烘在排版缓存里的，换了风格得让缓存重算一遍
+        self._lyric_layout_key = None
+        self._lyric_prev_key = None
+        self._bubble_theme_cache = None        # auto 那个 1 秒的缓存也清掉，换风格立刻生效
+        self.update()
+        self.save_config()
+        self.say("气泡换成"
+                 + {"auto": "跟着界面走", "light": "浅色", "dark": "深色"}.get(style, "浅色")
+                 + "啦")
 
     def set_line_freq(self, name):
         """语录频率：安静 / 正常 / 话多 / 话痨（管的是"闲着时自己冒话"的频率）。"""
