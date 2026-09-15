@@ -25,7 +25,7 @@ from PySide6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent,
                             QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer,
                             QUrl, QVariantAnimation)
 from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QPainter,
-                           QPainterPath, QPen, QPixmap, QWheelEvent)
+                           QPainterPath, QPen, QPixmap, QRegion, QWheelEvent)
 from PySide6.QtWidgets import (QAbstractButton, QAbstractScrollArea,
                                QAbstractSlider, QApplication, QButtonGroup,
                                QColorDialog, QComboBox, QFileDialog, QFrame,
@@ -54,7 +54,7 @@ except Exception:
 # 注意：**没推送就不算开新版本** —— 同一版里的返工都算在同一个号上
 # （2026-09-14 主人定的）。v1.1.1 已经推送过，所以这一版的改动是 1.1.2；
 # 之后再改还是 1.1.2，等推送那天才说下一版。
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 
 # 最小化动画时长（毫秒）：照着 Windows 那套"往任务栏收"的感觉来
 MINIMIZE_ANIM_MS = 190
@@ -70,6 +70,10 @@ FLASH_MS = 900
 ICON_SM = 16
 ICON_CARD = 17
 ICON_MD = 18
+# 窗口壳那张圆角卡片的半径。样式表里 `QFrame#shell` 的 border-radius 读的就是它 ——
+# 页面那几层是不带底色的，壳这张圆角卡片就是窗口四个角的样子（主人 2026-09-14 报过
+# "右下角是直角 / 右下角 R 角跟别的不一样"，都出在这个角上）。
+SHELL_RADIUS = 14
 # 动画节拍：**自己去插值**，一拍 8ms（≈120fps）。
 # Qt 自带的动画走的是全局统一计时器（默认 16ms ≈ 60fps），时长相同时帧数只有一半，
 # 所以同一段 190ms 我们按 8ms 走 —— 时间不变、帧数翻倍。
@@ -595,7 +599,7 @@ def install_wheel_guard(app):
 # --------------------------------------------------------------------------- #
 _QSS = Template("""
 QWidget#shellRoot { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; }
-QFrame#shell { background: $bg; border: 1px solid $border; border-radius: 14px; }
+QFrame#shell { background: $bg; border: 1px solid $border; border-radius: $shell_radius; }
 QFrame#sidebar { background: $sidebar; border: none;
                  border-top-left-radius: 13px; border-bottom-left-radius: 13px; }
 QFrame#header, QFrame#main { background: transparent; border: none; }
@@ -701,11 +705,19 @@ QLabel#warnText { color: $warn; }
 QLabel#okText { color: $ok; }
 QLabel#preview { border: 1px solid $border; border-radius: 10px; color: $text_faint;
                  background: $surface; }
-/* 滚动区域用**实色**底：这样视口可以标成"不透明"，滚动时不用连带重画父窗口
-   （无边框 + 半透明窗口上，每滚一帧都把整窗重画一遍就会掉帧）。 */
-QScrollArea { background: $bg; border: none; }
-QWidget#pageInner { background: $bg; }
-QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+/* 滚动区 / 页面内容都**不带底色**：底色由壳来画（壳是圆角卡片，带抗锯齿）。
+   页面自己带底色的话，它铺满的是直角矩形，会把壳右下角的圆角填成直角
+   （主人 2026-09-14 报的"右下角一直是直角"）。代价是视口不能再标"不透明"，
+   滚动时父窗口要一起重画 —— 真机量过：滚一屏 3.65ms vs 原来的 3.71ms，没变慢。 */
+QScrollArea { background: transparent; border: none; }
+QWidget#pageInner { background: transparent; }
+/* 视口（真正滚动的那一层）也保持透明：上面那两块不画了，壳自己的圆角
+   （带抗锯齿）就露出来了，四个角形状一致。 */
+#qt_scrollarea_viewport { background: transparent; }
+/* 竖滚动条底下的留白从 2px 加到 6px：不加的话，滚到底时滑块的下端会探出壳右下角的圆角
+   （真机实测：滑块色有 1~2 个像素落在圆弧外面，看着就是"滚动条长出来一点点"）。 */
+QScrollBar:vertical { background: transparent; width: 10px;
+                      margin: 2px 2px 6px 2px; }
 QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
 QScrollBar::handle:vertical { background: $scroll; border-radius: 5px; min-height: 32px; }
 QScrollBar::handle:vertical:hover { background: $accent; }
@@ -732,6 +744,7 @@ QDialog { background: $dialog_bg; }
 def build_qss(glass=False):
     data = dict(tokens())
     data["chevron"] = icon_path("ui.chevron-down").replace("\\", "/")
+    data["shell_radius"] = "%dpx" % SHELL_RADIUS
     # 卡片那两个格子：默认就是实心 + 12px 圆角，用户在「控制台外观」里能改
     data["card"] = _rgba(tokens()["surface"], _card_alpha)
     data["card_radius"] = "%dpx" % int(_card_radius)
@@ -1201,8 +1214,11 @@ class Page(QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # 视口自己把底色铺满（QSS 里给了实色底），滚动时就不用连父窗口一起重画
-        self.viewport().setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        # **千万不要**给视口标 WA_OpaquePaintEvent：那是"我这块整片都会画满"的承诺，
+        # 页面现在不带底色（底色归壳画，这样壳右下角的圆角才不会被填成直角），
+        # 标了它 Qt 就不再重画底下的壳，圆角那块会变成一片透明（真机踩过）。
+        # 代价（滚动时父窗口跟着重画）真机量过：滚一屏 3.65ms vs 3.71ms，没变慢。
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         inner = QWidget()
         inner.setObjectName("pageInner")
         self.body = QVBoxLayout(inner)
@@ -1977,7 +1993,7 @@ class ConsoleWindow(QWidget):
         self._stop_page_fade()
         pm = None
         try:
-            pm = self.shell.grab()
+            pm = self._shell_shot()
         except Exception as exc:
             print("切页截图失败:", exc)
         if pm is None or pm.isNull():
@@ -2007,6 +2023,27 @@ class ConsoleWindow(QWidget):
             self._stop_page_fade()
             return
         fade.set_opacity((1.0 - t) ** 3)      # 前快后慢，最后收得很轻
+
+    def _shell_shot(self):
+        """给切页淡出拍一张"壳"的截图。
+
+        **别用 `self.shell.grab()`**：它是按"窗口背景"画的 —— 会把壳整个矩形
+        填一遍，壳四角（屏幕上本该是透的，圆角就靠那儿露出来）就被填成主题底色，
+        于是淡出动画的第一帧看着是**四个直角**（主人 2026-09-14 报的那一下，
+        真机实测：切页后 47ms 时四个角 16 个采样点全被盖住）。
+
+        自己开一张透明底图、只画控件自己（含壳的 `paintEvent`）和子树，
+        圆角该透的地方就还是透的 —— 跟屏幕上看到的一模一样。
+        """
+        shell = self.shell
+        dpr = shell.devicePixelRatioF() or 1.0
+        pm = QPixmap(int(round(shell.width() * dpr)),
+                     int(round(shell.height() * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        shell.render(pm, QPoint(0, 0), QRegion(),
+                     QWidget.RenderFlag.DrawChildren)
+        return pm
 
     def _ask_file(self, title, filt, current=""):
         """挑文件。期间让桌宠站住不动（跟别的对话框一个规矩）。"""
@@ -2369,11 +2406,11 @@ class ConsoleWindow(QWidget):
         effective = refresh_tokens()
         clear_icon_cache()
         self.setStyleSheet(build_qss(glass))
-        # 开着背景时页面那块要"透"：视口原来标着"我自己铺满底"（滚动时省一次重画），
-        # 留在那儿底图就被它盖住了。
+        # 页面那块一律"透"：底色（或背景图）都是壳画的，视口标成不透明就会盖住它，
+        # 右下角的圆角也会被填成直角（详见 Page.__init__ 里那段说明）。
         for page in self._pages.values():
             page.viewport().setAttribute(
-                Qt.WidgetAttribute.WA_OpaquePaintEvent, not glass)
+                Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self._repaint_icons()
         for page in self._pages.values():
             page.repaint_cards()
