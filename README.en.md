@@ -74,6 +74,9 @@ with the balance-widget features ported from
 - Drag it around (it leans toward the drag direction and says something when you let go)
 - Single click: hop + talk back + refresh the balance
 - Tray icon, always-on-top, click-through mode, start with Windows, settings persisted in `config.json`
+- **Chat with the pet**: choose “和大肥鱼聊天…” from the right-click menu, set an OpenAI API key,
+  and chat in a separate window. API usage is billed separately from a Codex subscription; the key
+  stays in the local config, and conversation history stays in memory while the pet is running.
 
 **Balance widget**
 

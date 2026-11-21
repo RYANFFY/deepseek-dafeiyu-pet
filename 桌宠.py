@@ -11,6 +11,7 @@
 import ctypes
 import contextlib
 import hashlib
+import html
 import json
 import math
 import os
@@ -49,7 +50,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
                                QSlider, QWidgetAction, QFileDialog, QListWidget,
                                QListWidgetItem, QLabel, QFileIconProvider, QSizePolicy,
-                               QComboBox)
+                               QComboBox, QTextBrowser, QPlainTextEdit)
 
 try:
     from PySide6.QtMultimedia import QSoundEffect
@@ -528,6 +529,7 @@ MENU_ICONS = (
     ("查看余额", "nav.balance"),
     ("查看天气", "nav.weather"),
     ("看一眼", "ui.eye"),
+    ("和大肥鱼聊天", "ui.quote"),
     ("打开设置", "nav.general"),
     ("快速双击", "page.click"),
     ("说一句我写的台词", "ui.quote"),
@@ -1468,6 +1470,157 @@ class AppScanDialog(QDialog):
         self.tip.setText(f"已清掉 {exe} 的自定义文字")
         self._mark_item(self.listw.currentItem())
         self._refresh_buttons()
+
+
+class OpenAIChatDialog(QDialog):
+    """独立聊天窗口；对话只留在当前窗口内存中，不写入桌宠配置。"""
+
+    SYSTEM_PROMPT = (
+        "你是大肥鱼桌宠，一只亲切、活泼、会陪主人聊天的桌面宠物。"
+        "请用自然的中文简短回答，除非主人要求详细说明；不要声称自己是真人。")
+
+    def __init__(self, owner):
+        super().__init__(owner, Qt.WindowType.Window)
+        if ui_console:
+            ui_console.style_dialog(self, BUNDLE_DIR)
+        self.owner = owner
+        self.history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        self._result_queue = []
+        self._busy = False
+        self.setWindowTitle("和大肥鱼聊天")
+        self.setMinimumSize(500, 520)
+        self.resize(600, 680)
+
+        layout = QVBoxLayout(self)
+        title = QLabel("和大肥鱼聊天")
+        title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        layout.addWidget(title)
+
+        info = QLabel("使用 OpenAI API，按 API 用量单独计费；不消耗 Codex 订阅额度。"
+                      "对话仅保存在本次运行内存中，不写入本地文件。")
+        info.setWordWrap(True)
+        info.setObjectName("dim")
+        layout.addWidget(info)
+
+        key_row = QHBoxLayout()
+        self.key_status = QLabel()
+        self.key_status.setWordWrap(True)
+        key_row.addWidget(self.key_status, 1)
+        self.key_button = QPushButton()
+        self.key_button.clicked.connect(self.owner.set_openai_api_key_dialog)
+        key_row.addWidget(self.key_button)
+        layout.addLayout(key_row)
+
+        self.transcript = QTextBrowser()
+        self.transcript.setOpenExternalLinks(False)
+        self.transcript.setPlaceholderText("对话会显示在这里")
+        layout.addWidget(self.transcript, 1)
+        self._append_message("大肥鱼", "你好呀，想聊点什么？")
+
+        self.status = QLabel("你发送的内容会提交给 OpenAI API；退出桌宠后对话清空。")
+        self.status.setWordWrap(True)
+        self.status.setObjectName("dim")
+        layout.addWidget(self.status)
+
+        self.input = QPlainTextEdit()
+        self.input.setPlaceholderText("输入消息，然后点击「发送」…")
+        self.input.setMaximumHeight(110)
+        self.input.setTabChangesFocus(True)
+        layout.addWidget(self.input)
+        buttons = QHBoxLayout()
+        self.clear_button = QPushButton("清空对话")
+        self.clear_button.clicked.connect(self.clear_chat)
+        buttons.addWidget(self.clear_button)
+        buttons.addStretch(1)
+        self.send_button = QPushButton("发送")
+        self.send_button.setDefault(True)
+        self.send_button.clicked.connect(self.send_message)
+        buttons.addWidget(self.send_button)
+        layout.addLayout(buttons)
+
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(100)
+        self._poll_timer.timeout.connect(self._poll_result)
+        self._poll_timer.start()
+        self._sync_key_status()
+
+    def _append_message(self, speaker, text, color=None):
+        safe = html.escape(str(text)).replace("\n", "<br>")
+        color_style = f" style='color:{color}'" if color else ""
+        self.transcript.append(
+            f"<p><b{color_style}>{html.escape(speaker)}</b><br>{safe}</p>")
+
+    def _sync_key_status(self):
+        configured = bool((self.owner.cfg.get("openai_api_key") or "").strip())
+        self.key_status.setText("OpenAI API Key：已配置" if configured
+                                else "还没配置 OpenAI API Key")
+        self.key_button.setText("更换 Key" if configured else "设置 API Key…")
+        self.send_button.setEnabled(not self._busy and configured)
+
+    def send_message(self):
+        if self._busy:
+            return
+        prompt = self.input.toPlainText().strip()
+        if not prompt:
+            self.status.setText("先写一句想聊的话吧。")
+            return
+        api_key = (self.owner.cfg.get("openai_api_key") or "").strip()
+        if not api_key:
+            self.status.setText("需要先设置 OpenAI API Key。")
+            self.owner.set_openai_api_key_dialog()
+            self._sync_key_status()
+            return
+
+        self._append_message("你", prompt, "#3568a8")
+        recent = self.history[1:][-20:]
+        messages = ([self.history[0]] + recent
+                    + [{"role": "user", "content": prompt}])
+        model = str(self.owner.cfg.get("openai_chat_model") or "gpt-4o-mini")
+        self._busy = True
+        self.input.setEnabled(False)
+        self.send_button.setEnabled(False)
+        self.key_button.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        self.status.setText("大肥鱼正在想…")
+
+        def worker():
+            try:
+                answer = openai_chat_completion(api_key, messages, model)
+                self._result_queue.append((prompt, answer, ""))
+            except Exception as exc:
+                message = str(exc).replace(api_key, "（已隐藏）")
+                self._result_queue.append((prompt, "", message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _poll_result(self):
+        if not self._result_queue:
+            return
+        prompt, answer, error = self._result_queue.pop(0)
+        self._busy = False
+        self.input.setEnabled(True)
+        self.key_button.setEnabled(True)
+        self.clear_button.setEnabled(True)
+        if error:
+            self.status.setText(f"发送失败：{error}")
+        else:
+            self.history.extend([
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": answer},
+            ])
+            self._append_message("大肥鱼", answer)
+            self.input.clear()
+            self.status.setText("可以继续聊。")
+        self._sync_key_status()
+        self.input.setFocus()
+
+    def clear_chat(self):
+        if self._busy:
+            return
+        self.history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        self.transcript.clear()
+        self._append_message("大肥鱼", "对话清空啦，重新开始聊吧。")
+        self.status.setText("对话只保存在本次运行内存中，不写入本地文件。")
 
 
 class AutoSayDialog(QDialog):
@@ -2604,6 +2757,40 @@ def query_openrouter_balance(key):
         return {"ok": True, "total": round(total - used, 4), "currency": "USD"}
     except Exception as ex:
         return {"ok": False, "error": str(ex)[:60]}
+
+
+def openai_chat_completion(api_key, messages, model="gpt-4o-mini"):
+    """通过 OpenAI API 完成一轮聊天；异常文本不包含请求头或 API Key。"""
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": model, "messages": messages, "max_tokens": 400},
+            timeout=(10, 60))
+    except requests.RequestException:
+        raise RuntimeError("连接 OpenAI 失败，请检查网络后重试") from None
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"OpenAI 返回了无法读取的响应（HTTP {response.status_code}）") from None
+    if response.status_code != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        message = error.get("message") if isinstance(error, dict) else ""
+        if response.status_code == 401:
+            raise RuntimeError("OpenAI API Key 无效或没有访问权限（HTTP 401）")
+        raise RuntimeError((str(message).strip()[:300]
+                            or f"OpenAI API 请求失败（HTTP {response.status_code}）"))
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("OpenAI 返回内容格式异常") from None
+    if isinstance(content, list):
+        content = "\n".join(
+            str(part.get("text") or "") for part in content if isinstance(part, dict))
+    answer = str(content or "").strip()
+    if not answer:
+        raise RuntimeError("OpenAI 没有返回文字，请再试一次")
+    return answer
 
 
 def extract_usage(obj, depth=0):
@@ -3996,6 +4183,8 @@ class PetWindow(QWidget):
             "x": None,
             "y": None,
             "ds_api_key": "",
+            "openai_api_key": "",
+            "openai_chat_model": "gpt-4o-mini",
             "city": "汕头",
             "city_list": [],
             "balance_always": False,
@@ -4401,6 +4590,7 @@ class PetWindow(QWidget):
 
         # 设置窗口：懒加载，点「打开设置…」才建，别拖慢启动
         self._console = None
+        self._chat_dialog = None
 
         # 托盘
         self.tray = QSystemTrayIcon(self.icon, self)
@@ -7716,6 +7906,8 @@ class PetWindow(QWidget):
         （完整版老菜单的入口挪到设置窗口「通用 → 排查问题」里去了。）
         """
         m = QMenu()
+        m.addAction("和大肥鱼聊天…", defer_dialog(self.open_chat))
+        m.addSeparator()
         m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
         m.addAction("查看天气", self._get_weather)
         m.addAction("看一眼在放什么", self.check_music_now)
@@ -7779,6 +7971,8 @@ class PetWindow(QWidget):
         # ---------- 快速查看（独立区域，放最上面）----------
         # 这三个是平时最常用的："看一眼余额 / 看一眼天气 / 看一眼在放什么"，
         # 从各自的子菜单里挪到一级菜单，单独一块，不用再一层层点进去。
+        m.addAction("和大肥鱼聊天…", defer_dialog(self.open_chat))
+        m.addSeparator()
         m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
         # （原来这里还有一行灰色的「今天另有 ¥x 余额变动，没算进今日已用」；
         #   主人 2026-09-13 看了一眼说"把这个灰色小字删了，奇奇怪怪的" → 去掉。
@@ -8130,6 +8324,40 @@ class PetWindow(QWidget):
         self._console.show()
         self._console.raise_()
         self._console.activateWindow()
+
+    def open_chat(self):
+        """打开独立聊天窗口；若窗口已打开，只将它抬到前面。"""
+        win = getattr(self, "_chat_dialog", None)
+        if win is None:
+            win = OpenAIChatDialog(self)
+            self._chat_dialog = win
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        if not (self.cfg.get("openai_api_key") or "").strip():
+            win.status.setText("先设置 OpenAI API Key，才能开始聊天。")
+
+    def set_openai_api_key_dialog(self):
+        """设置只用于聊天的 OpenAI API Key；不与余额 Key 混用。"""
+        with self._ui_guard():
+            key, ok = QInputDialog.getText(
+                self, "设置 OpenAI 聊天 API Key",
+                "粘贴 OpenAI Platform 创建的 API Key。\n"
+                "这是 API 单独计费，不会使用 Codex 订阅额度；Key 只保存在本机配置中：",
+                QLineEdit.EchoMode.Password, "",
+                Qt.WindowType.WindowStaysOnTopHint)
+        if not ok:
+            return
+        key = (key or "").strip()
+        if not key:
+            self.say("Key 还没填呢")
+            return
+        self.cfg["openai_api_key"] = key
+        self.save_config()
+        if self._chat_dialog is not None:
+            self._chat_dialog._sync_key_status()
+            self._chat_dialog.status.setText("Key 已保存在本机，可以开始聊天。")
+        self.say("OpenAI 聊天 Key 已保存在本机")
 
     def set_balance_source(self, name):
         """切换余额来源（DeepSeek / 用户自己加的其他服务）。"""
