@@ -84,7 +84,7 @@ with the balance-widget features ported from
 - Squash-and-stretch when pressed; keeps its feet on the ground
 - Click sounds: press + release clips merged into one complete sound, played through an always-open audio stream (no clipped first note, rapid clicks overlap)
 - **Peak / off-peak indicator**: weekday 09:00–12:00 and 14:00–18:00 are peak, everything else (lunch break, evenings, weekends all day) is off-peak; three wording styles, and it tells you when the period switches
-- **Per-turn cost**: reads the token usage from Codex session logs (`~/.codex-deepseek/sessions/*.jsonl`), converts it with the same peak/off-peak pricing table and reports it after each turn
+- **Per-turn cost**: reads token usage from OpenAI Codex session logs (`~/.codex/sessions/*.jsonl` by default), converts it with the same peak/off-peak pricing table and reports it after each turn
 - **Menus**: snapping and the peak wording switcher live in their own top-level menus (吸附 / 文案), no longer buried under 余额
 
 **Weather**

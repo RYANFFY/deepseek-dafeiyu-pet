@@ -1280,7 +1280,7 @@ USAGE_TOKEN_KEYS = ("input_tokens", "prompt_tokens", "output_tokens", "completio
                     "cached_input_tokens", "cache_read_input_tokens", "total_tokens")
 
 # 每轮 Codex 对话消耗：读 Codex 会话日志里的 token 用量
-CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex-deepseek", "sessions")
+CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
 CODEX_SCAN_MS = 3000        # 扫描间隔
 CODEX_QUIET_S = 20          # 一轮安静这么久就结算并冒泡
 
@@ -4069,6 +4069,14 @@ class PetWindow(QWidget):
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
+        legacy_codex_dir = os.path.join(os.path.expanduser("~"),
+                                        ".codex-deepseek", "sessions")
+        if (not self.cfg.get("agent_sessions_dir")
+                and self.cfg.get("codex_sessions_dir") == legacy_codex_dir
+                and not os.path.isdir(legacy_codex_dir)
+                and os.path.isdir(CODEX_SESSIONS_DIR)):
+            self.cfg["codex_sessions_dir"] = CODEX_SESSIONS_DIR
+            self.save_config()
         if IS_MACOS and not self.cfg.get("mac_passthrough_migrated", False):
             self.cfg["passthrough"] = True
             self.cfg["mac_passthrough_migrated"] = True
