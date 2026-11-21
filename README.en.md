@@ -77,6 +77,9 @@ with the balance-widget features ported from
 - **Chat with the pet**: choose “和大肥鱼聊天…” from the right-click menu, set an OpenAI API key,
   and chat in a separate window. API usage is billed separately from a Codex subscription; the key
   stays in the local config, and conversation history stays in memory while the pet is running.
+- **Voice input**: record for up to 60 seconds; when stopped, the audio is sent to OpenAI for
+  transcription and inserted into the input box. Review it and press Send yourself. Transcription
+  may incur additional API charges and never sends the chat automatically.
 
 **Balance widget**
 

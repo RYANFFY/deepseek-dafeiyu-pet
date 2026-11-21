@@ -96,5 +96,9 @@ if sys.platform == 'darwin':
         name='大肥鱼桌宠.app',
         icon=None,
         bundle_identifier='com.ryanffy.dafeiyu-pet',
-        info_plist={'NSHighResolutionCapable': 'True'},
+        info_plist={
+            'NSHighResolutionCapable': 'True',
+            'NSMicrophoneUsageDescription':
+                '大肥鱼桌宠使用麦克风将语音转成聊天文字；录音会在结束后发送给 OpenAI API。',
+        },
     )

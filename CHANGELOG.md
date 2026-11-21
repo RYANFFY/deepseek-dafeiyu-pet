@@ -9,10 +9,12 @@
 - 修复切换到其他应用后桌宠被 macOS 隐藏的问题；桌宠失去焦点时仍保持显示。
 - Codex 每轮用量统计默认读取 OpenAI Codex 的 `~/.codex/sessions`，无需 DeepSeek API Key；升级时自动迁移旧默认目录。
 - 新增独立聊天窗口：从右键菜单与大肥鱼对话，使用单独的 OpenAI API Key；聊天按 API 用量计费，不消耗 Codex 订阅额度，对话只保存在运行内存中。
+- 聊天窗口新增语音输入：最长录音 60 秒，停止后通过 OpenAI 转写并填入输入框，用户确认后再发送；转写按 API 用量计费。
 - 修复 macOS 上定时置顶巡检反复把桌宠提到前台、打断其他操作的问题。
 - macOS 暂不支持 Windows 媒体会话歌词、全局快捷键、Windows 进程提醒和 Windows 内存回收。
 - 实测：Python 3.14.6 / PySide6 6.12.0 离屏启动与关闭通过；macOS 置顶巡检不会调用 `raise_()`、鼠标穿透开关及置顶层级切换的回归检查通过；LaunchAgent 创建/移除逻辑通过；PyInstaller 6.22.3 在 Apple Silicon 上构建 `.app` 成功，包内可执行文件连续运行 8 秒后正常终止。
 - 实测：OpenAI API 模拟响应下，独立窗口异步收发、连续对话上下文、清空对话及 Key 不出现在窗口文本中均通过；网络错误会显示可读提示且不包含 Key。
+- 实测：麦克风 PCM WAV 封装、OpenAI 转写 multipart 请求、识别文字回填且不自动发送均通过模拟测试；当前 Mac 默认麦克风支持 16 kHz 单声道 PCM。
 
 ### 设置窗口切页时，四个角不再闪一下直角
 

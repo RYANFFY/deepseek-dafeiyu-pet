@@ -12,6 +12,7 @@ import ctypes
 import contextlib
 import hashlib
 import html
+import io
 import json
 import math
 import os
@@ -44,7 +45,8 @@ from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice
                             QEventLoop, QSize, QFileInfo, QEvent, QAbstractNativeEventFilter,
                             QObject)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
-                           QPolygonF, QImage, QCursor, QMouseEvent, QKeySequence)
+                           QPolygonF, QImage, QCursor, QMouseEvent, QKeySequence,
+                           QTextCursor)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
@@ -58,6 +60,13 @@ try:
     AUDIO_AVAILABLE = True
 except Exception:
     AUDIO_AVAILABLE = False
+
+try:
+    from PySide6.QtMultimedia import QAudioSource
+    VOICE_INPUT_AVAILABLE = AUDIO_AVAILABLE
+except Exception:
+    QAudioSource = None
+    VOICE_INPUT_AVAILABLE = False
 
 
 class _NativeMsg(ctypes.Structure):
@@ -1486,7 +1495,15 @@ class OpenAIChatDialog(QDialog):
         self.owner = owner
         self.history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
         self._result_queue = []
+        self._transcription_queue = []
         self._busy = False
+        self._transcribing = False
+        self._recording = False
+        self._audio_source = None
+        self._audio_io = None
+        self._audio_chunks = []
+        self._audio_sample_rate = 16000
+        self._recording_started_at = 0.0
         self.setWindowTitle("和大肥鱼聊天")
         self.setMinimumSize(500, 520)
         self.resize(600, 680)
@@ -1496,8 +1513,8 @@ class OpenAIChatDialog(QDialog):
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
         layout.addWidget(title)
 
-        info = QLabel("使用 OpenAI API，按 API 用量单独计费；不消耗 Codex 订阅额度。"
-                      "对话仅保存在本次运行内存中，不写入本地文件。")
+        info = QLabel("聊天与语音转写都使用 OpenAI API，按 API 用量单独计费；不消耗 Codex 订阅额度。"
+                      "录音停止后会发送给 OpenAI 转成文字，不会自动发送聊天。")
         info.setWordWrap(True)
         info.setObjectName("dim")
         layout.addWidget(info)
@@ -1517,7 +1534,7 @@ class OpenAIChatDialog(QDialog):
         layout.addWidget(self.transcript, 1)
         self._append_message("大肥鱼", "你好呀，想聊点什么？")
 
-        self.status = QLabel("你发送的内容会提交给 OpenAI API；退出桌宠后对话清空。")
+        self.status = QLabel("对话仅保存在本次运行内存中；首次录音时 macOS 可能询问麦克风权限。")
         self.status.setWordWrap(True)
         self.status.setObjectName("dim")
         layout.addWidget(self.status)
@@ -1531,6 +1548,9 @@ class OpenAIChatDialog(QDialog):
         self.clear_button = QPushButton("清空对话")
         self.clear_button.clicked.connect(self.clear_chat)
         buttons.addWidget(self.clear_button)
+        self.voice_button = QPushButton("开始语音输入")
+        self.voice_button.clicked.connect(self.toggle_voice_input)
+        buttons.addWidget(self.voice_button)
         buttons.addStretch(1)
         self.send_button = QPushButton("发送")
         self.send_button.setDefault(True)
@@ -1542,6 +1562,9 @@ class OpenAIChatDialog(QDialog):
         self._poll_timer.setInterval(100)
         self._poll_timer.timeout.connect(self._poll_result)
         self._poll_timer.start()
+        self._audio_timer = QTimer(self)
+        self._audio_timer.setInterval(100)
+        self._audio_timer.timeout.connect(self._read_audio_chunk)
         self._sync_key_status()
 
     def _append_message(self, speaker, text, color=None):
@@ -1555,10 +1578,17 @@ class OpenAIChatDialog(QDialog):
         self.key_status.setText("OpenAI API Key：已配置" if configured
                                 else "还没配置 OpenAI API Key")
         self.key_button.setText("更换 Key" if configured else "设置 API Key…")
-        self.send_button.setEnabled(not self._busy and configured)
+        can_request = (configured and not self._busy and not self._transcribing
+                       and not self._recording)
+        self.key_button.setEnabled(
+            not self._busy and not self._transcribing and not self._recording)
+        self.send_button.setEnabled(can_request)
+        self.voice_button.setText("结束录音并转文字" if self._recording else "开始语音输入")
+        self.voice_button.setEnabled(
+            VOICE_INPUT_AVAILABLE and configured and not self._busy and not self._transcribing)
 
     def send_message(self):
-        if self._busy:
+        if self._busy or self._transcribing or self._recording:
             return
         prompt = self.input.toPlainText().strip()
         if not prompt:
@@ -1578,10 +1608,10 @@ class OpenAIChatDialog(QDialog):
         model = str(self.owner.cfg.get("openai_chat_model") or "gpt-4o-mini")
         self._busy = True
         self.input.setEnabled(False)
-        self.send_button.setEnabled(False)
         self.key_button.setEnabled(False)
         self.clear_button.setEnabled(False)
         self.status.setText("大肥鱼正在想…")
+        self._sync_key_status()
 
         def worker():
             try:
@@ -1594,28 +1624,172 @@ class OpenAIChatDialog(QDialog):
         threading.Thread(target=worker, daemon=True).start()
 
     def _poll_result(self):
-        if not self._result_queue:
-            return
-        prompt, answer, error = self._result_queue.pop(0)
-        self._busy = False
-        self.input.setEnabled(True)
-        self.key_button.setEnabled(True)
-        self.clear_button.setEnabled(True)
-        if error:
-            self.status.setText(f"发送失败：{error}")
+        if self._result_queue:
+            prompt, answer, error = self._result_queue.pop(0)
+            self._busy = False
+            self.input.setEnabled(True)
+            self.clear_button.setEnabled(True)
+            if error:
+                self.status.setText(f"发送失败：{error}")
+            else:
+                self.history.extend([
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": answer},
+                ])
+                self._append_message("大肥鱼", answer)
+                self.input.clear()
+                self.status.setText("可以继续聊。")
+            self._sync_key_status()
+            self.input.setFocus()
+        if self._transcription_queue:
+            text, error = self._transcription_queue.pop(0)
+            self._transcribing = False
+            self.input.setEnabled(True)
+            self.clear_button.setEnabled(True)
+            if error:
+                self.status.setText(f"语音转写失败：{error}")
+            else:
+                existing = self.input.toPlainText().rstrip()
+                self.input.setPlainText(f"{existing}\n{text}" if existing else text)
+                self.input.moveCursor(QTextCursor.MoveOperation.End)
+                self.status.setText("语音已转为文字，请检查后点「发送」。")
+            self._sync_key_status()
+            self.input.setFocus()
+
+    def toggle_voice_input(self):
+        if self._recording:
+            self.stop_voice_input()
         else:
-            self.history.extend([
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": answer},
-            ])
-            self._append_message("大肥鱼", answer)
-            self.input.clear()
-            self.status.setText("可以继续聊。")
+            self.start_voice_input()
+
+    def start_voice_input(self):
+        if not VOICE_INPUT_AVAILABLE:
+            self.status.setText("当前 PySide6 音频输入不可用。")
+            return
+        api_key = (self.owner.cfg.get("openai_api_key") or "").strip()
+        if not api_key:
+            self.status.setText("语音转写需要先设置 OpenAI API Key。")
+            return
+        device = QMediaDevices.defaultAudioInput()
+        if device.isNull():
+            self.status.setText("没有找到麦克风，请连接或启用输入设备。")
+            return
+        audio_format = None
+        for sample_rate in (16000, 24000, 44100, 48000):
+            candidate = QAudioFormat()
+            candidate.setSampleRate(sample_rate)
+            candidate.setChannelCount(1)
+            candidate.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            if device.isFormatSupported(candidate):
+                audio_format = candidate
+                self._audio_sample_rate = sample_rate
+                break
+        if audio_format is None:
+            self.status.setText("麦克风不支持可用的录音格式。")
+            return
+        try:
+            source = QAudioSource(device, audio_format, self)
+            audio_io = source.start()
+        except Exception:
+            self.status.setText("无法启动麦克风，请检查系统麦克风权限。")
+            return
+        if audio_io is None:
+            source.stop()
+            source.deleteLater()
+            self.status.setText("无法启动麦克风，请检查系统麦克风权限。")
+            return
+        self._audio_source = source
+        self._audio_io = audio_io
+        self._audio_chunks = []
+        self._recording = True
+        self._recording_started_at = time.monotonic()
+        self._audio_timer.start()
+        self.status.setText(
+            "正在录音（最长 60 秒）。点「结束录音并转文字」后，录音会发送给 OpenAI，"
+            "可能产生 API 费用；识别结果不会自动发送聊天。")
         self._sync_key_status()
-        self.input.setFocus()
+
+    def _read_audio_chunk(self):
+        if not self._recording:
+            return
+        try:
+            if self._audio_io is not None:
+                data = self._audio_io.readAll()
+                if data:
+                    self._audio_chunks.append(bytes(data))
+        except Exception:
+            self._discard_voice_recording()
+            self.status.setText("读取麦克风失败，请检查系统麦克风权限后重试。")
+            self._sync_key_status()
+            return
+        if time.monotonic() - self._recording_started_at >= 60:
+            self.stop_voice_input()
+
+    def stop_voice_input(self):
+        if not self._recording:
+            return
+        self._audio_timer.stop()
+        try:
+            if self._audio_io is not None:
+                tail = self._audio_io.readAll()
+                if tail:
+                    self._audio_chunks.append(bytes(tail))
+        except Exception:
+            self._discard_voice_recording()
+            self.status.setText("读取麦克风失败，请检查系统麦克风权限后重试。")
+            self._sync_key_status()
+            return
+        source = self._audio_source
+        if source is not None:
+            source.stop()
+            source.deleteLater()
+        self._audio_source = None
+        self._audio_io = None
+        self._recording = False
+        raw_audio = b"".join(self._audio_chunks)
+        self._audio_chunks = []
+        try:
+            wav_data = pcm16_mono_to_wav(raw_audio, self._audio_sample_rate)
+        except RuntimeError as exc:
+            self.status.setText(str(exc) + "（也请确认麦克风权限已开启）")
+            self._sync_key_status()
+            return
+
+        api_key = (self.owner.cfg.get("openai_api_key") or "").strip()
+        self._transcribing = True
+        self.input.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        self.status.setText("正在将录音发送给 OpenAI 转写…")
+        self._sync_key_status()
+
+        def worker():
+            try:
+                text = openai_transcribe_audio(api_key, wav_data)
+                self._transcription_queue.append((text, ""))
+            except Exception as exc:
+                message = str(exc).replace(api_key, "（已隐藏）")
+                self._transcription_queue.append(("", message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _discard_voice_recording(self):
+        self._audio_timer.stop()
+        source = self._audio_source
+        self._audio_source = None
+        self._audio_io = None
+        self._recording = False
+        self._audio_chunks = []
+        if source is not None:
+            source.stop()
+            source.deleteLater()
+
+    def closeEvent(self, event):
+        if self._recording:
+            self._discard_voice_recording()
+        super().closeEvent(event)
 
     def clear_chat(self):
-        if self._busy:
+        if self._busy or self._transcribing or self._recording:
             return
         self.history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
         self.transcript.clear()
@@ -2791,6 +2965,50 @@ def openai_chat_completion(api_key, messages, model="gpt-4o-mini"):
     if not answer:
         raise RuntimeError("OpenAI 没有返回文字，请再试一次")
     return answer
+
+
+def pcm16_mono_to_wav(samples, sample_rate):
+    """把麦克风采集的 16-bit 单声道 PCM 封成 WAV，避免写临时录音文件。"""
+    raw = bytes(samples)
+    raw = raw[:len(raw) - len(raw) % 2]
+    if not raw:
+        raise RuntimeError("没有录到声音，请检查麦克风后重试")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(int(sample_rate))
+        wav.writeframes(raw)
+    return output.getvalue()
+
+
+def openai_transcribe_audio(api_key, wav_data):
+    """将用户主动录制的音频发给 OpenAI 转成中文文字。"""
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            data={"model": "gpt-4o-mini-transcribe", "language": "zh"},
+            files={"file": ("dafeiyu-voice.wav", wav_data, "audio/wav")},
+            timeout=(10, 90))
+    except requests.RequestException:
+        raise RuntimeError("连接 OpenAI 失败，请检查网络后重试") from None
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"OpenAI 返回了无法读取的响应（HTTP {response.status_code}）") from None
+    if response.status_code != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        message = error.get("message") if isinstance(error, dict) else ""
+        if response.status_code == 401:
+            raise RuntimeError("OpenAI API Key 无效或没有访问权限（HTTP 401）")
+        raise RuntimeError((str(message).strip()[:300]
+                            or f"OpenAI 转写失败（HTTP {response.status_code}）"))
+    text = data.get("text") if isinstance(data, dict) else ""
+    text = str(text or "").strip()
+    if not text:
+        raise RuntimeError("没有识别出文字，请再录一次")
+    return text
 
 
 def extract_usage(obj, depth=0):
