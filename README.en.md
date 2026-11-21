@@ -47,7 +47,9 @@ The app is written to `dist/大肥鱼桌宠.app`; unsigned builds may require co
 System Settings → Privacy & Security. Packaged settings are stored in
 `~/Library/Application Support/大肥鱼桌宠/`.
 
-On macOS, click-through can be toggled from the menu bar pet icon (double-click the icon to recover).
+On macOS, click-through is enabled by default so the pet does not intercept clicks in other apps.
+Use the menu bar pet icon menu to turn it off for dragging and interaction; double-click the icon
+to disable click-through and show the pet.
 Global hotkeys, Windows process alerts, Windows media-session lyrics, and Windows memory cleanup
 remain Windows-only.
 

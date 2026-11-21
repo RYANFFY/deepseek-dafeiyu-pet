@@ -4069,6 +4069,9 @@ class PetWindow(QWidget):
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
+        if IS_MACOS and not self.cfg.get("mac_passthrough_migrated", False):
+            self.cfg["passthrough"] = True
+            self.cfg["mac_passthrough_migrated"] = True
         if not IS_WINDOWS and not IS_MACOS:
             self.cfg["passthrough"] = False
         # 界面配色一上来就按配置定下来：气泡风格选「跟随界面」时要看这个亮暗，

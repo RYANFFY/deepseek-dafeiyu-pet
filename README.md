@@ -50,7 +50,8 @@ pyinstaller --noconfirm --clean 桌宠.spec
 应用会生成在 `dist/大肥鱼桌宠.app`；首次运行未签名构建时，macOS 可能要求在「隐私与安全性」
 中确认打开。打包版配置保存在 `~/Library/Application Support/大肥鱼桌宠/`。
 
-macOS 支持从菜单栏桌宠图标菜单切换鼠标穿透（双击图标可解除）；暂不支持全局快捷键、
+macOS 默认开启鼠标穿透，桌宠不会挡住其他应用里的点击；从菜单栏桌宠图标菜单可关闭穿透来拖动和互动，
+双击图标可解除穿透并显示桌宠。macOS 暂不支持全局快捷键、
 Windows 应用/前台进程提醒、Windows 媒体会话歌词联动和 Windows 内存回收。
 余额、天气、宠物动画、音效、设置和形象库不依赖这些 Windows 接口。
 
