@@ -1,4 +1,4 @@
-# 大肥鱼桌宠 🐋 · DeepSeek 桌面宠物 / 余额挂件（Windows 独立桌面版）
+# 大肥鱼桌宠 🐋 · DeepSeek 桌面宠物 / 余额挂件（Windows / macOS）
 
 English | [中文](README.md) → [README.en.md](README.en.md)
 
@@ -28,6 +28,30 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘 · 大肥鱼」的透明桌面宠物（
 在这套桌宠基础上并入了 **DeepSeek Harness（DSH）小鲸鱼余额挂件**的能力 ——
 余额、今日已用、峰谷时段、每轮消耗统计，所以它既是桌宠，也是一个随桌面常驻的
 **DeepSeek 余额监控挂件**。
+
+## macOS（源码运行 / 本机打包）
+
+macOS 可运行桌宠主体：透明桌宠窗口、行走与拖拽、形象切换、音效、设置界面、
+DeepSeek 余额和天气；登录启动可在设置里开启。Windows 安装包不适用于 macOS，
+macOS 版本需要在 Mac 上自行运行或打包：
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 桌宠.py
+```
+
+可选地在 Mac 上生成 `.app`（需先安装 PyInstaller；打包架构与当前 Mac/Python 相同）：
+
+```bash
+python3 -m pip install pyinstaller
+pyinstaller --noconfirm --clean 桌宠.spec
+```
+
+应用会生成在 `dist/大肥鱼桌宠.app`；首次运行未签名构建时，macOS 可能要求在「隐私与安全性」
+中确认打开。打包版配置保存在 `~/Library/Application Support/大肥鱼桌宠/`。
+
+macOS 暂不支持依赖 Windows 原生接口的功能：鼠标穿透、全局快捷键、Windows 应用/前台进程提醒、
+Windows 媒体会话歌词联动和 Windows 内存回收。余额、天气、宠物动画、音效、设置和形象库不依赖这些接口。
 
 ## 功能
 

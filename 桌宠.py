@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import os
+import plistlib
 import random
 import re
 import subprocess
@@ -23,6 +24,9 @@ import time
 import wave
 from array import array
 from datetime import datetime
+
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 
 def load_config():
     try:
@@ -177,8 +181,13 @@ if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
     BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
     PYTHONW = sys.executable
-    # 打包版的配置/账本写到用户目录，别往 exe 旁边（桌面）丢文件
-    USER_DIR = os.path.join(os.environ.get("APPDATA") or APP_DIR, "大肥鱼桌宠")
+    if IS_MACOS:
+        # .app 内部是只读发布内容，运行时数据必须放到用户可写目录。
+        USER_DIR = os.path.join(os.path.expanduser("~/Library/Application Support"),
+                                "大肥鱼桌宠")
+    else:
+        # 打包版的配置/账本写到用户目录，别往 exe 旁边（桌面）丢文件
+        USER_DIR = os.path.join(os.environ.get("APPDATA") or APP_DIR, "大肥鱼桌宠")
     try:
         os.makedirs(USER_DIR, exist_ok=True)
     except Exception:
@@ -186,7 +195,8 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     BUNDLE_DIR = APP_DIR
-    PYTHONW = os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+    PYTHONW = (os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+               if IS_WINDOWS else sys.executable)
     USER_DIR = APP_DIR
 SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
 ASSET_DIR = os.path.join(BUNDLE_DIR, "assets")     # 音效 + 小鲸鱼挂件形象
@@ -1072,6 +1082,8 @@ def hotkey_parse(text):
 
 def hotkey_supported_hint():
     """给对话框用的一句话：支持的写法。"""
+    if not IS_WINDOWS:
+        return "全局快捷键目前仅支持 Windows。"
     return "支持的键：字母 / 数字 / F1~F24 / 空格、Tab、回车、Esc 这些；至少带 Ctrl。"
 
 
@@ -4057,6 +4069,8 @@ class PetWindow(QWidget):
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
+        if not IS_WINDOWS:
+            self.cfg["passthrough"] = False
         # 界面配色一上来就按配置定下来：气泡风格选「跟随界面」时要看这个亮暗，
         # 老对话框取主题色也走同一套 —— 以前是等设置窗口建出来才 set_mode，
         # 那样"刚启动、还没开过设置"的时候气泡会按系统的亮暗走，不是主人选的那档。
@@ -4084,7 +4098,7 @@ class PetWindow(QWidget):
         # v1.0.10：二三级菜单点击的"摆渡"（这台 Windows 会把落在子菜单上的点击送给上层菜单）
         self._click_bridge = MenuClickBridge(self)
         _app = QApplication.instance()
-        if _app is not None:
+        if _app is not None and IS_WINDOWS:
             _app.installNativeEventFilter(self._click_bridge)
             # 全局快捷键也走原生消息（WM_HOTKEY），跟菜单那套一样在过滤器里收
             self._hotkey_bridge = HotkeyBridge(self)
@@ -4395,7 +4409,7 @@ class PetWindow(QWidget):
         QTimer.singleShot(1500, self.warm_up_sounds)   # 音频设备预热，消掉首次点击的延迟
         self.setWindowOpacity(self.opacity)
         QTimer.singleShot(300, self._apply_layer)       # 层级要在窗口真正显示之后再摆
-        if self.cfg.get("passthrough", False):
+        if IS_WINDOWS and self.cfg.get("passthrough", False):
             self._apply_passthrough(True)
             # 开机就是穿透状态的话，顺手提醒一下怎么解除
             QTimer.singleShot(2500, lambda: self.say(
@@ -6897,7 +6911,7 @@ class PetWindow(QWidget):
         ids = list(getattr(self, "_hotkey_ids", []))
         self._hotkey_ids = []
         self._hotkey_slots = {}
-        if not ids:
+        if not ids or not IS_WINDOWS:
             return
         try:
             user32 = ctypes.WinDLL("user32.dll")
@@ -6913,7 +6927,7 @@ class PetWindow(QWidget):
         """按配置注册全局快捷键。注册不上（键被别的程序占用）的记在 _hotkey_failed 里。"""
         self._unregister_hotkeys()
         self._hotkey_failed = []
-        if not self.cfg.get("hotkeys_on", True):
+        if not IS_WINDOWS or not self.cfg.get("hotkeys_on", True):
             return
         try:
             user32 = ctypes.WinDLL("user32.dll")
@@ -7703,6 +7717,7 @@ class PetWindow(QWidget):
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
+        pa.setEnabled(IS_WINDOWS)
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         m.addSeparator()
@@ -8029,6 +8044,7 @@ class PetWindow(QWidget):
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
+        pa.setEnabled(IS_WINDOWS)
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         md = m.addAction("记菜单日志（菜单出问题时打开）")
@@ -9880,6 +9896,9 @@ class PetWindow(QWidget):
             pass
 
     def _apply_passthrough(self, on):
+        if not IS_WINDOWS:
+            self._through_applied = False
+            return
         hwnd = int(self.winId())
         GWL_EXSTYLE = -20
         style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
@@ -9887,6 +9906,9 @@ class PetWindow(QWidget):
         ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
 
     def set_passthrough(self, on):
+        if not IS_WINDOWS:
+            self.cfg["passthrough"] = False
+            return
         self.cfg["passthrough"] = bool(on)
         self._apply_passthrough(bool(on))
         self.save_config()               # 立刻落盘，免得重启后又变回穿透状态
@@ -9900,22 +9922,57 @@ class PetWindow(QWidget):
 
     def set_autostart(self, on):
         self.cfg["autostart"] = bool(on)
-        lnk = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows",
-                           "Start Menu", "Programs", "Startup", "大肥鱼桌宠.lnk")
         try:
-            if on:
-                ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');"
-                      "$s.TargetPath='{}';$s.Arguments='\"{}\"';$s.WorkingDirectory='{}';$s.Save()"
-                      .format(lnk, PYTHONW,
-                              "" if getattr(sys, "frozen", False) else os.path.join(APP_DIR, "桌宠.py"),
-                              APP_DIR))
-                subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=True)
-                self.say("已开机自启，明天见～")
+            if IS_MACOS:
+                label = "com.ryanffy.dafeiyu-pet"
+                domain = f"gui/{os.getuid()}"
+                agents_dir = os.path.expanduser("~/Library/LaunchAgents")
+                plist_path = os.path.join(agents_dir, label + ".plist")
+                if on:
+                    os.makedirs(agents_dir, exist_ok=True)
+                    args = [sys.executable]
+                    if not getattr(sys, "frozen", False):
+                        args.append(os.path.join(APP_DIR, "桌宠.py"))
+                    with open(plist_path, "wb") as f:
+                        plistlib.dump({
+                            "Label": label,
+                            "ProgramArguments": args,
+                            "WorkingDirectory": APP_DIR,
+                            "RunAtLoad": True,
+                            "ProcessType": "Interactive",
+                        }, f)
+                    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                                   capture_output=True, text=True, timeout=10)
+                    subprocess.run(["launchctl", "bootstrap", domain, plist_path],
+                                   capture_output=True, text=True, timeout=10, check=True)
+                    self.say("已设为登录时启动，明天见～")
+                else:
+                    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                                   capture_output=True, text=True, timeout=10)
+                    if os.path.exists(plist_path):
+                        os.remove(plist_path)
+                    self.say("已取消登录时启动")
+            elif IS_WINDOWS:
+                lnk = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows",
+                                   "Start Menu", "Programs", "Startup", "大肥鱼桌宠.lnk")
+                if on:
+                    ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');"
+                          "$s.TargetPath='{}';$s.Arguments='\"{}\"';$s.WorkingDirectory='{}';$s.Save()"
+                          .format(lnk, PYTHONW,
+                                  "" if getattr(sys, "frozen", False)
+                                  else os.path.join(APP_DIR, "桌宠.py"),
+                                  APP_DIR))
+                    subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                   check=True)
+                    self.say("已开机自启，明天见～")
+                else:
+                    if os.path.exists(lnk):
+                        os.remove(lnk)
+                    self.say("已取消开机自启")
             else:
-                if os.path.exists(lnk):
-                    os.remove(lnk)
-                self.say("已取消开机自启")
+                raise OSError("当前系统暂不支持开机自启")
+            self.save_config()
         except Exception as ex:
             QMessageBox.warning(self, "开机自启", f"设置失败：{ex}")
 

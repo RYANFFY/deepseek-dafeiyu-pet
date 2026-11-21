@@ -2,6 +2,13 @@
 
 ## v1.1.5
 
+### macOS 桌面运行适配
+
+- 桌宠主体现在可在 macOS 上运行并可从 Mac 本机打包为 `.app`；配置和账本保存在用户的 Application Support 目录。
+- macOS 登录启动使用 LaunchAgents；鼠标穿透等 Windows 原生能力在 macOS 上禁用。
+- macOS 暂不支持 Windows 媒体会话歌词、全局快捷键、Windows 进程提醒和 Windows 内存回收。
+- 实测：Python 3.14.6 / PySide6 6.12.0 离屏启动与关闭通过；LaunchAgent 创建/移除逻辑通过；PyInstaller 6.22.3 在 Apple Silicon 上构建 `.app` 成功，包内可执行文件连续运行 8 秒后正常终止。
+
 ### 设置窗口切页时，四个角不再闪一下直角
 
 - 在设置窗口左边点着换页（包括点搜索结果跳过去）时，窗口四个角会"啪"地闪出一个

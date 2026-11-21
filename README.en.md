@@ -24,6 +24,32 @@ A transparent always-on-top desktop pet based on the DeepSeek fan-art character
 tells you the weather, and doubles as a **DeepSeek balance widget**
 (balance, today's spend, peak/off-peak hours, per-turn cost).
 
+## macOS (source run / native build)
+
+The core pet runs on macOS, including its transparent window, animation, dragging, skins, sounds,
+settings, DeepSeek balance, weather, and login launch. The Windows installer does not run on macOS.
+On a Mac, install the requirements and run the source:
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 桌宠.py
+```
+
+To build a native `.app` on the Mac (install PyInstaller first; the build matches the current
+Mac/Python architecture):
+
+```bash
+python3 -m pip install pyinstaller
+pyinstaller --noconfirm --clean 桌宠.spec
+```
+
+The app is written to `dist/大肥鱼桌宠.app`; unsigned builds may require confirmation in
+System Settings → Privacy & Security. Packaged settings are stored in
+`~/Library/Application Support/大肥鱼桌宠/`.
+
+Windows-native features are not available on macOS: click-through, global hotkeys, Windows process
+alerts, Windows media-session lyrics, and Windows memory cleanup.
+
 This repository is a slimmed-down fork of
 [1190fasheqi/dafeiyu-pet](https://github.com/1190fasheqi/dafeiyu-pet) (MIT),
 with the balance-widget features ported from

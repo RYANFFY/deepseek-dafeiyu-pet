@@ -13,8 +13,14 @@ Windows 桌面宠物（Python + PySide6）。大肥鱼 / 小鲸鱼形象常驻�
 ## 常用命令
 
 ```bash
-# 运行（开发）
+# Windows 运行（开发）
 .venv\Scripts\pythonw.exe 桌宠.py      # 或直接双击 启动桌宠.bat
+
+# macOS 运行 / 打包
+python3 -m pip install -r requirements.txt
+python3 桌宠.py
+python3 -m pip install pyinstaller
+pyinstaller --noconfirm --clean 桌宠.spec
 
 # 依赖（需要 Python 3.11+）
 pip install -r requirements.txt
@@ -26,7 +32,8 @@ pyinstaller --noconfirm --clean 桌宠.spec
 "F:\Codex\tools\innosetup\ISCC.exe" "/DMyAppVersion=1.0.x" installer.iss
 ```
 
-产物在 `dist/`，不提交。发版流程见 `README.md` 的「改完代码怎么发版」：
+产物在 `dist/`，不提交。`.spec` 会在 macOS 上生成 `.app`，在 Windows 上生成文件夹版 exe。
+发版流程见 `README.md` 的「改完代码怎么发版」：
 版本号按现有最高版本 +1，保持连续、不跳号；内容没变不重发。
 
 ## 关键文件

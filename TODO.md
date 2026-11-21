@@ -1,5 +1,12 @@
 # 待办（按版本记录）
 
+## macOS 适配（本轮）
+
+- 已加入 macOS 源码运行和本机 `.app` 打包路径；打包版数据使用 `~/Library/Application Support/大肥鱼桌宠/`，登录启动使用 LaunchAgents。
+- macOS 上暂不可用：鼠标穿透、全局快捷键、Windows 进程/前台应用提醒、QQ音乐/网易云 Windows 媒体会话歌词、Windows 内存回收。
+- 已在 Apple Silicon 上完成 PyInstaller `.app` 构建，并用离屏 Qt 启动验证；LaunchAgent 文件生成/移除已用隔离 HOME 验证。
+- 仍需在实际 macOS 图形桌面上手动确认透明窗口层级、托盘交互和登录后自动启动效果。
+
 > 约定：写明「v1.0.X 待办」的东西，**等主人说"开始做 v1.0.X"再动**；
 > 没说之前的所有改动都算在 **v1.0.9** 这批更新里。
 

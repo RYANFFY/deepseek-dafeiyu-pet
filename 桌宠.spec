@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 
 import PySide6
 import shiboken6
@@ -13,11 +14,12 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # winsdk：读 Windows 媒体会话（QQ音乐 / 网易云 放歌时的歌词联动）。
 # 它带一批投影 DLL，必须一起收进去，否则打包版读不到"在放什么歌"。
-try:
-    _ws = collect_all('winsdk')
-    datas += _ws[0]; binaries += _ws[1]; hiddenimports += _ws[2]
-except Exception:
-    pass
+if sys.platform == 'win32':
+    try:
+        _ws = collect_all('winsdk')
+        datas += _ws[0]; binaries += _ws[1]; hiddenimports += _ws[2]
+    except Exception:
+        pass
 
 # PyInstaller 会漏收 PySide6 自带的部分 MSVC 运行库（尤其 msvcp140_codecvt_ids.dll），
 # 缺了它们 Qt6Core.dll 会报 "DLL load failed ... 找不到指定的程序"。
@@ -47,12 +49,11 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# 关键修复：这台机器上 PyInstaller 会把 Codex 运行时里 ICU 78 的 icuuc.dll / icudt78.dll
-# 也打进包，而 Qt6Core.dll 期望的是 Windows 自带那份 ICU 72，版本不匹配会报
-# "DLL load failed while importing QtCore: 找不到指定的程序"。剔掉它们，让 Qt 用系统的。
-_drop = ('icuuc.dll', 'icuin.dll', 'icuio.dll', 'icutu.dll', 'icuuc', 'icudt')
-a.binaries = [b for b in a.binaries
-              if not any(os.path.basename(b[0]).lower().startswith(p) for p in _drop)]
+# 仅 Windows 需要避开本机打包环境里的 ICU DLL；macOS 必须保留 Qt 自带的 ICU 动态库。
+if sys.platform == 'win32':
+    _drop = ('icuuc.dll', 'icuin.dll', 'icuio.dll', 'icutu.dll', 'icuuc', 'icudt')
+    a.binaries = [b for b in a.binaries
+                  if not any(os.path.basename(b[0]).lower().startswith(p) for p in _drop)]
 
 # 文件夹版（onedir）而不是单文件版（onefile）——2026-09-14 改的。
 # 单文件版每次启动都要先把 100 多 MB 解压到 %TEMP% 再起来，"点了要等一会儿"
@@ -67,7 +68,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=(sys.platform == 'win32'),
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -76,7 +77,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
+    icon=['icon.ico'] if sys.platform == 'win32' else None,
 )
 
 coll = COLLECT(
@@ -84,7 +85,16 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=(sys.platform == 'win32'),
     upx_exclude=[],
     name='大肥鱼桌宠',
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='大肥鱼桌宠.app',
+        icon=None,
+        bundle_identifier='com.ryanffy.dafeiyu-pet',
+        info_plist={'NSHighResolutionCapable': 'True'},
+    )

@@ -8,7 +8,7 @@
 两条硬规矩（2026-09-14 定的）：
   1. 图标一律单色，颜色走 currentColor，随亮/暗主题换色；
   2. 主题分「跟随系统 / 亮色 / 暗色」三档，默认跟随系统；
-     Qt 说不清系统是亮是暗时退回读注册表 AppsUseLightTheme。
+     Qt 说不清系统是亮是暗时退回平台默认的亮色主题。
 
 外面的 桌宠.py 只做三件事：菜单里开这个窗口、把常量表（ctx）递进来、退出时关掉。
 界面逻辑全在本文件里。
@@ -17,6 +17,7 @@
 import contextlib
 import ctypes
 import os
+import sys
 import time
 from string import Template
 
@@ -191,7 +192,7 @@ _card_radius = 12
 
 
 def system_scheme():
-    """系统现在是亮还是暗。Qt 说不出来（老旧系统 / 离屏）就退回读注册表。"""
+    """系统现在是亮还是暗。Qt 说不出来（老旧系统 / 离屏）时再查平台备用值。"""
     try:
         from PySide6.QtGui import QGuiApplication
         scheme = QGuiApplication.styleHints().colorScheme()
@@ -3387,14 +3388,17 @@ class ConsoleWindow(QWidget):
         card = page.card("开机", "", "page.power")
         page.row(card, "开机自启", "下次开机自己出来",
                  Switch(pet.cfg.get("autostart", False), pet.set_autostart))
-        page.hint(card, "自启是在「启动」文件夹里放一个快捷方式，随时关得掉。")
+        page.hint(card, ("macOS 会在 LaunchAgents 中创建登录启动项，Windows 会在启动文件夹中"
+                         "创建快捷方式，随时都能关掉。"
+                         if sys.platform in ("darwin", "win32")
+                         else "当前系统暂不支持开机自启。"))
 
-        card = page.card("主题", "默认跟着 Windows 的亮暗走", "page.theme-system")
+        card = page.card("主题", "默认跟随系统亮暗模式", "page.theme-system")
         seg = Segmented(THEME_MODES, self._mode, self.set_theme)
         self.theme_seg = seg
         page.row(card, "界面配色", "亮色 / 暗色 / 跟系统",
                  seg)
-        page.hint(card, "「跟随系统」会在你切 Windows 深色模式时自动跟着变。")
+        page.hint(card, "「跟随系统」会跟着 macOS / Windows 的外观设置切换。")
 
         card = page.card("动效", "这个窗口自己的动画", "page.sparkle")
         self.page_anim_switch = Switch(
@@ -3438,7 +3442,8 @@ class ConsoleWindow(QWidget):
 
     # ---------------- 关于 ----------------
     def _page_about(self, page):
-        card = page.card("大肥鱼桌宠", "Windows 桌面宠物", "nav.about")
+        platform_name = "macOS" if sys.platform == "darwin" else "Windows"
+        card = page.card("大肥鱼桌宠", f"{platform_name} 桌面宠物", "nav.about")
         head = QHBoxLayout()
         head.setSpacing(12)
         logo = QLabel()
