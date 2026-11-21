@@ -4069,7 +4069,7 @@ class PetWindow(QWidget):
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
-        if not IS_WINDOWS:
+        if not IS_WINDOWS and not IS_MACOS:
             self.cfg["passthrough"] = False
         # 界面配色一上来就按配置定下来：气泡风格选「跟随界面」时要看这个亮暗，
         # 老对话框取主题色也走同一套 —— 以前是等设置窗口建出来才 set_mode，
@@ -4409,11 +4409,12 @@ class PetWindow(QWidget):
         QTimer.singleShot(1500, self.warm_up_sounds)   # 音频设备预热，消掉首次点击的延迟
         self.setWindowOpacity(self.opacity)
         QTimer.singleShot(300, self._apply_layer)       # 层级要在窗口真正显示之后再摆
-        if IS_WINDOWS and self.cfg.get("passthrough", False):
+        if self.cfg.get("passthrough", False):
             self._apply_passthrough(True)
-            # 开机就是穿透状态的话，顺手提醒一下怎么解除
-            QTimer.singleShot(2500, lambda: self.say(
-                "我现在是穿透状态哦：右键托盘图标 → 鼠标穿透，或者双击托盘图标就能把我捞回来"))
+            if IS_WINDOWS:
+                # 开机就是穿透状态的话，顺手提醒一下怎么解除
+                QTimer.singleShot(2500, lambda: self.say(
+                    "我现在是穿透状态哦：右键托盘图标 → 鼠标穿透，或者双击托盘图标就能把我捞回来"))
 
         # 自定义形象的原图被删 / 被挪走了：启动时提醒一次（菜单和形象库里也会标出来）
         gone = []
@@ -7717,7 +7718,7 @@ class PetWindow(QWidget):
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
-        pa.setEnabled(IS_WINDOWS)
+        pa.setEnabled(IS_WINDOWS or IS_MACOS)
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         m.addSeparator()
@@ -8044,7 +8045,7 @@ class PetWindow(QWidget):
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
-        pa.setEnabled(IS_WINDOWS)
+        pa.setEnabled(IS_WINDOWS or IS_MACOS)
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         md = m.addAction("记菜单日志（菜单出问题时打开）")
@@ -9522,6 +9523,11 @@ class PetWindow(QWidget):
 
     def _apply_layer(self):
         """用 Win32 精确摆放层级：HWND_TOPMOST / HWND_BOTTOM / HWND_NOTOPMOST。"""
+        if IS_MACOS:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.layer == "top")
+            if self.isVisible():
+                self.show()
+            return
         try:
             HWND_TOPMOST, HWND_NOTOPMOST, HWND_BOTTOM = -1, -2, 1
             SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
@@ -9900,6 +9906,11 @@ class PetWindow(QWidget):
             pass
 
     def _apply_passthrough(self, on):
+        if IS_MACOS:
+            self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, bool(on))
+            self._through_applied = bool(on)
+            self.show()
+            return
         if not IS_WINDOWS:
             self._through_applied = False
             return
@@ -9910,14 +9921,17 @@ class PetWindow(QWidget):
         ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
 
     def set_passthrough(self, on):
-        if not IS_WINDOWS:
+        if not IS_WINDOWS and not IS_MACOS:
             self.cfg["passthrough"] = False
             return
         self.cfg["passthrough"] = bool(on)
         self._apply_passthrough(bool(on))
         self.save_config()               # 立刻落盘，免得重启后又变回穿透状态
         if on:
-            self.say("我隐身啦！右键托盘图标 → 鼠标穿透 可以解除（双击托盘图标也行）")
+            if IS_MACOS:
+                self.say("鼠标现在可以从我身上穿过去啦；要和我互动，在菜单栏图标菜单里关闭穿透")
+            else:
+                self.say("我隐身啦！右键托盘图标 → 鼠标穿透 可以解除（双击托盘图标也行）")
 
     def set_topmost(self, on):
         self.cfg["topmost"] = bool(on)

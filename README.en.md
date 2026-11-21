@@ -47,8 +47,9 @@ The app is written to `dist/大肥鱼桌宠.app`; unsigned builds may require co
 System Settings → Privacy & Security. Packaged settings are stored in
 `~/Library/Application Support/大肥鱼桌宠/`.
 
-Windows-native features are not available on macOS: click-through, global hotkeys, Windows process
-alerts, Windows media-session lyrics, and Windows memory cleanup.
+On macOS, click-through can be toggled from the menu bar pet icon (double-click the icon to recover).
+Global hotkeys, Windows process alerts, Windows media-session lyrics, and Windows memory cleanup
+remain Windows-only.
 
 This repository is a slimmed-down fork of
 [1190fasheqi/dafeiyu-pet](https://github.com/1190fasheqi/dafeiyu-pet) (MIT),
