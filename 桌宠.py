@@ -9862,6 +9862,10 @@ class PetWindow(QWidget):
         ① 正在按住鼠标（拖窗口 / 拖文件）时什么都不做；
         ② 只有真的被另一个"置顶窗口"压住时才动，平时不白折腾。
         """
+        # 这段巡检依赖 Win32 判断上方窗口。macOS 上这些 API 不存在；
+        # 继续执行会落到 raise_()，定时把桌宠提到前台并抢走用户焦点。
+        if not IS_WINDOWS:
+            return
         if (not self.cfg.get("topmost", True) or not self.isVisible()
                 or self.ui_open):     # 菜单/对话框开着时别抢，免得盖住设置面板
             return
