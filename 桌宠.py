@@ -11,9 +11,12 @@
 import ctypes
 import contextlib
 import hashlib
+import html
+import io
 import json
 import math
 import os
+import plistlib
 import random
 import re
 import subprocess
@@ -23,6 +26,9 @@ import time
 import wave
 from array import array
 from datetime import datetime
+
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 
 def load_config():
     try:
@@ -39,13 +45,14 @@ from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRectF, QUrl, QIODevice
                             QEventLoop, QSize, QFileInfo, QEvent, QAbstractNativeEventFilter,
                             QObject)
 from PySide6.QtGui import (QPainter, QPixmap, QFont, QColor, QIcon, QFontMetrics,
-                           QPolygonF, QImage, QCursor, QMouseEvent, QKeySequence)
+                           QPolygonF, QImage, QCursor, QMouseEvent, QKeySequence,
+                           QTextCursor)
 from PySide6.QtWidgets import (QApplication, QWidget, QMenu, QSystemTrayIcon,
                                QMessageBox, QInputDialog, QLineEdit, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFrame, QDialog, QToolButton,
                                QSlider, QWidgetAction, QFileDialog, QListWidget,
                                QListWidgetItem, QLabel, QFileIconProvider, QSizePolicy,
-                               QComboBox)
+                               QComboBox, QTextBrowser, QPlainTextEdit)
 
 try:
     from PySide6.QtMultimedia import QSoundEffect
@@ -53,6 +60,13 @@ try:
     AUDIO_AVAILABLE = True
 except Exception:
     AUDIO_AVAILABLE = False
+
+try:
+    from PySide6.QtMultimedia import QAudioSource
+    VOICE_INPUT_AVAILABLE = AUDIO_AVAILABLE
+except Exception:
+    QAudioSource = None
+    VOICE_INPUT_AVAILABLE = False
 
 
 class _NativeMsg(ctypes.Structure):
@@ -177,8 +191,13 @@ if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
     BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
     PYTHONW = sys.executable
-    # 打包版的配置/账本写到用户目录，别往 exe 旁边（桌面）丢文件
-    USER_DIR = os.path.join(os.environ.get("APPDATA") or APP_DIR, "大肥鱼桌宠")
+    if IS_MACOS:
+        # .app 内部是只读发布内容，运行时数据必须放到用户可写目录。
+        USER_DIR = os.path.join(os.path.expanduser("~/Library/Application Support"),
+                                "大肥鱼桌宠")
+    else:
+        # 打包版的配置/账本写到用户目录，别往 exe 旁边（桌面）丢文件
+        USER_DIR = os.path.join(os.environ.get("APPDATA") or APP_DIR, "大肥鱼桌宠")
     try:
         os.makedirs(USER_DIR, exist_ok=True)
     except Exception:
@@ -186,7 +205,8 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     BUNDLE_DIR = APP_DIR
-    PYTHONW = os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+    PYTHONW = (os.path.join(APP_DIR, ".venv", "Scripts", "pythonw.exe")
+               if IS_WINDOWS else sys.executable)
     USER_DIR = APP_DIR
 SPRITE_DIR = os.path.join(BUNDLE_DIR, "sprites")
 ASSET_DIR = os.path.join(BUNDLE_DIR, "assets")     # 音效 + 小鲸鱼挂件形象
@@ -518,6 +538,7 @@ MENU_ICONS = (
     ("查看余额", "nav.balance"),
     ("查看天气", "nav.weather"),
     ("看一眼", "ui.eye"),
+    ("和大肥鱼聊天", "ui.quote"),
     ("打开设置", "nav.general"),
     ("快速双击", "page.click"),
     ("说一句我写的台词", "ui.quote"),
@@ -1072,6 +1093,8 @@ def hotkey_parse(text):
 
 def hotkey_supported_hint():
     """给对话框用的一句话：支持的写法。"""
+    if not IS_WINDOWS:
+        return "全局快捷键目前仅支持 Windows。"
     return "支持的键：字母 / 数字 / F1~F24 / 空格、Tab、回车、Esc 这些；至少带 Ctrl。"
 
 
@@ -1268,7 +1291,7 @@ USAGE_TOKEN_KEYS = ("input_tokens", "prompt_tokens", "output_tokens", "completio
                     "cached_input_tokens", "cache_read_input_tokens", "total_tokens")
 
 # 每轮 Codex 对话消耗：读 Codex 会话日志里的 token 用量
-CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex-deepseek", "sessions")
+CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
 CODEX_SCAN_MS = 3000        # 扫描间隔
 CODEX_QUIET_S = 20          # 一轮安静这么久就结算并冒泡
 
@@ -1456,6 +1479,322 @@ class AppScanDialog(QDialog):
         self.tip.setText(f"已清掉 {exe} 的自定义文字")
         self._mark_item(self.listw.currentItem())
         self._refresh_buttons()
+
+
+class OpenAIChatDialog(QDialog):
+    """独立聊天窗口；对话只留在当前窗口内存中，不写入桌宠配置。"""
+
+    SYSTEM_PROMPT = (
+        "你是大肥鱼桌宠，一只亲切、活泼、会陪主人聊天的桌面宠物。"
+        "请用自然的中文简短回答，除非主人要求详细说明；不要声称自己是真人。")
+
+    def __init__(self, owner):
+        super().__init__(owner, Qt.WindowType.Window)
+        if ui_console:
+            ui_console.style_dialog(self, BUNDLE_DIR)
+        self.owner = owner
+        self.history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        self._result_queue = []
+        self._transcription_queue = []
+        self._busy = False
+        self._transcribing = False
+        self._recording = False
+        self._audio_source = None
+        self._audio_io = None
+        self._audio_chunks = []
+        self._audio_sample_rate = 16000
+        self._recording_started_at = 0.0
+        self.setWindowTitle("和大肥鱼聊天")
+        self.setMinimumSize(500, 520)
+        self.resize(600, 680)
+
+        layout = QVBoxLayout(self)
+        title = QLabel("和大肥鱼聊天")
+        title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        layout.addWidget(title)
+
+        info = QLabel("聊天与语音转写都使用 OpenAI API，按 API 用量单独计费；不消耗 Codex 订阅额度。"
+                      "录音停止后会发送给 OpenAI 转成文字，不会自动发送聊天。")
+        info.setWordWrap(True)
+        info.setObjectName("dim")
+        layout.addWidget(info)
+
+        key_row = QHBoxLayout()
+        self.key_status = QLabel()
+        self.key_status.setWordWrap(True)
+        key_row.addWidget(self.key_status, 1)
+        self.key_button = QPushButton()
+        self.key_button.clicked.connect(self.owner.set_openai_api_key_dialog)
+        key_row.addWidget(self.key_button)
+        layout.addLayout(key_row)
+
+        self.transcript = QTextBrowser()
+        self.transcript.setOpenExternalLinks(False)
+        self.transcript.setPlaceholderText("对话会显示在这里")
+        layout.addWidget(self.transcript, 1)
+        self._append_message("大肥鱼", "你好呀，想聊点什么？")
+
+        self.status = QLabel("对话仅保存在本次运行内存中；首次录音时 macOS 可能询问麦克风权限。")
+        self.status.setWordWrap(True)
+        self.status.setObjectName("dim")
+        layout.addWidget(self.status)
+
+        self.input = QPlainTextEdit()
+        self.input.setPlaceholderText("输入消息，然后点击「发送」…")
+        self.input.setMaximumHeight(110)
+        self.input.setTabChangesFocus(True)
+        layout.addWidget(self.input)
+        buttons = QHBoxLayout()
+        self.clear_button = QPushButton("清空对话")
+        self.clear_button.clicked.connect(self.clear_chat)
+        buttons.addWidget(self.clear_button)
+        self.voice_button = QPushButton("开始语音输入")
+        self.voice_button.clicked.connect(self.toggle_voice_input)
+        buttons.addWidget(self.voice_button)
+        buttons.addStretch(1)
+        self.send_button = QPushButton("发送")
+        self.send_button.setDefault(True)
+        self.send_button.clicked.connect(self.send_message)
+        buttons.addWidget(self.send_button)
+        layout.addLayout(buttons)
+
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(100)
+        self._poll_timer.timeout.connect(self._poll_result)
+        self._poll_timer.start()
+        self._audio_timer = QTimer(self)
+        self._audio_timer.setInterval(100)
+        self._audio_timer.timeout.connect(self._read_audio_chunk)
+        self._sync_key_status()
+
+    def _append_message(self, speaker, text, color=None):
+        safe = html.escape(str(text)).replace("\n", "<br>")
+        color_style = f" style='color:{color}'" if color else ""
+        self.transcript.append(
+            f"<p><b{color_style}>{html.escape(speaker)}</b><br>{safe}</p>")
+
+    def _sync_key_status(self):
+        configured = bool((self.owner.cfg.get("openai_api_key") or "").strip())
+        self.key_status.setText("OpenAI API Key：已配置" if configured
+                                else "还没配置 OpenAI API Key")
+        self.key_button.setText("更换 Key" if configured else "设置 API Key…")
+        can_request = (configured and not self._busy and not self._transcribing
+                       and not self._recording)
+        self.key_button.setEnabled(
+            not self._busy and not self._transcribing and not self._recording)
+        self.send_button.setEnabled(can_request)
+        self.voice_button.setText("结束录音并转文字" if self._recording else "开始语音输入")
+        self.voice_button.setEnabled(
+            VOICE_INPUT_AVAILABLE and configured and not self._busy and not self._transcribing)
+
+    def send_message(self):
+        if self._busy or self._transcribing or self._recording:
+            return
+        prompt = self.input.toPlainText().strip()
+        if not prompt:
+            self.status.setText("先写一句想聊的话吧。")
+            return
+        api_key = (self.owner.cfg.get("openai_api_key") or "").strip()
+        if not api_key:
+            self.status.setText("需要先设置 OpenAI API Key。")
+            self.owner.set_openai_api_key_dialog()
+            self._sync_key_status()
+            return
+
+        self._append_message("你", prompt, "#3568a8")
+        recent = self.history[1:][-20:]
+        messages = ([self.history[0]] + recent
+                    + [{"role": "user", "content": prompt}])
+        model = str(self.owner.cfg.get("openai_chat_model") or "gpt-4o-mini")
+        self._busy = True
+        self.input.setEnabled(False)
+        self.key_button.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        self.status.setText("大肥鱼正在想…")
+        self._sync_key_status()
+
+        def worker():
+            try:
+                answer = openai_chat_completion(api_key, messages, model)
+                self._result_queue.append((prompt, answer, ""))
+            except Exception as exc:
+                message = str(exc).replace(api_key, "（已隐藏）")
+                self._result_queue.append((prompt, "", message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _poll_result(self):
+        if self._result_queue:
+            prompt, answer, error = self._result_queue.pop(0)
+            self._busy = False
+            self.input.setEnabled(True)
+            self.clear_button.setEnabled(True)
+            if error:
+                self.status.setText(f"发送失败：{error}")
+            else:
+                self.history.extend([
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": answer},
+                ])
+                self._append_message("大肥鱼", answer)
+                self.input.clear()
+                self.status.setText("可以继续聊。")
+            self._sync_key_status()
+            self.input.setFocus()
+        if self._transcription_queue:
+            text, error = self._transcription_queue.pop(0)
+            self._transcribing = False
+            self.input.setEnabled(True)
+            self.clear_button.setEnabled(True)
+            if error:
+                self.status.setText(f"语音转写失败：{error}")
+            else:
+                existing = self.input.toPlainText().rstrip()
+                self.input.setPlainText(f"{existing}\n{text}" if existing else text)
+                self.input.moveCursor(QTextCursor.MoveOperation.End)
+                self.status.setText("语音已转为文字，请检查后点「发送」。")
+            self._sync_key_status()
+            self.input.setFocus()
+
+    def toggle_voice_input(self):
+        if self._recording:
+            self.stop_voice_input()
+        else:
+            self.start_voice_input()
+
+    def start_voice_input(self):
+        if not VOICE_INPUT_AVAILABLE:
+            self.status.setText("当前 PySide6 音频输入不可用。")
+            return
+        api_key = (self.owner.cfg.get("openai_api_key") or "").strip()
+        if not api_key:
+            self.status.setText("语音转写需要先设置 OpenAI API Key。")
+            return
+        device = QMediaDevices.defaultAudioInput()
+        if device.isNull():
+            self.status.setText("没有找到麦克风，请连接或启用输入设备。")
+            return
+        audio_format = None
+        for sample_rate in (16000, 24000, 44100, 48000):
+            candidate = QAudioFormat()
+            candidate.setSampleRate(sample_rate)
+            candidate.setChannelCount(1)
+            candidate.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            if device.isFormatSupported(candidate):
+                audio_format = candidate
+                self._audio_sample_rate = sample_rate
+                break
+        if audio_format is None:
+            self.status.setText("麦克风不支持可用的录音格式。")
+            return
+        try:
+            source = QAudioSource(device, audio_format, self)
+            audio_io = source.start()
+        except Exception:
+            self.status.setText("无法启动麦克风，请检查系统麦克风权限。")
+            return
+        if audio_io is None:
+            source.stop()
+            source.deleteLater()
+            self.status.setText("无法启动麦克风，请检查系统麦克风权限。")
+            return
+        self._audio_source = source
+        self._audio_io = audio_io
+        self._audio_chunks = []
+        self._recording = True
+        self._recording_started_at = time.monotonic()
+        self._audio_timer.start()
+        self.status.setText(
+            "正在录音（最长 60 秒）。点「结束录音并转文字」后，录音会发送给 OpenAI，"
+            "可能产生 API 费用；识别结果不会自动发送聊天。")
+        self._sync_key_status()
+
+    def _read_audio_chunk(self):
+        if not self._recording:
+            return
+        try:
+            if self._audio_io is not None:
+                data = self._audio_io.readAll()
+                if data:
+                    self._audio_chunks.append(bytes(data))
+        except Exception:
+            self._discard_voice_recording()
+            self.status.setText("读取麦克风失败，请检查系统麦克风权限后重试。")
+            self._sync_key_status()
+            return
+        if time.monotonic() - self._recording_started_at >= 60:
+            self.stop_voice_input()
+
+    def stop_voice_input(self):
+        if not self._recording:
+            return
+        self._audio_timer.stop()
+        try:
+            if self._audio_io is not None:
+                tail = self._audio_io.readAll()
+                if tail:
+                    self._audio_chunks.append(bytes(tail))
+        except Exception:
+            self._discard_voice_recording()
+            self.status.setText("读取麦克风失败，请检查系统麦克风权限后重试。")
+            self._sync_key_status()
+            return
+        source = self._audio_source
+        if source is not None:
+            source.stop()
+            source.deleteLater()
+        self._audio_source = None
+        self._audio_io = None
+        self._recording = False
+        raw_audio = b"".join(self._audio_chunks)
+        self._audio_chunks = []
+        try:
+            wav_data = pcm16_mono_to_wav(raw_audio, self._audio_sample_rate)
+        except RuntimeError as exc:
+            self.status.setText(str(exc) + "（也请确认麦克风权限已开启）")
+            self._sync_key_status()
+            return
+
+        api_key = (self.owner.cfg.get("openai_api_key") or "").strip()
+        self._transcribing = True
+        self.input.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        self.status.setText("正在将录音发送给 OpenAI 转写…")
+        self._sync_key_status()
+
+        def worker():
+            try:
+                text = openai_transcribe_audio(api_key, wav_data)
+                self._transcription_queue.append((text, ""))
+            except Exception as exc:
+                message = str(exc).replace(api_key, "（已隐藏）")
+                self._transcription_queue.append(("", message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _discard_voice_recording(self):
+        self._audio_timer.stop()
+        source = self._audio_source
+        self._audio_source = None
+        self._audio_io = None
+        self._recording = False
+        self._audio_chunks = []
+        if source is not None:
+            source.stop()
+            source.deleteLater()
+
+    def closeEvent(self, event):
+        if self._recording:
+            self._discard_voice_recording()
+        super().closeEvent(event)
+
+    def clear_chat(self):
+        if self._busy or self._transcribing or self._recording:
+            return
+        self.history = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        self.transcript.clear()
+        self._append_message("大肥鱼", "对话清空啦，重新开始聊吧。")
+        self.status.setText("对话只保存在本次运行内存中，不写入本地文件。")
 
 
 class AutoSayDialog(QDialog):
@@ -2592,6 +2931,84 @@ def query_openrouter_balance(key):
         return {"ok": True, "total": round(total - used, 4), "currency": "USD"}
     except Exception as ex:
         return {"ok": False, "error": str(ex)[:60]}
+
+
+def openai_chat_completion(api_key, messages, model="gpt-4o-mini"):
+    """通过 OpenAI API 完成一轮聊天；异常文本不包含请求头或 API Key。"""
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": model, "messages": messages, "max_tokens": 400},
+            timeout=(10, 60))
+    except requests.RequestException:
+        raise RuntimeError("连接 OpenAI 失败，请检查网络后重试") from None
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"OpenAI 返回了无法读取的响应（HTTP {response.status_code}）") from None
+    if response.status_code != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        message = error.get("message") if isinstance(error, dict) else ""
+        if response.status_code == 401:
+            raise RuntimeError("OpenAI API Key 无效或没有访问权限（HTTP 401）")
+        raise RuntimeError((str(message).strip()[:300]
+                            or f"OpenAI API 请求失败（HTTP {response.status_code}）"))
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("OpenAI 返回内容格式异常") from None
+    if isinstance(content, list):
+        content = "\n".join(
+            str(part.get("text") or "") for part in content if isinstance(part, dict))
+    answer = str(content or "").strip()
+    if not answer:
+        raise RuntimeError("OpenAI 没有返回文字，请再试一次")
+    return answer
+
+
+def pcm16_mono_to_wav(samples, sample_rate):
+    """把麦克风采集的 16-bit 单声道 PCM 封成 WAV，避免写临时录音文件。"""
+    raw = bytes(samples)
+    raw = raw[:len(raw) - len(raw) % 2]
+    if not raw:
+        raise RuntimeError("没有录到声音，请检查麦克风后重试")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(int(sample_rate))
+        wav.writeframes(raw)
+    return output.getvalue()
+
+
+def openai_transcribe_audio(api_key, wav_data):
+    """将用户主动录制的音频发给 OpenAI 转成中文文字。"""
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            data={"model": "gpt-4o-mini-transcribe", "language": "zh"},
+            files={"file": ("dafeiyu-voice.wav", wav_data, "audio/wav")},
+            timeout=(10, 90))
+    except requests.RequestException:
+        raise RuntimeError("连接 OpenAI 失败，请检查网络后重试") from None
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"OpenAI 返回了无法读取的响应（HTTP {response.status_code}）") from None
+    if response.status_code != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        message = error.get("message") if isinstance(error, dict) else ""
+        if response.status_code == 401:
+            raise RuntimeError("OpenAI API Key 无效或没有访问权限（HTTP 401）")
+        raise RuntimeError((str(message).strip()[:300]
+                            or f"OpenAI 转写失败（HTTP {response.status_code}）"))
+    text = data.get("text") if isinstance(data, dict) else ""
+    text = str(text or "").strip()
+    if not text:
+        raise RuntimeError("没有识别出文字，请再录一次")
+    return text
 
 
 def extract_usage(obj, depth=0):
@@ -3984,6 +4401,8 @@ class PetWindow(QWidget):
             "x": None,
             "y": None,
             "ds_api_key": "",
+            "openai_api_key": "",
+            "openai_chat_model": "gpt-4o-mini",
             "city": "汕头",
             "city_list": [],
             "balance_always": False,
@@ -4057,6 +4476,19 @@ class PetWindow(QWidget):
         self.cfg = load_json(CONFIG_PATH, dict(cfg_defaults))
         for cfg_key, cfg_value in cfg_defaults.items():
             self.cfg.setdefault(cfg_key, cfg_value)
+        legacy_codex_dir = os.path.join(os.path.expanduser("~"),
+                                        ".codex-deepseek", "sessions")
+        if (not self.cfg.get("agent_sessions_dir")
+                and self.cfg.get("codex_sessions_dir") == legacy_codex_dir
+                and not os.path.isdir(legacy_codex_dir)
+                and os.path.isdir(CODEX_SESSIONS_DIR)):
+            self.cfg["codex_sessions_dir"] = CODEX_SESSIONS_DIR
+            self.save_config()
+        if IS_MACOS and not self.cfg.get("mac_passthrough_migrated", False):
+            self.cfg["passthrough"] = True
+            self.cfg["mac_passthrough_migrated"] = True
+        if not IS_WINDOWS and not IS_MACOS:
+            self.cfg["passthrough"] = False
         # 界面配色一上来就按配置定下来：气泡风格选「跟随界面」时要看这个亮暗，
         # 老对话框取主题色也走同一套 —— 以前是等设置窗口建出来才 set_mode，
         # 那样"刚启动、还没开过设置"的时候气泡会按系统的亮暗走，不是主人选的那档。
@@ -4080,11 +4512,13 @@ class PetWindow(QWidget):
         if self.cfg.get("topmost", True):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         super().__init__(None, flags)
+        if IS_MACOS:
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         # v1.0.10：二三级菜单点击的"摆渡"（这台 Windows 会把落在子菜单上的点击送给上层菜单）
         self._click_bridge = MenuClickBridge(self)
         _app = QApplication.instance()
-        if _app is not None:
+        if _app is not None and IS_WINDOWS:
             _app.installNativeEventFilter(self._click_bridge)
             # 全局快捷键也走原生消息（WM_HOTKEY），跟菜单那套一样在过滤器里收
             self._hotkey_bridge = HotkeyBridge(self)
@@ -4374,6 +4808,7 @@ class PetWindow(QWidget):
 
         # 设置窗口：懒加载，点「打开设置…」才建，别拖慢启动
         self._console = None
+        self._chat_dialog = None
 
         # 托盘
         self.tray = QSystemTrayIcon(self.icon, self)
@@ -4397,9 +4832,10 @@ class PetWindow(QWidget):
         QTimer.singleShot(300, self._apply_layer)       # 层级要在窗口真正显示之后再摆
         if self.cfg.get("passthrough", False):
             self._apply_passthrough(True)
-            # 开机就是穿透状态的话，顺手提醒一下怎么解除
-            QTimer.singleShot(2500, lambda: self.say(
-                "我现在是穿透状态哦：右键托盘图标 → 鼠标穿透，或者双击托盘图标就能把我捞回来"))
+            if IS_WINDOWS:
+                # 开机就是穿透状态的话，顺手提醒一下怎么解除
+                QTimer.singleShot(2500, lambda: self.say(
+                    "我现在是穿透状态哦：右键托盘图标 → 鼠标穿透，或者双击托盘图标就能把我捞回来"))
 
         # 自定义形象的原图被删 / 被挪走了：启动时提醒一次（菜单和形象库里也会标出来）
         gone = []
@@ -6897,7 +7333,7 @@ class PetWindow(QWidget):
         ids = list(getattr(self, "_hotkey_ids", []))
         self._hotkey_ids = []
         self._hotkey_slots = {}
-        if not ids:
+        if not ids or not IS_WINDOWS:
             return
         try:
             user32 = ctypes.WinDLL("user32.dll")
@@ -6913,7 +7349,7 @@ class PetWindow(QWidget):
         """按配置注册全局快捷键。注册不上（键被别的程序占用）的记在 _hotkey_failed 里。"""
         self._unregister_hotkeys()
         self._hotkey_failed = []
-        if not self.cfg.get("hotkeys_on", True):
+        if not IS_WINDOWS or not self.cfg.get("hotkeys_on", True):
             return
         try:
             user32 = ctypes.WinDLL("user32.dll")
@@ -7688,6 +8124,8 @@ class PetWindow(QWidget):
         （完整版老菜单的入口挪到设置窗口「通用 → 排查问题」里去了。）
         """
         m = QMenu()
+        m.addAction("和大肥鱼聊天…", defer_dialog(self.open_chat))
+        m.addSeparator()
         m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
         m.addAction("查看天气", self._get_weather)
         m.addAction("看一眼在放什么", self.check_music_now)
@@ -7703,6 +8141,7 @@ class PetWindow(QWidget):
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
+        pa.setEnabled(IS_WINDOWS or IS_MACOS)
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         m.addSeparator()
@@ -7750,6 +8189,8 @@ class PetWindow(QWidget):
         # ---------- 快速查看（独立区域，放最上面）----------
         # 这三个是平时最常用的："看一眼余额 / 看一眼天气 / 看一眼在放什么"，
         # 从各自的子菜单里挪到一级菜单，单独一块，不用再一层层点进去。
+        m.addAction("和大肥鱼聊天…", defer_dialog(self.open_chat))
+        m.addSeparator()
         m.addAction("查看余额", lambda: self.refresh_balance(silent=False))
         # （原来这里还有一行灰色的「今天另有 ¥x 余额变动，没算进今日已用」；
         #   主人 2026-09-13 看了一眼说"把这个灰色小字删了，奇奇怪怪的" → 去掉。
@@ -8029,6 +8470,7 @@ class PetWindow(QWidget):
         pa = m.addAction("鼠标穿透（点不到它）")
         pa.setCheckable(True)
         pa.setChecked(self.cfg["passthrough"])
+        pa.setEnabled(IS_WINDOWS or IS_MACOS)
         pa.triggered.connect(lambda on: self.set_passthrough(on))
         m.addAction("救急恢复（点不到它 / 它不见了）", self.force_recover)
         md = m.addAction("记菜单日志（菜单出问题时打开）")
@@ -8100,6 +8542,40 @@ class PetWindow(QWidget):
         self._console.show()
         self._console.raise_()
         self._console.activateWindow()
+
+    def open_chat(self):
+        """打开独立聊天窗口；若窗口已打开，只将它抬到前面。"""
+        win = getattr(self, "_chat_dialog", None)
+        if win is None:
+            win = OpenAIChatDialog(self)
+            self._chat_dialog = win
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        if not (self.cfg.get("openai_api_key") or "").strip():
+            win.status.setText("先设置 OpenAI API Key，才能开始聊天。")
+
+    def set_openai_api_key_dialog(self):
+        """设置只用于聊天的 OpenAI API Key；不与余额 Key 混用。"""
+        with self._ui_guard():
+            key, ok = QInputDialog.getText(
+                self, "设置 OpenAI 聊天 API Key",
+                "粘贴 OpenAI Platform 创建的 API Key。\n"
+                "这是 API 单独计费，不会使用 Codex 订阅额度；Key 只保存在本机配置中：",
+                QLineEdit.EchoMode.Password, "",
+                Qt.WindowType.WindowStaysOnTopHint)
+        if not ok:
+            return
+        key = (key or "").strip()
+        if not key:
+            self.say("Key 还没填呢")
+            return
+        self.cfg["openai_api_key"] = key
+        self.save_config()
+        if self._chat_dialog is not None:
+            self._chat_dialog._sync_key_status()
+            self._chat_dialog.status.setText("Key 已保存在本机，可以开始聊天。")
+        self.say("OpenAI 聊天 Key 已保存在本机")
 
     def set_balance_source(self, name):
         """切换余额来源（DeepSeek / 用户自己加的其他服务）。"""
@@ -9506,6 +9982,11 @@ class PetWindow(QWidget):
 
     def _apply_layer(self):
         """用 Win32 精确摆放层级：HWND_TOPMOST / HWND_BOTTOM / HWND_NOTOPMOST。"""
+        if IS_MACOS:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.layer == "top")
+            if self.isVisible():
+                self.show()
+            return
         try:
             HWND_TOPMOST, HWND_NOTOPMOST, HWND_BOTTOM = -1, -2, 1
             SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
@@ -9846,6 +10327,10 @@ class PetWindow(QWidget):
         ① 正在按住鼠标（拖窗口 / 拖文件）时什么都不做；
         ② 只有真的被另一个"置顶窗口"压住时才动，平时不白折腾。
         """
+        # 这段巡检依赖 Win32 判断上方窗口。macOS 上这些 API 不存在；
+        # 继续执行会落到 raise_()，定时把桌宠提到前台并抢走用户焦点。
+        if not IS_WINDOWS:
+            return
         if (not self.cfg.get("topmost", True) or not self.isVisible()
                 or self.ui_open):     # 菜单/对话框开着时别抢，免得盖住设置面板
             return
@@ -9880,6 +10365,14 @@ class PetWindow(QWidget):
             pass
 
     def _apply_passthrough(self, on):
+        if IS_MACOS:
+            self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, bool(on))
+            self._through_applied = bool(on)
+            self.show()
+            return
+        if not IS_WINDOWS:
+            self._through_applied = False
+            return
         hwnd = int(self.winId())
         GWL_EXSTYLE = -20
         style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
@@ -9887,11 +10380,17 @@ class PetWindow(QWidget):
         ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
 
     def set_passthrough(self, on):
+        if not IS_WINDOWS and not IS_MACOS:
+            self.cfg["passthrough"] = False
+            return
         self.cfg["passthrough"] = bool(on)
         self._apply_passthrough(bool(on))
         self.save_config()               # 立刻落盘，免得重启后又变回穿透状态
         if on:
-            self.say("我隐身啦！右键托盘图标 → 鼠标穿透 可以解除（双击托盘图标也行）")
+            if IS_MACOS:
+                self.say("鼠标现在可以从我身上穿过去啦；要和我互动，在菜单栏图标菜单里关闭穿透")
+            else:
+                self.say("我隐身啦！右键托盘图标 → 鼠标穿透 可以解除（双击托盘图标也行）")
 
     def set_topmost(self, on):
         self.cfg["topmost"] = bool(on)
@@ -9900,22 +10399,57 @@ class PetWindow(QWidget):
 
     def set_autostart(self, on):
         self.cfg["autostart"] = bool(on)
-        lnk = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows",
-                           "Start Menu", "Programs", "Startup", "大肥鱼桌宠.lnk")
         try:
-            if on:
-                ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');"
-                      "$s.TargetPath='{}';$s.Arguments='\"{}\"';$s.WorkingDirectory='{}';$s.Save()"
-                      .format(lnk, PYTHONW,
-                              "" if getattr(sys, "frozen", False) else os.path.join(APP_DIR, "桌宠.py"),
-                              APP_DIR))
-                subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=True)
-                self.say("已开机自启，明天见～")
+            if IS_MACOS:
+                label = "com.ryanffy.dafeiyu-pet"
+                domain = f"gui/{os.getuid()}"
+                agents_dir = os.path.expanduser("~/Library/LaunchAgents")
+                plist_path = os.path.join(agents_dir, label + ".plist")
+                if on:
+                    os.makedirs(agents_dir, exist_ok=True)
+                    args = [sys.executable]
+                    if not getattr(sys, "frozen", False):
+                        args.append(os.path.join(APP_DIR, "桌宠.py"))
+                    with open(plist_path, "wb") as f:
+                        plistlib.dump({
+                            "Label": label,
+                            "ProgramArguments": args,
+                            "WorkingDirectory": APP_DIR,
+                            "RunAtLoad": True,
+                            "ProcessType": "Interactive",
+                        }, f)
+                    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                                   capture_output=True, text=True, timeout=10)
+                    subprocess.run(["launchctl", "bootstrap", domain, plist_path],
+                                   capture_output=True, text=True, timeout=10, check=True)
+                    self.say("已设为登录时启动，明天见～")
+                else:
+                    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                                   capture_output=True, text=True, timeout=10)
+                    if os.path.exists(plist_path):
+                        os.remove(plist_path)
+                    self.say("已取消登录时启动")
+            elif IS_WINDOWS:
+                lnk = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows",
+                                   "Start Menu", "Programs", "Startup", "大肥鱼桌宠.lnk")
+                if on:
+                    ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');"
+                          "$s.TargetPath='{}';$s.Arguments='\"{}\"';$s.WorkingDirectory='{}';$s.Save()"
+                          .format(lnk, PYTHONW,
+                                  "" if getattr(sys, "frozen", False)
+                                  else os.path.join(APP_DIR, "桌宠.py"),
+                                  APP_DIR))
+                    subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                   check=True)
+                    self.say("已开机自启，明天见～")
+                else:
+                    if os.path.exists(lnk):
+                        os.remove(lnk)
+                    self.say("已取消开机自启")
             else:
-                if os.path.exists(lnk):
-                    os.remove(lnk)
-                self.say("已取消开机自启")
+                raise OSError("当前系统暂不支持开机自启")
+            self.save_config()
         except Exception as ex:
             QMessageBox.warning(self, "开机自启", f"设置失败：{ex}")
 

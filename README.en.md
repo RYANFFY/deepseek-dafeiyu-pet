@@ -24,6 +24,36 @@ A transparent always-on-top desktop pet based on the DeepSeek fan-art character
 tells you the weather, and doubles as a **DeepSeek balance widget**
 (balance, today's spend, peak/off-peak hours, per-turn cost).
 
+## macOS (source run / native build)
+
+The core pet runs on macOS, including its transparent window, animation, dragging, skins, sounds,
+settings, DeepSeek balance, weather, and login launch. The Windows installer does not run on macOS.
+On a Mac, install the requirements and run the source:
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 桌宠.py
+```
+
+To build a native `.app` on the Mac (install PyInstaller first; the build matches the current
+Mac/Python architecture):
+
+```bash
+python3 -m pip install pyinstaller
+pyinstaller --noconfirm --clean 桌宠.spec
+```
+
+The app is written to `dist/大肥鱼桌宠.app`; unsigned builds may require confirmation in
+System Settings → Privacy & Security. Packaged settings are stored in
+`~/Library/Application Support/大肥鱼桌宠/`.
+
+On macOS, click-through is enabled by default so the pet does not intercept clicks in other apps,
+and it stays visible when you switch to another app.
+Use the menu bar pet icon menu to turn it off for dragging and interaction; double-click the icon
+to disable click-through and show the pet.
+Global hotkeys, Windows process alerts, Windows media-session lyrics, and Windows memory cleanup
+remain Windows-only.
+
 This repository is a slimmed-down fork of
 [1190fasheqi/dafeiyu-pet](https://github.com/1190fasheqi/dafeiyu-pet) (MIT),
 with the balance-widget features ported from
@@ -44,6 +74,12 @@ with the balance-widget features ported from
 - Drag it around (it leans toward the drag direction and says something when you let go)
 - Single click: hop + talk back + refresh the balance
 - Tray icon, always-on-top, click-through mode, start with Windows, settings persisted in `config.json`
+- **Chat with the pet**: choose “和大肥鱼聊天…” from the right-click menu, set an OpenAI API key,
+  and chat in a separate window. API usage is billed separately from a Codex subscription; the key
+  stays in the local config, and conversation history stays in memory while the pet is running.
+- **Voice input**: record for up to 60 seconds; when stopped, the audio is sent to OpenAI for
+  transcription and inserted into the input box. Review it and press Send yourself. Transcription
+  may incur additional API charges and never sends the chat automatically.
 
 **Balance widget**
 
@@ -54,7 +90,7 @@ with the balance-widget features ported from
 - Squash-and-stretch when pressed; keeps its feet on the ground
 - Click sounds: press + release clips merged into one complete sound, played through an always-open audio stream (no clipped first note, rapid clicks overlap)
 - **Peak / off-peak indicator**: weekday 09:00–12:00 and 14:00–18:00 are peak, everything else (lunch break, evenings, weekends all day) is off-peak; three wording styles, and it tells you when the period switches
-- **Per-turn cost**: reads the token usage from Codex session logs (`~/.codex-deepseek/sessions/*.jsonl`), converts it with the same peak/off-peak pricing table and reports it after each turn
+- **Per-turn cost**: reads token usage from OpenAI Codex session logs (`~/.codex/sessions/*.jsonl` by default), converts it with the same peak/off-peak pricing table and reports it after each turn
 - **Menus**: snapping and the peak wording switcher live in their own top-level menus (吸附 / 文案), no longer buried under 余额
 
 **Weather**
