@@ -4097,6 +4097,8 @@ class PetWindow(QWidget):
         if self.cfg.get("topmost", True):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         super().__init__(None, flags)
+        if IS_MACOS:
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         # v1.0.10：二三级菜单点击的"摆渡"（这台 Windows 会把落在子菜单上的点击送给上层菜单）
         self._click_bridge = MenuClickBridge(self)

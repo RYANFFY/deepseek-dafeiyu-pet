@@ -6,6 +6,7 @@
 
 - 桌宠主体现在可在 macOS 上运行并可从 Mac 本机打包为 `.app`；配置和账本保存在用户的 Application Support 目录。
 - macOS 登录启动使用 LaunchAgents；默认开启 Qt 鼠标穿透，点击可穿过桌宠；菜单栏图标菜单可关闭穿透来互动，双击图标可恢复。
+- 修复切换到其他应用后桌宠被 macOS 隐藏的问题；桌宠失去焦点时仍保持显示。
 - 修复 macOS 上定时置顶巡检反复把桌宠提到前台、打断其他操作的问题。
 - macOS 暂不支持 Windows 媒体会话歌词、全局快捷键、Windows 进程提醒和 Windows 内存回收。
 - 实测：Python 3.14.6 / PySide6 6.12.0 离屏启动与关闭通过；macOS 置顶巡检不会调用 `raise_()`、鼠标穿透开关及置顶层级切换的回归检查通过；LaunchAgent 创建/移除逻辑通过；PyInstaller 6.22.3 在 Apple Silicon 上构建 `.app` 成功，包内可执行文件连续运行 8 秒后正常终止。

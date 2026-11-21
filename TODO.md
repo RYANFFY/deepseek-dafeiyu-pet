@@ -4,6 +4,7 @@
 
 - 已加入 macOS 源码运行和本机 `.app` 打包路径；打包版数据使用 `~/Library/Application Support/大肥鱼桌宠/`，登录启动使用 LaunchAgents。
 - 已修复 macOS 定时置顶巡检调用 `raise_()` 抢焦点的问题；macOS 默认开启 Qt 鼠标穿透，可从菜单栏切换。
+- 主人反馈（原话）：「现在我点击这个软件, 它只会弹出 桌面宠物 而且只要我一点其他的界面桌面宠物就会消失」；已给 macOS 工具窗开启失活后仍显示属性，需在图形桌面确认切换应用后仍可见。
 - macOS 上暂不可用：全局快捷键、Windows 进程/前台应用提醒、QQ音乐/网易云 Windows 媒体会话歌词、Windows 内存回收。
 - 已在 Apple Silicon 上完成 PyInstaller `.app` 构建，并用离屏 Qt 启动验证；LaunchAgent 文件生成/移除已用隔离 HOME 验证。
 - 仍需在实际 macOS 图形桌面上手动确认透明窗口层级、鼠标穿透、托盘交互和登录后自动启动效果。
